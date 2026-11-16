@@ -1,4 +1,5 @@
 // navigator command line and locale detection.
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -18,6 +19,8 @@ TEST_CASE("Defaults come from AppConfig", "[cli]") {
     REQUIRE(o);
     CHECK(o->config.max_frames == 0);
     CHECK(o->config.theme == Theme::Dark);
+    CHECK_FALSE(o->config.show_fps); // overlay is opt-in (--fps); default launch idles
+    CHECK_FALSE(o->no_animations);
     CHECK_FALSE(o->show_help);
     CHECK_FALSE(o->language.has_value());
 }
@@ -29,6 +32,8 @@ TEST_CASE("Options parse", "[cli]") {
     CHECK(o->config.theme == Theme::Light);
     CHECK(o->language == Language::Turkish);
     CHECK_FALSE(o->config.show_fps);
+    CHECK(parse_cli({"--fps"})->config.show_fps);
+    CHECK(parse_cli({"--no-animations"})->no_animations);
     CHECK(parse_cli({"--help"})->show_help);
     CHECK(parse_cli({"-V"})->show_version);
 }
@@ -48,6 +53,16 @@ TEST_CASE("Bad options are rejected", "[cli]") {
     CHECK_FALSE(parse_cli({"--lang", "de"}));
     CHECK_FALSE(parse_cli({"--scale", "9"}));
     CHECK_FALSE(parse_cli({"--bogus"}));
+    CHECK_FALSE(parse_cli({"--no-animation"})); // typo is reported, not ignored
+}
+
+TEST_CASE("Help documents every user-facing flag", "[cli]") {
+    const std::string help = navigator::app::usage_text("navigator");
+    for (const char* flag : {"--frames", "--theme", "--lang", "--fps", "--no-fps",
+                             "--no-animations", "--version", "--help"}) {
+        INFO(flag);
+        CHECK(help.find(flag) != std::string::npos);
+    }
 }
 
 TEST_CASE("Language detection follows POSIX precedence", "[cli]") {

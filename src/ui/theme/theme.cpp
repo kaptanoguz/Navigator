@@ -9,6 +9,8 @@ namespace {
 
 // Dark: near-black with a faint blue cast; neutrals step up in small, even luminance increments
 // so panels separate without hard edges. One restrained periwinkle accent.
+// Text tiers, worst case over every surface in either theme: primary >= 14, secondary >= 6.5,
+// keycap legends >= 5.4, muted >= 4.7 (all WCAG AA body text). See tests/ui/theme_test.cpp.
 constexpr Palette kDark{
     .background = rgb(0x111318),
     .background_alt = rgb(0x181C25),
@@ -16,11 +18,13 @@ constexpr Palette kDark{
     .surface_raised = rgb(0x1E222B),
     .text_primary = rgb(0xE9EBF1),
     .text_secondary = rgb(0xA4AAB8),
-    .text_muted = rgb(0x737A89),
+    .text_muted = rgb(0x868D9C),
     .accent = rgb(0x8EA6FF),
     .border = rgb(0x2B303B),
     .shadow = Color{0.0F, 0.0F, 0.02F, 0.55F},
     .keycap_edge = rgb(0x0B0D11),
+    .keycap_border = rgb(0x434A5C),
+    .keycap_text = rgb(0x959BAA),
 };
 
 // Light: cool paper white, ink near-black, accent deepened for contrast on white.
@@ -31,11 +35,13 @@ constexpr Palette kLight{
     .surface_raised = rgb(0xFFFFFF),
     .text_primary = rgb(0x15171C),
     .text_secondary = rgb(0x535966),
-    .text_muted = rgb(0x7D8391),
+    .text_muted = rgb(0x676D7A),
     .accent = rgb(0x3F63DB),
     .border = rgb(0xDDE1E8),
     .shadow = Color{0.07F, 0.09F, 0.16F, 0.16F},
     .keycap_edge = rgb(0xC9CED8),
+    .keycap_border = rgb(0xB8BEC9),
+    .keycap_text = rgb(0x5E6472),
 };
 
 } // namespace
@@ -85,6 +91,8 @@ Palette mix(const Palette& a, const Palette& b, float t) noexcept {
         .border = mix(a.border, b.border, t),
         .shadow = mix(a.shadow, b.shadow, t),
         .keycap_edge = mix(a.keycap_edge, b.keycap_edge, t),
+        .keycap_border = mix(a.keycap_border, b.keycap_border, t),
+        .keycap_text = mix(a.keycap_text, b.keycap_text, t),
     };
 }
 

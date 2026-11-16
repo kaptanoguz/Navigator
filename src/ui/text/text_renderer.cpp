@@ -22,51 +22,7 @@ std::uint64_t key(std::uint32_t font, std::uint32_t glyph, int bin, bool light) 
            (light ? 1U : 0U);
 }
 
-int quantize_size(float px) noexcept { return static_cast<int>(std::lround(px * 8.0F)); }
-
 } // namespace
-
-// ---------------------------------------------------------------------------------------------
-// FontCache
-// ---------------------------------------------------------------------------------------------
-Result<std::unique_ptr<FontCache>> FontCache::create() {
-    auto lib = FontLibrary::create();
-    if (!lib) {
-        return fail(lib.error().code, lib.error().message);
-    }
-    std::unique_ptr<FontCache> cache(new FontCache());
-    cache->library_ = std::move(*lib);
-
-    auto regular = find_font(preferred_families(), FontWeight::Regular);
-    if (!regular) {
-        return fail(regular.error().code, regular.error().message);
-    }
-    cache->files_[0] = *regular;
-    // Heavier weights from the same family; fontconfig picks the nearest available face.
-    const std::vector<std::string> family{regular->family};
-    for (const FontWeight weight : {FontWeight::Medium, FontWeight::SemiBold}) {
-        auto f = find_font(family, weight);
-        cache->files_.at(static_cast<std::size_t>(weight)) = f ? *f : *regular;
-    }
-    return cache;
-}
-
-Result<Font*> FontCache::get(const TextStyle& style, float scale) {
-    const float px = std::max(1.0F, style.size * scale);
-    const int q = quantize_size(px);
-    for (Slot& s : fonts_) {
-        if (s.weight == style.weight && s.size_q == q) {
-            return s.font.get();
-        }
-    }
-    const auto index = static_cast<std::size_t>(style.weight);
-    auto font = Font::open(library_, files_.at(index), static_cast<float>(q) / 8.0F);
-    if (!font) {
-        return fail(font.error().code, font.error().message);
-    }
-    fonts_.push_back(Slot{style.weight, q, std::move(*font)});
-    return fonts_.back().font.get();
-}
 
 // ---------------------------------------------------------------------------------------------
 // GlyphAtlas
@@ -206,6 +162,14 @@ void TextRenderer::draw(Font& font, const ShapedRun& run, float x, float baselin
         indices_.insert(indices_.end(), {base, base + 1, base + 2, base, base + 2, base + 3});
     }
     renderer_->draw_geometry(atlas_->texture(), vertices_, indices_);
+}
+
+void TextRenderer::draw(const TextLayout& layout, float x, float baseline, const Color& color) {
+    for (const TextLayout::Run& run : layout.runs) {
+        if (run.font != nullptr) {
+            draw(*run.font, run.shaped, x + run.x, baseline, color);
+        }
+    }
 }
 
 } // namespace navigator::ui::text

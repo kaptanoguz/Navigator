@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_map>
 #include <utility>
 
 #include <fontconfig/fontconfig.h>
@@ -164,6 +165,114 @@ Result<FontFile> find_font(const std::vector<std::string>& families, FontWeight 
 }
 
 // ---------------------------------------------------------------------------------------------
+// FontFallback
+// ---------------------------------------------------------------------------------------------
+struct FontFallback::Impl {
+    struct Candidate {
+        FontFile file;
+        FcCharSet* charset = nullptr; // owned reference (FcCharSetCopy)
+    };
+    std::vector<Candidate> candidates;
+    std::unordered_map<char32_t, int> memo; // codepoint -> candidate index, -1 = none
+
+    Impl() = default;
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+    Impl(Impl&&) = delete;
+    Impl& operator=(Impl&&) = delete;
+    ~Impl() {
+        for (Candidate& c : candidates) {
+            if (c.charset != nullptr) {
+                FcCharSetDestroy(c.charset);
+            }
+        }
+    }
+};
+
+FontFallback::FontFallback(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+FontFallback::~FontFallback() = default;
+
+Result<std::unique_ptr<FontFallback>> FontFallback::create(FontWeight weight) {
+    if (!fontconfig_ready()) {
+        return fail(ErrorCode::PlatformError, "fontconfig initialization failed");
+    }
+    FcPatternPtr pattern{FcPatternCreate()};
+    if (!pattern) {
+        return fail(ErrorCode::OutOfMemory, "FcPatternCreate failed");
+    }
+    FcPatternAddString(pattern.get(), FC_FAMILY, reinterpret_cast<const FcChar8*>("sans-serif"));
+    FcPatternAddInteger(pattern.get(), FC_WEIGHT, fc_weight(weight));
+    FcPatternAddInteger(pattern.get(), FC_SLANT, FC_SLANT_ROMAN);
+    FcPatternAddBool(pattern.get(), FC_SCALABLE, FcTrue);
+    FcConfigSubstitute(nullptr, pattern.get(), FcMatchPattern);
+    FcDefaultSubstitute(pattern.get());
+
+    FcResult result = FcResultNoMatch;
+    FcFontSet* set = FcFontSort(nullptr, pattern.get(), FcTrue, nullptr, &result);
+    auto impl = std::make_unique<Impl>();
+    if (set != nullptr) {
+        impl->candidates.reserve(static_cast<std::size_t>(set->nfont));
+        for (int i = 0; i < set->nfont; ++i) {
+            FcPattern* font = set->fonts[i];
+            FcBool scalable = FcFalse;
+            FcBool outline = FcFalse;
+            if (FcPatternGetBool(font, FC_SCALABLE, 0, &scalable) != FcResultMatch ||
+                scalable == FcFalse ||
+                FcPatternGetBool(font, FC_OUTLINE, 0, &outline) != FcResultMatch ||
+                outline == FcFalse) {
+                continue;
+            }
+#ifdef FC_COLOR
+            FcBool color = FcFalse;
+            if (FcPatternGetBool(font, FC_COLOR, 0, &color) == FcResultMatch && color != FcFalse) {
+                continue; // colour bitmap/COLR fonts: not supported by the coverage atlas
+            }
+#endif
+            FcChar8* path = nullptr;
+            FcCharSet* cs = nullptr;
+            if (FcPatternGetString(font, FC_FILE, 0, &path) != FcResultMatch ||
+                FcPatternGetCharSet(font, FC_CHARSET, 0, &cs) != FcResultMatch || cs == nullptr) {
+                continue;
+            }
+            Impl::Candidate c;
+            c.file.path = reinterpret_cast<const char*>(path);
+            int index = 0;
+            if (FcPatternGetInteger(font, FC_INDEX, 0, &index) == FcResultMatch) {
+                c.file.index = index;
+            }
+            FcChar8* family = nullptr;
+            if (FcPatternGetString(font, FC_FAMILY, 0, &family) == FcResultMatch) {
+                c.file.family = reinterpret_cast<const char*>(family);
+            }
+            c.charset = FcCharSetCopy(cs);
+            impl->candidates.push_back(std::move(c));
+        }
+        FcFontSetDestroy(set);
+    }
+    return std::unique_ptr<FontFallback>(new FontFallback(std::move(impl)));
+}
+
+const FontFile* FontFallback::find(char32_t codepoint) {
+    Impl& s = *impl_;
+    int found = -1;
+    if (const auto it = s.memo.find(codepoint); it != s.memo.end()) {
+        found = it->second;
+    } else {
+        for (std::size_t i = 0; i < s.candidates.size(); ++i) {
+            if (FcCharSetHasChar(s.candidates[i].charset, static_cast<FcChar32>(codepoint)) !=
+                FcFalse) {
+                found = static_cast<int>(i);
+                break;
+            }
+        }
+        s.memo.emplace(codepoint, found);
+    }
+    return found >= 0 ? &s.candidates[static_cast<std::size_t>(found)].file : nullptr;
+}
+
+std::size_t FontFallback::candidate_count() const noexcept { return impl_->candidates.size(); }
+
+// ---------------------------------------------------------------------------------------------
 // FontLibrary
 // ---------------------------------------------------------------------------------------------
 struct FontLibrary::Impl {
@@ -293,15 +402,25 @@ float Font::pixel_size() const noexcept { return impl_->pixel_size; }
 const FontMetrics& Font::metrics() const noexcept { return impl_->metrics; }
 const FontFile& Font::file() const noexcept { return impl_->file; }
 
+bool Font::has_glyph(char32_t codepoint) const noexcept {
+    return FT_Get_Char_Index(impl_->face, static_cast<FT_ULong>(codepoint)) != 0;
+}
+
 ShapedRun Font::shape(std::string_view utf8, const ShapeOptions& options) {
+    return shape(utf8, 0, utf8.size(), options);
+}
+
+ShapedRun Font::shape(std::string_view utf8, std::size_t offset, std::size_t length,
+                      const ShapeOptions& options) {
     ShapedRun run;
-    if (utf8.empty()) {
+    if (offset >= utf8.size() || length == 0) {
         return run;
     }
+    length = std::min(length, utf8.size() - offset);
     hb_buffer_t* buf = impl_->buffer;
     hb_buffer_clear_contents(buf);
-    const auto length = static_cast<int>(utf8.size());
-    hb_buffer_add_utf8(buf, utf8.data(), length, 0, length);
+    hb_buffer_add_utf8(buf, utf8.data(), static_cast<int>(utf8.size()),
+                       static_cast<unsigned int>(offset), static_cast<int>(length));
     hb_buffer_set_language(buf, hb_language_from_string(options.language.data(),
                                                         static_cast<int>(options.language.size())));
     hb_buffer_guess_segment_properties(buf);

@@ -90,9 +90,9 @@ void draw_keycap(const Painter& p, const SceneModel& m, const ShapedText& key, f
     // Depth: a slightly darker copy peeking out under the cap, then the cap and its hairline.
     r.fill_rounded_rect(RectF{cap.x, cap.y + edge, cap.w, cap.h}, rad, m.palette.keycap_edge);
     r.fill_rounded_rect(cap, rad, m.palette.surface_raised);
-    r.stroke_rounded_rect(cap, rad, edge, m.palette.border);
+    r.stroke_rounded_rect(cap, rad, edge, m.palette.keycap_border);
     const float baseline = cap.y + (0.5F * cap.h) + (0.5F * key.cap_height());
-    p.draw(key, cap.x + (0.5F * cap.w) - (0.5F * key.width()), baseline, m.palette.text_secondary);
+    p.draw(key, cap.x + (0.5F * cap.w) - (0.5F * key.width()), baseline, m.palette.keycap_text);
 }
 
 void draw_hints(const Painter& p, const SceneModel& m) {
@@ -198,25 +198,13 @@ void draw_fps_overlay(const Painter& p, const SceneModel& m) {
 } // namespace
 
 ShapedText Painter::shape(const TextStyle& style, std::string_view utf8) const {
-    ShapedText out;
-    auto font = fonts_->get(style, scale_);
-    if (!font) {
-        return out;
-    }
-    out.font = *font;
-    text::ShapeOptions options;
-    options.tracking_em = style.tracking;
-    options.tabular_figures = style.tabular;
-    options.language = language_;
-    out.run = out.font->shape(utf8, options);
-    return out;
+    return ShapedText{fonts_->shape(style, scale_, utf8, language_)};
 }
 
 void Painter::draw(const ShapedText& text, float x, float baseline, const Color& color) const {
-    if (text.font == nullptr) {
-        return;
+    if (text.layout) {
+        text_->draw(*text.layout, x, baseline, color);
     }
-    text_->draw(*text.font, text.run, x, baseline, color);
 }
 
 void draw_scene(const Painter& painter, const SceneModel& model) {

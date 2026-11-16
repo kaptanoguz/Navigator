@@ -21,36 +21,10 @@
 #include "render/renderer.hpp"
 #include "render/sdl_handles.hpp"
 #include "text/font.hpp"
+#include "text/font_cache.hpp"
 #include "theme/theme.hpp"
 
 namespace navigator::ui::text {
-
-// Fonts for the UI family at the current display scale. Re-opened when the scale changes.
-class FontCache {
-public:
-    // Discovers the UI family (Regular, Medium, SemiBold faces). Errors: NotFound (no usable
-    // font: the app refuses to start with a clear message), PlatformError.
-    [[nodiscard]] static Result<std::unique_ptr<FontCache>> create();
-
-    // Font for `style` at `scale` (px per dp). Errors from Font::open.
-    [[nodiscard]] Result<Font*> get(const TextStyle& style, float scale);
-
-    void clear() { fonts_.clear(); }
-    [[nodiscard]] const FontFile& regular_file() const noexcept { return files_[0]; }
-
-private:
-    FontCache() = default;
-
-    struct Slot {
-        FontWeight weight;
-        int size_q; // pixel size in 1/8 px
-        std::unique_ptr<Font> font;
-    };
-
-    std::shared_ptr<FontLibrary> library_;
-    std::array<FontFile, 3> files_; // Regular, Medium, SemiBold
-    std::vector<Slot> fonts_;
-};
 
 class GlyphAtlas {
 public:
@@ -99,6 +73,9 @@ public:
 
     // Draws `run` with its origin at (x, baseline) in px. The baseline is snapped to a pixel row.
     void draw(Font& font, const ShapedRun& run, float x, float baseline, const Color& color);
+
+    // Draws every run of `layout` (each with its own font) with its origin at (x, baseline).
+    void draw(const TextLayout& layout, float x, float baseline, const Color& color);
 
 private:
     Renderer* renderer_;

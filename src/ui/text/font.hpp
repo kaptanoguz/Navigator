@@ -3,10 +3,11 @@
 // Font discovery (fontconfig), faces (FreeType), shaping (HarfBuzz) and glyph rasterization to
 // 8-bit coverage. No SDL and no FreeType/HarfBuzz types in this header (pimpl), so tests and the
 // renderer-side atlas can use it freely.
-// Thread-safety: a FontLibrary and the Fonts opened from it belong to one thread (the UI thread).
-//                find_font() may be called from any thread.
+// Thread-safety: a FontLibrary, the Fonts opened from it and FontFallback lists belong to one
+//                thread (the UI thread). find_font() may be called from any thread.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -34,6 +35,32 @@ struct FontFile {
 // Errors: NotFound (nothing usable), PlatformError (fontconfig failed to initialize).
 [[nodiscard]] Result<FontFile> find_font(const std::vector<std::string>& families,
                                          FontWeight weight);
+
+// Fallback fonts for codepoints the UI font lacks (CJK, Arabic, symbols, ...): fontconfig's
+// sorted "sans-serif" list for one weight (FcFontSort, trimmed to fonts that add coverage),
+// restricted to scalable outline fonts. Colour bitmap fonts (e.g. Noto Color Emoji) are skipped:
+// the glyph pipeline is 8-bit coverage only, so emoji render monochrome when an outline emoji or
+// symbol font is installed, and as .notdef otherwise.
+class FontFallback {
+public:
+    // Builds the candidate list (one FcFontSort call). Errors: PlatformError (fontconfig failed).
+    [[nodiscard]] static Result<std::unique_ptr<FontFallback>> create(FontWeight weight);
+    ~FontFallback();
+    FontFallback(const FontFallback&) = delete;
+    FontFallback& operator=(const FontFallback&) = delete;
+    FontFallback(FontFallback&&) = delete;
+    FontFallback& operator=(FontFallback&&) = delete;
+
+    // First candidate whose charset covers `codepoint`, or nullptr. Results are memoized per
+    // codepoint. The returned pointer stays valid for the lifetime of this object.
+    [[nodiscard]] const FontFile* find(char32_t codepoint);
+    [[nodiscard]] std::size_t candidate_count() const noexcept;
+
+private:
+    struct Impl;
+    explicit FontFallback(std::unique_ptr<Impl> impl);
+    std::unique_ptr<Impl> impl_;
+};
 
 struct FontMetrics {
     float ascender = 0.0F;  // px above the baseline (positive)
@@ -105,7 +132,15 @@ public:
     [[nodiscard]] const FontMetrics& metrics() const noexcept;
     [[nodiscard]] const FontFile& file() const noexcept;
 
+    // True when the face maps `codepoint` to a real glyph (not .notdef).
+    [[nodiscard]] bool has_glyph(char32_t codepoint) const noexcept;
+
     [[nodiscard]] ShapedRun shape(std::string_view utf8, const ShapeOptions& options = {});
+
+    // Shapes the byte range [offset, offset + length) of `utf8`, with the rest of the string as
+    // shaping context. Glyph clusters are byte offsets into the whole `utf8`.
+    [[nodiscard]] ShapedRun shape(std::string_view utf8, std::size_t offset, std::size_t length,
+                                  const ShapeOptions& options = {});
 
     // Renders `glyph` with its origin shifted right by `subpixel_x` (0..1 px). Light hinting:
     // vertical snapping only, so subpixel horizontal placement stays accurate.

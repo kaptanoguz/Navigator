@@ -1,8 +1,10 @@
 # navigator_ui_tests (owner: ui): pure logic of src/ui and src/app, no window required.
 add_executable(navigator_ui_tests
+    backend_name_test.cpp
     cli_test.cpp
     i18n_test.cpp
     keybindings_test.cpp
+    lru_cache_test.cpp
     text_shaping_test.cpp
     theme_test.cpp
 )

@@ -50,9 +50,11 @@ struct Palette {
     Color text_secondary;
     Color text_muted;
     Color accent;
-    Color border;      // hairlines
-    Color shadow;      // drop shadow tint (alpha carries strength)
-    Color keycap_edge; // bottom edge of keycap chips (depth cue)
+    Color border;        // hairlines (panels); deliberately quiet, < 2:1 on background
+    Color shadow;        // drop shadow tint (alpha carries strength)
+    Color keycap_edge;   // bottom edge of keycap chips (depth cue)
+    Color keycap_border; // keycap outline; >= 2:1 on background so chips survive dim panels
+    Color keycap_text;   // keycap legends: one step quieter than text_secondary (action labels)
 };
 
 [[nodiscard]] const Palette& palette(Theme theme) noexcept;

@@ -4,12 +4,14 @@
 add_library(navigator_ui STATIC
     i18n/i18n.cpp
     input/keybindings.cpp
+    render/backend_name.cpp
     render/renderer.cpp
     shell/app.cpp
     shell/background.cpp
     shell/keyboard.cpp
     shell/scene.cpp
     text/font.cpp
+    text/font_cache.cpp
     text/text_renderer.cpp
     theme/theme.cpp
 )

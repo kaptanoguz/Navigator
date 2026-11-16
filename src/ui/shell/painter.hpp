@@ -1,26 +1,28 @@
 // src/ui/shell/painter.hpp
 //
-// Per-frame drawing context for widgets: dp -> px conversion, text shaping and drawing.
+// Per-frame drawing context for widgets: dp -> px conversion, text shaping (cached, with font
+// fallback) and drawing.
 // Widgets draw only through a Painter (which uses the project renderer); they never touch SDL.
 // Thread-safety: UI thread only; lives for one frame.
 #pragma once
 
+#include <memory>
 #include <string_view>
 
 #include "render/renderer.hpp"
+#include "text/font_cache.hpp"
 #include "text/text_renderer.hpp"
 #include "theme/theme.hpp"
 
 namespace navigator::ui {
 
+// A shaped string from the FontCache's shape cache (shared, immutable). Valid for the frame it
+// was shaped in; null when the UI font could not be opened (measures 0, draws nothing).
 struct ShapedText {
-    text::Font* font = nullptr; // nullptr when the font could not be opened (draws nothing)
-    text::ShapedRun run;
+    std::shared_ptr<const text::TextLayout> layout;
 
-    [[nodiscard]] float width() const noexcept { return run.advance; }
-    [[nodiscard]] float cap_height() const noexcept {
-        return font != nullptr ? font->metrics().cap_height : 0.0F;
-    }
+    [[nodiscard]] float width() const noexcept { return layout ? layout->advance : 0.0F; }
+    [[nodiscard]] float cap_height() const noexcept { return layout ? layout->cap_height : 0.0F; }
 };
 
 class Painter {

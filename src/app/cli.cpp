@@ -89,6 +89,8 @@ Result<CliOptions> parse_cli(const std::vector<std::string_view>& args) {
             o.config.show_fps = true;
         } else if (a == "--no-fps") {
             o.config.show_fps = false;
+        } else if (a == "--no-animations") {
+            o.no_animations = true;
         } else if (a == "--screenshot") {
             auto v = value(a);
             if (!v) {
@@ -140,7 +142,8 @@ std::string usage_text(std::string_view program) {
          "  --frames N        render N frames, then exit (headless smoke tests)\n"
          "  --theme THEME     start with the 'dark' or 'light' theme\n"
          "  --lang LANG       UI language: 'en' or 'tr' (default: from LANGUAGE/LC_*/LANG)\n"
-         "  --fps, --no-fps   show or hide the performance overlay at startup\n"
+         "  --fps, --no-fps   show or hide the performance overlay (default: hidden)\n"
+         "  --no-animations   turn off UI animations (also: NAVIGATOR_NO_ANIMATIONS=1)\n"
          "  -V, --version     print the version and exit\n"
          "  -h, --help        print this help and exit\n";
     return s;

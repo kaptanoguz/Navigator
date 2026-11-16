@@ -11,6 +11,8 @@
 //   NAVIGATOR_DEBUG_SCREENSHOT=<path.bmp>  save the last frame before present (needs max_frames)
 //   NAVIGATOR_DEBUG_SCALE=<float>          override the display scale (window size follows)
 //   NAVIGATOR_NO_ANIMATIONS=1              disable the theme crossfade
+// NAVIGATOR_NO_ANIMATIONS is also user-facing: `navigator --no-animations` sets it (AppConfig has
+// no field for it yet).
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -24,12 +26,14 @@
 #include <navigator/i18n.hpp>
 #include <navigator/ui.hpp>
 
+#include "render/backend_name.hpp"
 #include "render/renderer.hpp"
 #include "render/sdl_handles.hpp"
 #include "shell/background.hpp"
 #include "shell/keyboard.hpp"
 #include "shell/painter.hpp"
 #include "shell/scene.hpp"
+#include "text/font_cache.hpp"
 #include "text/text_renderer.hpp"
 #include "theme/theme.hpp"
 
@@ -80,7 +84,7 @@ struct App::Impl {
 
     std::string title;
     int max_frames = 0;
-    bool show_fps = true;
+    bool show_fps = false; // mirrors AppConfig::show_fps
     Theme theme = Theme::Dark;
     Theme previous_theme = Theme::Dark;
     double fade_start_ms = -1.0;
@@ -178,12 +182,24 @@ Result<void> App::Impl::init(const AppConfig& config) {
         SDL_Log("Navigator: vsync unavailable (%s)", SDL_GetError());
     }
     const char* name = SDL_GetRendererName(sdl_renderer.get());
-    driver_name = name != nullptr ? name : "unknown";
+    const std::string renderer_id = name != nullptr ? name : "";
+    std::string gpu_driver;
+    if (renderer_id == "gpu") {
+        const SDL_PropertiesID props = SDL_GetRendererProperties(sdl_renderer.get());
+        auto* device = static_cast<SDL_GPUDevice*>(
+            SDL_GetPointerProperty(props, SDL_PROP_RENDERER_GPU_DEVICE_POINTER, nullptr));
+        if (device != nullptr) {
+            if (const char* d = SDL_GetGPUDeviceDriver(device); d != nullptr) {
+                gpu_driver = d;
+            }
+        }
+    }
+    driver_name = ui::backend_display_name(renderer_id, gpu_driver);
     const char* video_driver = SDL_GetCurrentVideoDriver();
-    SDL_Log("Navigator %s: video driver '%s', render driver '%s', font '%s' (%s)",
+    SDL_Log("Navigator %s: video driver '%s', render driver '%s'%s%s, font '%s' (%s)",
             NAVIGATOR_VERSION_STRING, video_driver != nullptr ? video_driver : "none",
-            driver_name.c_str(), fonts->regular_file().family.c_str(),
-            fonts->regular_file().path.c_str());
+            renderer_id.c_str(), gpu_driver.empty() ? "" : " on ", gpu_driver.c_str(),
+            fonts->regular_file().family.c_str(), fonts->regular_file().path.c_str());
 
     renderer = std::make_unique<ui::Renderer>(sdl_renderer.get());
     auto glyph_atlas = ui::text::GlyphAtlas::create(sdl_renderer.get());

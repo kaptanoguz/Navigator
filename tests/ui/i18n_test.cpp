@@ -29,7 +29,8 @@ TEST_CASE("English is the default and covers every Phase 0 key", "[i18n]") {
     CHECK(navigator::language() == Language::English);
     for (std::string_view key :
          {"app.title", "app.tagline", "fps.label", "hint.quit", "hint.theme", "hint.fps",
-          "cmd.app.quit", "cmd.view.toggle_fps_overlay", "cmd.view.toggle_theme"}) {
+          "cmd.app.quit", "cmd.view.toggle_fps_overlay", "cmd.view.toggle_theme", "fps.frame_time",
+          "fps.driver", "fps.renderer.software"}) {
         INFO(key);
         const std::string_view value = tr(key);
         CHECK_FALSE(value.empty());
@@ -46,6 +47,8 @@ TEST_CASE("Turkish lookup returns Turkish strings", "[i18n]") {
     CHECK(tr("hint.theme") == "Temayı değiştir");
     CHECK(tr("app.tagline") == "Linux için hızlı, klavye odaklı dosya yöneticisi");
     CHECK(tr("cmd.app.quit") == "Navigator'dan çık");
+    CHECK(tr("fps.frame_time") == "Kare süresi"); // "Kare" alone also means "square"
+    CHECK(tr("fps.renderer.software") == "Yazılım");
 }
 
 TEST_CASE("Unknown keys return the key itself", "[i18n]") {

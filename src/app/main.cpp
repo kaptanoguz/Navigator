@@ -47,10 +47,14 @@ int main(int argc, char** argv) {
         navigator::app::detect_language(env_or_empty("LANGUAGE"), env_or_empty("LC_ALL"),
                                         env_or_empty("LC_MESSAGES"), env_or_empty("LANG"))));
 
-    // Development-only switches reach the UI through its documented debug environment.
+    // --no-animations and the development-only switches reach the UI through its documented
+    // environment (src/ui/shell/app.cpp).
     // NOLINTBEGIN(concurrency-mt-unsafe): single-threaded at this point.
     if (!options->screenshot_path.empty()) {
         setenv("NAVIGATOR_DEBUG_SCREENSHOT", options->screenshot_path.c_str(), 1);
+    }
+    if (options->no_animations) {
+        setenv("NAVIGATOR_NO_ANIMATIONS", "1", 1);
     }
     if (const std::optional<float> scale = options->scale; scale.has_value()) {
         setenv("NAVIGATOR_DEBUG_SCALE", std::to_string(scale.value()).c_str(), 1);

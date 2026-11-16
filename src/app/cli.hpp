@@ -21,6 +21,7 @@ struct CliOptions {
     bool show_help = false;
     bool show_version = false;
     std::optional<Language> language; // --lang overrides the environment
+    bool no_animations = false;       // --no-animations (reaches the UI as NAVIGATOR_NO_ANIMATIONS)
     // Development-only (hidden from --help): passed to the UI through NAVIGATOR_DEBUG_* env vars.
     std::string screenshot_path;
     std::optional<float> scale;
