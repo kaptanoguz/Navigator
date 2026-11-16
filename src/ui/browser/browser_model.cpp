@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <compare>
+#include <cstdio>
+#include <cstdlib>
 #include <string_view>
 #include <system_error>
 #include <unordered_set>
@@ -27,11 +29,12 @@ Path normalize(const Path& dir) {
 
 } // namespace
 
-BrowserModel::BrowserModel(Options options) : options_(std::move(options)), lister_(options_.wake) {
-    if (options_.watcher_factory) {
-        watcher_ = std::make_unique<WatchWorker>(options_.watcher_factory, options_.wake);
-    }
-}
+BrowserModel::BrowserModel(Options options)
+    : options_(std::move(options)),
+      watcher_(options_.watcher_factory
+                   ? std::make_unique<WatchWorker>(options_.watcher_factory, options_.wake)
+                   : nullptr),
+      lister_(options_.wake) {}
 
 BrowserModel::~BrowserModel() = default;
 
@@ -50,7 +53,7 @@ bool BrowserModel::frame_start() {
         if (result.entries) {
             commit(pending, result);
         } else {
-            fail_request(pending, result.entries.error());
+            fail_request(pending, result);
         }
         changed = true;
     }
@@ -103,9 +106,9 @@ bool BrowserModel::can_up() const noexcept {
            current_.dir.has_parent_path();
 }
 
-void BrowserModel::request(NavKind kind, Location target) {
+void BrowserModel::request(NavKind kind, Location target, bool fold) {
     const bool relist = kind == NavKind::Refresh || kind == NavKind::Relist;
-    if (relist && pending_ && pending_->kind != NavKind::Refresh &&
+    if (fold && relist && pending_ && pending_->kind != NavKind::Refresh &&
         pending_->kind != NavKind::Relist) {
         // A re-list (new sort, hidden toggle) while a navigation is in flight: keep navigating,
         // with the new options.
@@ -117,16 +120,41 @@ void BrowserModel::request(NavKind kind, Location target) {
     next.kind = kind;
     next.target = std::move(target);
     const bool same_dir = loaded_ && next.target.dir == current_.dir;
-    const bool watch_moved = pending_ && pending_->watch_tag != watch_tag_;
-    if (same_dir && !watch_moved) {
+    // The navigation this request replaces no longer needs the watch it added.
+    if (pending_ && pending_->watch_tag != watch_tag_ && watcher_) {
+        watcher_->unwatch(pending_->watch_tag);
+    }
+    if (same_dir && !watch_gone_) {
         next.watch_tag = watch_tag_;
     } else {
+        // Another folder, or this one after the kernel dropped its watch (deleted, maybe
+        // recreated): add a watch with a fresh tag beside the current one. The current watch
+        // stays until the listing commits, so a failed navigation loses nothing.
         next.watch_tag = next.generation;
         if (watcher_) {
-            watcher_->retarget(next.target.dir, next.watch_tag);
+            watcher_->watch(next.target.dir, next.watch_tag);
         }
     }
-    lister_.request(ListingRequest{next.generation, next.target.dir, show_hidden_, sort_});
+    ListingRequest req{next.generation, next.target.dir, show_hidden_, sort_, {}, {}};
+    const bool navigates =
+        kind != NavKind::Refresh && kind != NavKind::Relist && kind != NavKind::Start;
+    const bool options_changed = sort_.key != listed_sort_.key ||
+                                 sort_.descending != listed_sort_.descending ||
+                                 show_hidden_ != listed_hidden_;
+    if (navigates && options_changed && loaded_) {
+        // If this navigation fails we stay here, and the list must still follow the new sort or
+        // hidden setting: the worker then lists the current folder in the same job.
+        req.fallback = current_.dir;
+    }
+    if (watcher_) {
+        // Read the folder only once its watch is in place (normally microseconds), so changes
+        // can't fall between the two. A watch that takes longer than this is covered by the
+        // re-list its readiness marker triggers.
+        req.before_read = [w = watcher_.get(), tag = next.watch_tag] {
+            (void)w->wait_for_tag(tag, std::chrono::milliseconds(200));
+        };
+    }
+    lister_.request(std::move(req));
     pending_ = std::move(next);
 }
 
@@ -139,7 +167,9 @@ void BrowserModel::open_start(const Path& dir) {
 void BrowserModel::navigate_to(const Path& dir) {
     const Path target = normalize(dir);
     if (loaded_ && target == current_.dir) {
-        refresh();
+        // Stay here. This must not fold into a pending navigation elsewhere: the newest request
+        // wins.
+        request(NavKind::Refresh, here(), /*fold=*/false);
         return;
     }
     Location loc;
@@ -204,9 +234,12 @@ void BrowserModel::activate() {
         navigate_to(path);
         return;
     }
-    const Result<void> opened = options_.launcher != nullptr
-                                    ? platform::open_with_default(path, *options_.launcher)
-                                    : platform::open_with_default(path);
+    // No launcher, no spawn: tests that forget a fake never run xdg-open on the desktop. The
+    // app passes platform::create_default_launcher() explicitly.
+    const Result<void> opened =
+        options_.launcher != nullptr
+            ? platform::open_with_default(path, *options_.launcher)
+            : Result<void>(fail(ErrorCode::Unsupported, "BrowserModel has no app launcher"));
     if (!opened) {
         raise(NoticeKind::OpenFileFailed, opened.error().code, path);
     }
@@ -266,7 +299,16 @@ void BrowserModel::commit(Pending& pending, ListingResult& result) {
     band_base_.clear();
     listing_error_.reset();
     loaded_ = true;
-    watch_tag_ = pending.watch_tag;
+    if (pending.watch_tag != watch_tag_) {
+        if (watcher_ && watch_tag_ != 0) {
+            watcher_->unwatch(watch_tag_); // the folder we left
+        }
+        watch_tag_ = pending.watch_tag;
+        watch_gone_ = false;
+    }
+    listed_at_ = result.started;
+    listed_sort_ = sort_;
+    listed_hidden_ = show_hidden_;
 
     if (relist) {
         if (!selected_names.empty()) {
@@ -307,7 +349,8 @@ void BrowserModel::commit(Pending& pending, ListingResult& result) {
     ++cursor_serial_;
 }
 
-void BrowserModel::fail_request(const Pending& pending, const Error& error) {
+void BrowserModel::fail_request(Pending& pending, ListingResult& result) {
+    const Error error = result.entries.error();
     switch (pending.kind) {
     case NavKind::Start:
         current_.dir = pending.target.dir;
@@ -319,6 +362,7 @@ void BrowserModel::fail_request(const Pending& pending, const Error& error) {
         loaded_ = true;
         listing_error_ = error;
         watch_tag_ = pending.watch_tag;
+        watch_gone_ = false;
         recount();
         ++location_serial_;
         ++content_serial_;
@@ -337,9 +381,17 @@ void BrowserModel::fail_request(const Pending& pending, const Error& error) {
     case NavKind::Up: raise(NoticeKind::OpenFolderFailed, error.code, pending.target.dir); break;
     }
     if (pending.watch_tag != watch_tag_ && watcher_) {
-        // The watch moved to the target for nothing: move it back.
-        watch_tag_ = ++generation_;
-        watcher_->retarget(current_.dir, watch_tag_);
+        watcher_->unwatch(pending.watch_tag); // the current folder kept its own watch
+    }
+    if (result.fallback && result.fallback->entries) {
+        // The navigation carried a new sort or hidden setting (see request()): the worker
+        // re-listed the folder we stay in, in the same job. Apply it as a re-list.
+        Pending relist;
+        relist.generation = pending.generation;
+        relist.kind = NavKind::Relist;
+        relist.target = here();
+        relist.watch_tag = watch_tag_;
+        commit(relist, *result.fallback);
     }
 }
 
@@ -712,14 +764,68 @@ bool BrowserModel::apply_change(const WatchChange& change) {
     return false;
 }
 
+std::vector<WatchChange> BrowserModel::pair_moves(const std::vector<WatchChange>& changes) const {
+    // A rename whose MovedFrom and MovedTo straddled a read() arrives as Remove(old) followed by
+    // Upsert(new). When the Upsert's fresh stat has the FileId of the removed row, it is that
+    // row renamed: turn the pair into one Rename so selection, cursor and anchor follow it.
+    std::vector<WatchChange> out = changes;
+    std::vector<bool> drop(out.size(), false);
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        if (out[i].kind != WatchChange::Kind::Remove) {
+            continue;
+        }
+        const std::size_t row = find(out[i].name);
+        if (row == kNoRow) {
+            continue;
+        }
+        const FileId id = entries_[row].id;
+        if (id.device == 0 && id.inode == 0) {
+            continue;
+        }
+        for (std::size_t j = i + 1; j < out.size(); ++j) {
+            if (out[j].name == out[i].name ||
+                (out[j].kind == WatchChange::Kind::Rename && out[j].old_name == out[i].name)) {
+                break; // the old name comes back first: not a plain rename
+            }
+            if (drop[j] || out[j].kind != WatchChange::Kind::Upsert) {
+                continue;
+            }
+            const std::optional<fs::DirEntry>& fresh = out[j].entry;
+            if (!fresh.has_value() || fresh->id != id) {
+                continue;
+            }
+            out[j].kind = WatchChange::Kind::Rename;
+            out[j].old_name = out[i].name;
+            drop[i] = true;
+            break;
+        }
+    }
+    std::vector<WatchChange> kept;
+    kept.reserve(out.size());
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        if (!drop[i]) {
+            kept.push_back(std::move(out[i]));
+        }
+    }
+    return kept;
+}
+
 bool BrowserModel::apply_watch_batch(const WatchBatch& batch) {
+    if (batch.ready) {
+        // The watch became active after this folder's listing began: changes in between were
+        // seen by neither. Re-list once (the new listing begins after the watch is in place).
+        if (batch.watching && batch.at > listed_at_ && !listing_error_ && !busy()) {
+            request(NavKind::Relist, here());
+        }
+        return false;
+    }
     bool changed = false;
     if (batch.overflow || batch.changes.size() > options_.max_incremental_changes) {
         if (!busy()) {
             request(NavKind::Relist, here());
         }
     } else {
-        for (const WatchChange& change : batch.changes) {
+        for (const WatchChange& change : pair_moves(batch.changes)) {
             changed = apply_change(change) || changed;
         }
         if (changed) {
@@ -731,6 +837,7 @@ bool BrowserModel::apply_watch_batch(const WatchBatch& batch) {
         }
     }
     if (batch.gone) {
+        watch_gone_ = true; // the next request for this folder watches it again
         raise(NoticeKind::FolderGone, ErrorCode::NotFound, current_.dir);
         changed = true;
     }

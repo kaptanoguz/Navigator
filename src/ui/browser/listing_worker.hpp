@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <stop_token>
@@ -36,6 +37,13 @@ struct ListingRequest {
     Path dir;
     bool show_hidden = false;
     fs::SortOptions sort;
+    // Called on the worker right before the directory is read (may block briefly); the browser
+    // uses it to let the directory's watch get in place first. May be empty.
+    std::function<void()> before_read;
+    // When the listing of `dir` fails (not cancelled), list this folder too, with the same
+    // options, in the same job. The browser uses it to re-list the folder it stays in when a
+    // navigation that carries a new sort or hidden setting fails. Empty: none.
+    Path fallback;
 };
 
 struct ListingResult {
@@ -43,6 +51,11 @@ struct ListingResult {
     Path dir;
     Result<std::vector<fs::DirEntry>> entries = std::vector<fs::DirEntry>{};
     std::vector<std::string> hidden_names; // hidden names in the directory (listed or not)
+    // When the directory read began. The model compares it with the moment the watch on the
+    // directory became active: a watch added after the read began may have missed changes.
+    std::chrono::steady_clock::time_point started{};
+    // The listing of ListingRequest::fallback, when one was requested and `entries` failed.
+    std::shared_ptr<ListingResult> fallback;
 };
 
 class ListingWorker {
@@ -64,6 +77,9 @@ public:
 
 private:
     void run(const std::stop_token& stop);
+    [[nodiscard]] static ListingResult list_one(std::uint64_t generation, const Path& dir,
+                                                const ListingRequest& req,
+                                                const std::stop_token& token);
 
     std::function<void()> wake_;
     std::mutex mutex_;

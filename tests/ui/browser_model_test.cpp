@@ -588,3 +588,16 @@ TEST_CASE("A navigation superseded by another only commits the newest", "[browse
     CHECK(m.current_dir() == t.path() / "two");
     CHECK(m.back_stack().size() == 1);
 }
+
+TEST_CASE("Without a launcher, opening a file never spawns and reports Unsupported", "[browser]") {
+    TempDir t;
+    t.file("doc.pdf", "%PDF");
+    BrowserModel m(no_watch()); // Options::launcher == nullptr
+    m.open_start(t.path());
+    settle(m);
+    m.activate();
+    CHECK_FALSE(m.busy());
+    REQUIRE(m.notice());
+    CHECK(notice_of(m).kind == NoticeKind::OpenFileFailed);
+    CHECK(notice_of(m).code == ErrorCode::Unsupported);
+}

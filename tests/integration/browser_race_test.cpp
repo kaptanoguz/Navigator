@@ -10,7 +10,8 @@
 // - Selection, cursor and anchor survive re-lists, re-sorts, hidden toggles, Overflow and watch
 //   updates by entry name.
 // - The current folder being deleted: notice, the browser stays, Refresh/Up/Back behave.
-// - [!mayfail] cases document real bugs found in Phase 2 (docs/qa-phase2.md).
+// - BUG-P2-* cases are regression tests for real bugs found and fixed in Phase 2
+// (docs/qa-phase2.md).
 //
 // Files are created only inside fixture directories (CLAUDE.md rule 9). The writer thread never
 // calls Catch2; it only touches the filesystem and a few atomics.
@@ -296,7 +297,7 @@ TEST_CASE("Rapid navigation while a writer mutates the folders", "[browser][race
         case 12:
             // Files only (fake launcher). Entering the writer's folders can fail when an rmdir
             // wins the race, and a failed navigation trips BUG-P2-5 (sort/hidden change lost);
-            // that path has its own deterministic [!mayfail] case below.
+            // that path has its own deterministic BUG-P2 regression case below.
             if (m.cursor() < m.entries().size() &&
                 !fs::is_directory_like(m.entries()[m.cursor()])) {
                 m.activate();
@@ -457,7 +458,7 @@ TEST_CASE("Selection, cursor and anchor survive re-lists and watch updates by na
     (void)touch(dir / "aaa-new");
     std::filesystem::remove(dir / "other-2");
     // An unselected entry: a rename the kernel splits across reads arrives as Remove + Upsert
-    // and drops a selected entry's flag (BUG-P2-6, own [!mayfail] case below).
+    // and drops a selected entry's flag (BUG-P2-6, own regression case below).
     std::filesystem::rename(dir / "other-3", dir / "zz-other");
     REQUIRE(pump_until(
         m,
@@ -616,12 +617,11 @@ TEST_CASE("A folder deleted while its navigation is pending fails cleanly", "[br
 }
 
 // ---------------------------------------------------------------------------------------------
-// Bugs found in Phase 2 (docs/qa-phase2.md). Each fails today; [!mayfail] keeps the suite green
-// until the ui fix lands, then the tag comes off.
+// Bugs found and fixed in Phase 2 (docs/qa-phase2.md); these cases now guard against regressions.
 // ---------------------------------------------------------------------------------------------
 
 TEST_CASE("BUG-P2-1: changes made before the new folder's watch is added are lost",
-          "[browser][watch][bug][!mayfail]") {
+          "[browser][watch][bug]") {
     // The WatchWorker applies retarget() only after its current wait() times out (up to
     // kPollInterval = 100 ms), while the listing of a small folder takes about 1 ms. A change in
     // that window is in neither the listing nor any watch batch. The gate makes the window
@@ -659,7 +659,7 @@ TEST_CASE("BUG-P2-1: changes made before the new folder's watch is added are los
 }
 
 TEST_CASE("BUG-P2-2: a failed navigation loses changes made meanwhile in the current folder",
-          "[browser][watch][bug][!mayfail]") {
+          "[browser][watch][bug]") {
     if (::geteuid() == 0) {
         SKIP("running as root: permissions are not enforced");
     }
@@ -690,7 +690,7 @@ TEST_CASE("BUG-P2-2: a failed navigation loses changes made meanwhile in the cur
 }
 
 TEST_CASE("BUG-P2-3: Refresh after the folder was deleted and recreated never re-watches it",
-          "[browser][watch][bug][!mayfail]") {
+          "[browser][watch][bug]") {
     // WatchedDirGone invalidates the worker's handle. Refresh of the same path keeps the old
     // watch tag and never calls retarget(), so after `rm -rf dir && mkdir dir` + F5 the list is
     // right once but live updates have stopped until the user navigates away and back.
@@ -719,7 +719,7 @@ TEST_CASE("BUG-P2-3: Refresh after the folder was deleted and recreated never re
 }
 
 TEST_CASE("BUG-P2-4: navigate_to(current folder) while another navigation is pending",
-          "[browser][bug][!mayfail]") {
+          "[browser][bug]") {
     // navigate_to(current_dir) becomes refresh(); request() folds a Refresh into the pending
     // navigation, so the newest request (stay here) loses and the older one (go to b) commits.
     TempDir t;
@@ -735,7 +735,7 @@ TEST_CASE("BUG-P2-4: navigate_to(current folder) while another navigation is pen
 }
 
 TEST_CASE("BUG-P2-5: a sort or hidden toggle during a navigation that fails is never applied",
-          "[browser][bug][!mayfail]") {
+          "[browser][bug]") {
     // request() folds a Relist (sort_by, toggle_hidden) into a pending navigation. When that
     // navigation fails, fail_request() keeps the old entries, but sort() / show_hidden() already
     // changed: the list contradicts the header and the toggle until the next re-list, and later
@@ -804,7 +804,7 @@ private:
 };
 
 TEST_CASE("BUG-P2-6: a rename reported as MovedFrom + MovedTo drops the selection and cursor",
-          "[browser][watch][bug][!mayfail]") {
+          "[browser][watch][bug]") {
     // Seen under `ctest -j8`: the selection test lost "kept-5" from the selection after
     // rename(keep-5, kept-5). The batch holds Remove(keep-5) then Upsert(kept-5), and nothing
     // links them, although the Upsert's fresh stat has the same FileId (st_dev/st_ino) as the

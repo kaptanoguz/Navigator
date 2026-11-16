@@ -136,6 +136,7 @@ struct App::Impl {
     CommandRegistry registry;
     Keymap keymap;
 
+    std::unique_ptr<platform::IAppLauncher> launcher; // outlives the model
     std::unique_ptr<ui::BrowserModel> model;
     ui::BrowserView view;
     ui::PointerInput pointer;
@@ -302,6 +303,13 @@ Result<void> App::Impl::init(const AppConfig& config) {
         home = *h;
     }
     ui::BrowserModel::Options options;
+    if (auto l = platform::create_default_launcher(); l) {
+        launcher = std::move(*l);
+    } else {
+        SDL_Log("Navigator: no app launcher (%s); files cannot be opened",
+                l.error().message.c_str());
+    }
+    options.launcher = launcher.get();
     options.watcher_factory = [] { return create_inotify_watcher(); };
     const Uint32 wake_type = wake_event;
     options.wake = [wake_type] {

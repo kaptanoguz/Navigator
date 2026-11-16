@@ -14,6 +14,11 @@
 //     successful listing commits (history, current dir, entries). A failure leaves everything as
 //     it was and raises a notice (`tr("error." + to_string(code))`). Exception: the start path
 //     commits even when it fails, as an empty list with the notice.
+//   - Watching: the shown folder keeps its watch while a navigation is pending; the target gets
+//     its own watch beside it (tagged with the request's generation) and the old one is dropped
+//     only when the new listing commits, so a failed navigation loses no change. The listing
+//     of a folder starts once its watch is in place (or after 200 ms); a watch that became
+//     ready after its listing began triggers one re-list.
 //   - Watch batches from the WatchWorker are applied incrementally (insert at the sorted
 //     position, remove, rename, replace); overflow or a large batch re-lists; a vanished
 //     directory raises a notice and keeps the stale list.
@@ -70,8 +75,9 @@ public:
     struct Options {
         // Directory watching; empty: no live updates (tests that do not need a watcher).
         WatcherFactory watcher_factory;
-        // Launcher for Activate on files; nullptr: platform::open_with_default(path) (the
-        // process-wide default launcher). Not owned; must outlive the model.
+        // Launcher for Activate on files. Not owned; must outlive the model. nullptr: opening a
+        // file fails with ErrorCode::Unsupported (never spawns anything), so tests cannot run
+        // xdg-open by accident. The app passes platform::create_default_launcher().
         platform::IAppLauncher* launcher = nullptr;
         // Called from worker threads when a listing or watch batch is ready (thread-safe).
         std::function<void()> wake;
@@ -194,9 +200,13 @@ private:
         std::vector<WatchBatch> replay; // batches for the target seen while pending
     };
 
-    void request(NavKind kind, Location target);
+    // fold: a Refresh/Relist while a navigation is pending re-issues that navigation with the
+    // new options instead of replacing it (sort/hidden toggles); false: the request replaces it.
+    void request(NavKind kind, Location target, bool fold = true);
+    [[nodiscard]] std::vector<WatchChange>
+    pair_moves(const std::vector<WatchChange>& changes) const;
     void commit(Pending& pending, ListingResult& result);
-    void fail_request(const Pending& pending, const Error& error);
+    void fail_request(Pending& pending, ListingResult& result);
     void raise(NoticeKind kind, ErrorCode code, Path path);
     void set_cursor(std::size_t row, bool extend);
     void select_only(std::size_t row);
@@ -210,12 +220,18 @@ private:
     bool apply_change(const WatchChange& change);
 
     Options options_;
-    ListingWorker lister_;
+    // Destroyed after lister_ (whose thread may call into it through before_read).
     std::unique_ptr<WatchWorker> watcher_;
+    ListingWorker lister_;
 
     std::uint64_t generation_ = 0;
     std::optional<Pending> pending_;
     std::uint64_t watch_tag_ = 0; // tag of the watch on current_.dir
+    bool watch_gone_ = false;     // the kernel dropped that watch (WatchedDirGone)
+    // When the committed listing began, and the options it was made with.
+    std::chrono::steady_clock::time_point listed_at_{};
+    fs::SortOptions listed_sort_;
+    bool listed_hidden_ = false;
 
     Location current_;
     std::vector<fs::DirEntry> entries_;
