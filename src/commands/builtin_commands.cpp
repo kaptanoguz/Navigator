@@ -38,6 +38,26 @@ constexpr std::array kBuiltins{
     Builtin{CommandId::CursorPageDown, "list.cursor_page_down", "cmd.list.cursor_page_down"},
     Builtin{CommandId::CursorHome, "list.cursor_home", "cmd.list.cursor_home"},
     Builtin{CommandId::CursorEnd, "list.cursor_end", "cmd.list.cursor_end"},
+    Builtin{CommandId::OpenInNewTab, "list.open_in_new_tab", "cmd.list.open_in_new_tab"},
+    Builtin{CommandId::NewTab, "tab.new", "cmd.tab.new"},
+    Builtin{CommandId::CloseTab, "tab.close", "cmd.tab.close"},
+    Builtin{CommandId::DuplicateTab, "tab.duplicate", "cmd.tab.duplicate"},
+    Builtin{CommandId::CloseLeftTabs, "tab.close_left", "cmd.tab.close_left"},
+    Builtin{CommandId::ReopenClosedTab, "tab.reopen_closed", "cmd.tab.reopen_closed"},
+    Builtin{CommandId::NextTab, "tab.next", "cmd.tab.next"},
+    Builtin{CommandId::PreviousTab, "tab.previous", "cmd.tab.previous"},
+    Builtin{CommandId::SearchTabs, "tab.search", "cmd.tab.search"},
+    Builtin{CommandId::MoveTabLeft, "tab.move_left", "cmd.tab.move_left"},
+    Builtin{CommandId::MoveTabRight, "tab.move_right", "cmd.tab.move_right"},
+    Builtin{CommandId::SplitRight, "pane.split_right", "cmd.pane.split_right"},
+    Builtin{CommandId::SplitDown, "pane.split_down", "cmd.pane.split_down"},
+    Builtin{CommandId::FocusNextPane, "pane.focus_next", "cmd.pane.focus_next"},
+    Builtin{CommandId::FocusPreviousPane, "pane.focus_previous", "cmd.pane.focus_previous"},
+    Builtin{CommandId::ClosePane, "pane.close", "cmd.pane.close"},
+    Builtin{CommandId::SaveLayout, "layout.save", "cmd.layout.save"},
+    Builtin{CommandId::LoadLayout, "layout.load", "cmd.layout.load"},
+    Builtin{CommandId::DeleteLayout, "layout.delete", "cmd.layout.delete"},
+    Builtin{CommandId::NewWindow, "window.new", "cmd.window.new"},
 };
 
 } // namespace
@@ -63,6 +83,26 @@ std::string_view to_string(CommandId id) noexcept {
     case CommandId::CursorPageDown: return "list.cursor_page_down";
     case CommandId::CursorHome: return "list.cursor_home";
     case CommandId::CursorEnd: return "list.cursor_end";
+    case CommandId::OpenInNewTab: return "list.open_in_new_tab";
+    case CommandId::NewTab: return "tab.new";
+    case CommandId::CloseTab: return "tab.close";
+    case CommandId::DuplicateTab: return "tab.duplicate";
+    case CommandId::CloseLeftTabs: return "tab.close_left";
+    case CommandId::ReopenClosedTab: return "tab.reopen_closed";
+    case CommandId::NextTab: return "tab.next";
+    case CommandId::PreviousTab: return "tab.previous";
+    case CommandId::SearchTabs: return "tab.search";
+    case CommandId::MoveTabLeft: return "tab.move_left";
+    case CommandId::MoveTabRight: return "tab.move_right";
+    case CommandId::SplitRight: return "pane.split_right";
+    case CommandId::SplitDown: return "pane.split_down";
+    case CommandId::FocusNextPane: return "pane.focus_next";
+    case CommandId::FocusPreviousPane: return "pane.focus_previous";
+    case CommandId::ClosePane: return "pane.close";
+    case CommandId::SaveLayout: return "layout.save";
+    case CommandId::LoadLayout: return "layout.load";
+    case CommandId::DeleteLayout: return "layout.delete";
+    case CommandId::NewWindow: return "window.new";
     }
     return "unknown";
 }
