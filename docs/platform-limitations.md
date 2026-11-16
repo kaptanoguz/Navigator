@@ -49,9 +49,14 @@ being worked around. Contracts: `include/navigator/watch.hpp`, `include/navigato
   mounted under `/media` or `/run/media` (rule R3). Labels and UUIDs come from
   `/dev/disk/by-label|by-uuid` symlinks pointing at the device's own basename, so mapper names
   (`/dev/mapper/vg-root`, whose links point at `dm-N`) usually get no label.
-- **Removable detection is heuristic.** It uses sysfs `removable=1`, a `usb*` component in the
-  device's sysfs path, or a udisks mount point. Thunderbolt, eSATA and FireWire disks that mount
-  outside `/media` show up as Internal.
+- **Removable detection is heuristic.** It uses sysfs `removable=1` or a `usb*` component in the
+  device's sysfs path. A udisks mount point (`/media`, `/run/media`) counts only when the device
+  cannot be resolved in sysfs, so internal partitions auto-mounted under `/media` (dual-boot
+  NTFS) stay Internal. Thunderbolt, eSATA and FireWire disks that report `removable=0` therefore
+  show up as Internal even under `/media`.
+- **Hidden by default:** everything at or below `/var/lib` (lxcfs, Waydroid, Docker), service
+  FUSE types (`fuse.lxcfs`, `fuse.portal`, and `fuse.gvfsd-fuse` until the GVfs phase), and
+  single-file bind mounts (a mount point that is not a directory). `include_hidden` shows them.
 - **Network volumes.** `statvfs()` on a hung NFS/SMB mount can block for a long time. Never call
   `list_volumes()`, `volume_for()` or `IVolumeMonitor::poll()` on the UI thread. Network volumes
   have no label or UUID.

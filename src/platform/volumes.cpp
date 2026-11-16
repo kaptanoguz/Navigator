@@ -7,6 +7,7 @@
 #include <fstream>
 #include <map>
 #include <new>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -15,6 +16,7 @@
 #include <vector>
 
 #include <pwd.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <navigator/volume.hpp>
@@ -90,8 +92,8 @@ bool has_usb_component(std::string_view path) noexcept {
     return path.find("/usb") != std::string_view::npos;
 }
 
-// Rule R1.
-bool removable_by_sysfs(const RuleContext& ctx, const std::string& name) {
+// Rule R1: nullopt when the device does not resolve to a sysfs block device.
+std::optional<bool> removable_by_sysfs(const RuleContext& ctx, const std::string& name) {
     std::error_code ec;
     const stdfs::path block = ctx.sysfs_root / "block";
     stdfs::path disk;
@@ -109,7 +111,7 @@ bool removable_by_sysfs(const RuleContext& ctx, const std::string& name) {
         }
     }
     if (disk.empty()) {
-        return false;
+        return std::nullopt;
     }
     if (trim(read_small_file(disk / "removable")) == "1") {
         return true;
@@ -127,11 +129,13 @@ bool removable_by_sysfs(const RuleContext& ctx, const std::string& name) {
     return has_usb_component(rest);
 }
 
-// Rule R (R1-R3).
+// Rule R (R1-R3). A device R1 resolves is decided by R1 alone; R3 only covers the rest.
 bool is_removable(const RuleContext& ctx, const MountEntry& entry) {
     const std::string name = device_name(entry.source);
-    if (!name.empty() && !is_device_mapper(entry.source, name) && removable_by_sysfs(ctx, name)) {
-        return true;
+    if (!name.empty() && !is_device_mapper(entry.source, name)) {
+        if (const std::optional<bool> by_sysfs = removable_by_sysfs(ctx, name)) {
+            return *by_sysfs;
+        }
     }
     const std::string_view mp = entry.mount_point.native();
     return (path_at_or_below(mp, "/media") && strip_trailing_slash(mp) != "/media") ||
@@ -329,10 +333,18 @@ bool is_hidden_mount(const MountEntry& entry) noexcept {
         return false;
     }
     static constexpr std::string_view kSystem[] = {
-        "/proc", "/sys", "/dev", "/run", "/snap", "/boot", "/var/lib/docker", "/var/snap",
+        "/proc", "/sys", "/dev", "/run", "/snap", "/boot", "/var/lib", "/var/snap",
     };
     for (const std::string_view base : kSystem) {
         if (path_at_or_below(mp, base)) {
+            return true;
+        }
+    }
+    // Single-file bind mounts (e.g. Waydroid's waydroid.prop). Network mount points are not
+    // stat()ed: a hung server must not block the filter.
+    if (!is_network_filesystem(entry.fs_type)) {
+        struct stat st {};
+        if (::stat(entry.mount_point.c_str(), &st) == 0 && !S_ISDIR(st.st_mode)) {
             return true;
         }
     }

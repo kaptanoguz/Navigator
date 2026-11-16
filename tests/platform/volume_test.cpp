@@ -369,3 +369,79 @@ TEST_CASE("smoke: the real machine has a root volume", "[volume][smoke]") {
     REQUIRE(tmp.has_value());
     CHECK_FALSE(tmp->mount_point.empty());
 }
+
+// Regression: lines from a real dual-boot Linux Mint laptop (navigator-ls --volumes).
+const char* const kMintTable =
+    "31 1 259:6 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p6 rw,errors=remount-ro\n"
+    "76 31 259:3 / /media/Windows rw,relatime shared:98 - fuseblk /dev/nvme0n1p3 "
+    "rw,user_id=0,group_id=0,allow_other,blksize=4096\n"
+    "78 31 259:5 / /media/Data rw,relatime shared:100 - fuseblk /dev/nvme0n1p5 "
+    "rw,user_id=0,group_id=0,allow_other,blksize=4096\n"
+    "576 31 0:51 / /var/lib/lxcfs rw,nosuid,nodev,relatime shared:181 - fuse.lxcfs lxcfs "
+    "rw,user_id=0,group_id=0,allow_other\n"
+    "3801 3775 259:6 /var/lib/waydroid/waydroid.prop "
+    "/var/lib/waydroid/rootfs/vendor/waydroid.prop rw,relatime shared:1 - ext4 /dev/nvme0n1p6 "
+    "rw,errors=remount-ro\n";
+
+TEST_CASE("regression: internal NTFS under /media, lxcfs and file binds", "[volume][regression]") {
+    FakeSystem sys;
+    sys.add_disk("nvme0n1", "pci0000:00/0000:00:06.0/0000:01:00.0/nvme/nvme0", false,
+                 {"nvme0n1p3", "nvme0n1p5", "nvme0n1p6"});
+    auto source = std::make_shared<FakeMountSource>(kMintTable);
+    VolumeQuery q = sys.query(source);
+    q.query_space = false;
+
+    auto listed = navigator::list_volumes(q);
+    REQUIRE(listed.has_value());
+    CHECK(mount_points(*listed) == std::vector<std::string>{"/", "/media/Windows", "/media/Data"});
+    for (const char* mp : {"/media/Windows", "/media/Data"}) {
+        const VolumeInfo* v = find(*listed, mp);
+        REQUIRE(v != nullptr);
+        CHECK_FALSE(v->removable); // R1 resolved nvme0n1 (removable=0, no usb): R3 not used
+        CHECK(v->kind == VolumeKind::Internal);
+        CHECK(v->fs_type == "fuseblk");
+    }
+    CHECK(navigator::is_pseudo_filesystem("fuse.lxcfs"));
+
+    q.include_hidden = true;
+    listed = navigator::list_volumes(q);
+    REQUIRE(listed.has_value());
+    REQUIRE(find(*listed, "/var/lib/lxcfs") != nullptr);
+    CHECK(find(*listed, "/var/lib/lxcfs")->kind == VolumeKind::Virtual);
+    REQUIRE(find(*listed, "/var/lib/waydroid/rootfs/vendor/waydroid.prop") != nullptr);
+}
+
+TEST_CASE("R3 still applies when R1 cannot resolve the device", "[volume][regression]") {
+    FakeSystem sys; // empty sysfs: nvme0n1 unknown
+    auto source = std::make_shared<FakeMountSource>(kMintTable);
+    VolumeQuery q = sys.query(source);
+    q.query_space = false;
+    auto listed = navigator::list_volumes(q);
+    REQUIRE(listed.has_value());
+    REQUIRE(find(*listed, "/media/Windows") != nullptr);
+    CHECK(find(*listed, "/media/Windows")->removable);
+    CHECK(find(*listed, "/media/Windows")->kind == VolumeKind::Removable);
+}
+
+TEST_CASE("single-file bind mounts outside /var/lib are hidden", "[volume][regression]") {
+    FakeSystem sys;
+    const navigator::Path file = sys.tmp() / "bound.prop";
+    navigator::platform_test::write_file(file, "x");
+    const navigator::Path dir = sys.tmp() / "bound-dir";
+    std::filesystem::create_directory(dir);
+    auto source = std::make_shared<FakeMountSource>("22 1 8:1 / / rw - ext4 /dev/sda1 rw\n"
+                                                    "90 22 8:1 /etc/x.prop " +
+                                                    file.native() +
+                                                    " rw - ext4 /dev/sda1 rw\n"
+                                                    "91 22 8:1 /srv/d " +
+                                                    dir.native() + " rw - ext4 /dev/sda1 rw\n");
+    VolumeQuery q = sys.query(source);
+    q.query_space = false;
+    auto listed = navigator::list_volumes(q);
+    REQUIRE(listed.has_value());
+    CHECK(mount_points(*listed) == std::vector<std::string>{"/", dir.native()});
+    q.include_hidden = true;
+    listed = navigator::list_volumes(q);
+    REQUIRE(listed.has_value());
+    CHECK(find(*listed, file.native()) != nullptr);
+}

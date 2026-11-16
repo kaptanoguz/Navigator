@@ -186,7 +186,8 @@ bool is_pseudo_filesystem(std::string_view fs_type) noexcept {
         "fusectl", "mqueue",  "hugetlbfs", "autofs",      "binfmt_misc", "efivarfs", "rpc_pipefs",
         "nsfs",    "overlay", "squashfs",  "fuse.portal",
     };
-    if (fs_type == "fuse.gvfsd-fuse") {
+    // fuse.gvfsd-fuse: hidden until the GVfs phase surfaces GVfs mounts itself.
+    if (fs_type == "fuse.gvfsd-fuse" || fs_type == "fuse.lxcfs") {
         return true;
     }
     for (std::string_view t : kPseudo) {

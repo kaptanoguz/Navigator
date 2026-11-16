@@ -26,7 +26,8 @@ namespace navigator::platform_internal {
 // mount_point per (device_number, root) wins, ties: first). Keeps file order.
 [[nodiscard]] std::vector<MountEntry> collapse_mounts(std::vector<MountEntry> entries);
 
-// Pipeline step 3 predicate: true when the entry is dropped from the default listing.
+// Pipeline step 3 predicate: true when the entry is dropped from the default listing. Calls
+// stat(2) on the mount point of non-network filesystems (file bind mounts are hidden).
 [[nodiscard]] bool is_hidden_mount(const MountEntry& entry) noexcept;
 
 // Steps 1-4 on already-read mountinfo text. `source` answers query_space().

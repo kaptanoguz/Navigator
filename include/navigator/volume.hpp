@@ -22,8 +22,10 @@
 //      distinct roots ("/@", "/@home") and are all kept.
 //   3. Filter (skipped when VolumeQuery::include_hidden): drop the entry when
 //      is_pseudo_filesystem(fs_type), or its mount_point is "/proc", "/sys", "/dev", "/run",
-//      "/snap", "/boot", "/var/lib/docker", "/var/snap" or below one of them -- except "/run/media"
-//      and below, which is kept. "/" is never dropped.
+//      "/snap", "/boot", "/var/lib", "/var/snap" or below one of them -- except "/run/media"
+//      and below, which is kept -- or its mount_point exists and is not a directory (a single
+//      file bind mount; checked with stat(2) for non-network filesystems only, a failed stat
+//      keeps the entry). "/" is never dropped.
 //   4. For each kept entry, fill VolumeInfo: removable (rule R), label/uuid (rule L), kind
 //      (rule K), space via source->query_space() when VolumeQuery::query_space.
 //   Output order: mountinfo order.
@@ -32,10 +34,15 @@
 // with "/dev/" (e.g. "/dev/sdb1" -> "sdb1"); otherwise not removable by rules R1-R2:
 //   R1. Disk d = name if "<sysfs>/block/<name>" exists, else the D such that
 //       "<sysfs>/block/<D>/<name>" exists (partition directory, as in real sysfs).
-//       removable if "<sysfs>/block/<d>/removable" contains "1", or if the canonical path of
-//       "<sysfs>/block/<d>" contains a "/usb" component prefix (USB disks often report 0).
-//   R2. Device-mapper/LVM/LUKS (dm-*, /dev/mapper/*) are not traced to their slaves in Phase 1.
-//   R3. Otherwise removable if mount_point is below "/media/" or "/run/media/" (udisks).
+//       When d is found, R1 decides alone: removable if "<sysfs>/block/<d>/removable" contains
+//       "1", or if the canonical path of "<sysfs>/block/<d>" contains a "/usb" component prefix
+//       (USB disks often report 0); otherwise not removable, and R3 is not consulted (an
+//       internal NTFS partition auto-mounted under /media stays internal).
+//   R2. Device-mapper/LVM/LUKS (dm-*, /dev/mapper/*) are not traced to their slaves in Phase 1;
+//       for them R1 does not apply (treated as unresolved).
+//   R3. Only when R1 could not resolve the device to a sysfs block device (no "/dev/" source,
+//       R2, or no matching sysfs entry): removable if mount_point is below "/media/" or
+//       "/run/media/" (udisks).
 // Rule L (label/uuid): for each symlink in "<devfs>/disk/by-label" and "<devfs>/disk/by-uuid",
 //   the link target's basename is compared with the device name; on a match the link's file
 //   name (by-label: with udev "\xHH" escapes decoded) becomes label / uuid. Missing directories
@@ -86,7 +93,9 @@ struct MountEntry {
 // Pseudo/virtual filesystem types that are never user volumes: proc, sysfs, devtmpfs, devpts,
 // tmpfs, ramfs, cgroup, cgroup2, pstore, bpf, securityfs, debugfs, tracefs, configfs, fusectl,
 // mqueue, hugetlbfs, autofs, binfmt_misc, efivarfs, rpc_pipefs, nsfs, overlay, squashfs,
-// fuse.portal, fuse.gvfsd-fuse. (squashfs = snaps; overlay = containers; GVfs is a later phase.)
+// fuse.portal, fuse.gvfsd-fuse, fuse.lxcfs. (squashfs = snaps; overlay = containers; lxcfs =
+// LXC/Waydroid service FUSE; fuse.gvfsd-fuse is hidden only until the GVfs phase, which will
+// surface GVfs mounts itself.)
 [[nodiscard]] bool is_pseudo_filesystem(std::string_view fs_type) noexcept;
 
 // nfs, nfs4, cifs, smb3, smbfs, 9p, afs, ceph, glusterfs, davfs, fuse.sshfs, fuse.rclone.
