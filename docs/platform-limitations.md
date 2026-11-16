@@ -1,8 +1,9 @@
-# Platform limitations (Phase 1)
+# Platform limitations (Phases 1-2)
 
 Owner: platform (`src/platform`). This page lists what the Linux watch and volume backends
 cannot see or do. Users and later phases should rely on these limits being real, not on them
-being worked around. Contracts: `include/navigator/watch.hpp`, `include/navigator/volume.hpp`.
+being worked around. Contracts: `include/navigator/watch.hpp`, `include/navigator/volume.hpp`,
+`include/navigator/platform.hpp`, `include/navigator/mime.hpp`.
 
 ## Directory watching (inotify)
 
@@ -73,3 +74,53 @@ being worked around. Contracts: `include/navigator/watch.hpp`, `include/navigato
   `/` is never dropped, but its kind is Virtual: rule K checks Virtual first.
 
 - **Overflow can hide a directory removal.** When the inotify queue overflows, the kernel may drop the event that would produce `WatchedDirGone`. Consumers get `Overflow`; if the re-list then fails with `NotFound`, treat the watched directory as gone and `remove()` its handle.
+
+## Launching and opening (Phase 2)
+
+- **Mechanism.** The default `IAppLauncher` resolves `argv[0]` in `$PATH` first (execvp rules;
+  `confstr(_CS_PATH)` when `$PATH` is unset), so a missing or non-executable program is
+  `NotFound` before anything is forked. It then double-forks: the intermediate child calls
+  `setsid()`, forks the program and exits at once and is reaped synchronously. The program is
+  re-parented to init (or the nearest subreaper, e.g. `systemd --user`), so Navigator never has
+  a zombie. The program is in a new session and process group, but it is not the session leader,
+  so it can never acquire a controlling terminal.
+- **Child state.** fds 0-2 are `/dev/null`. Every other fd is closed with `close_range(2)`, or a
+  `close()` loop up to `RLIMIT_NOFILE` (capped at 2^20) on kernels before 5.9. All signals get
+  `SIG_DFL` and the mask is cleared. The environment is inherited unchanged.
+- **What `launch()` reports.** Success means `execve` succeeded. A failed `chdir(working_dir)`
+  or `execve` in the child (for example a `#!` interpreter that does not exist) comes back
+  synchronously as `PlatformError` through a close-on-exec pipe. A script without `#!` runs
+  through `/bin/sh`, as `execvp` does.
+- **Cost.** `fork()` copies Navigator's page tables, so its cost grows with the address space
+  (not measured yet in the full app). If it shows up in frame times, switch to
+  `posix_spawn`/`clone(CLONE_VFORK)` behind the same interface.
+- **Opener outcome is not observed.** `open_with_default` returns once `xdg-open` (or
+  `gio open`) has started. "No application for this type" and opener crashes are not reported
+  in Phase 2, and `xdg-open`'s exit status is never read. Tests use a fake launcher and never
+  start an opener.
+- **No GIO.** `gio` is used only as an external program when `xdg-open` is missing. Navigator
+  links no GLib/GIO and builds without them. Flatpak/portal opening (`org.freedesktop.portal.
+  OpenURI`) is not implemented. Inside a Flatpak sandbox this relies on the runtime's `xdg-open`
+  forwarding to the portal (untested).
+
+## MIME (Phase 2)
+
+- **Name and metadata only.** `mime_type()` and `mime::guess_for_entry()` never read file
+  content. Files without a known extension are `application/octet-stream`, or
+  `application/x-executable` if they have no extension and an execute bit is set. Text files
+  without an extension (`README`, `Makefile`) show as "File". `.ts` is deliberately unknown.
+- **Symlinks listed without `follow_symlinks`.** The entry's `mode` is the link's own
+  (`S_IFLNK | 0777`), so a link to an extensionless file is never reported as executable, and a
+  link to a FIFO, socket or device is `application/octet-stream`. `mime_type(path)` fills the
+  target's mode itself and classifies such links fully.
+- **Compound suffixes** are only `tar.gz`, `tar.bz2`, `tar.xz` and `tar.zst`. The part before
+  the last dot must be exactly `tar` (ASCII case-insensitive), so a file named `tar.gz` counts too.
+
+## XDG directories (Phase 2)
+
+- `Home`, `Config` and `Cache` follow the header. Relative or empty `$HOME`, `$XDG_CONFIG_HOME`
+  and `$XDG_CACHE_HOME` values are ignored, as the XDG Base Directory spec says.
+- `Desktop`, `Documents`, `Downloads`, `Music`, `Pictures` and `Videos` return `Unsupported`
+  until Phase 4 parses `user-dirs.dirs`.
+- `move_to_trash` and `open_terminal` are defined but always return `Unsupported` until their
+  phases land, so nothing links against a missing symbol.
