@@ -1,0 +1,108 @@
+// src/ui/theme/theme.hpp
+//
+// Design tokens: palettes (Dark/Light), spacing scale, type scale, radii, motion.
+// Pure data and math, no SDL; safe to use from tests without a window.
+// All sizes are in density-independent units (dp); multiply by the display scale to get pixels.
+// Thread-safety: immutable data and pure functions; callable from any thread.
+#pragma once
+
+#include <navigator/ui.hpp>
+
+namespace navigator::ui {
+
+// sRGB-encoded color, components in [0, 1], straight (non-premultiplied) alpha.
+struct Color {
+    float r = 0.0F;
+    float g = 0.0F;
+    float b = 0.0F;
+    float a = 1.0F;
+
+    [[nodiscard]] constexpr Color with_alpha(float alpha) const noexcept {
+        return Color{r, g, b, alpha};
+    }
+};
+
+// 0xRRGGBB to an opaque Color.
+[[nodiscard]] constexpr Color rgb(unsigned int hex) noexcept {
+    constexpr float inv = 1.0F / 255.0F;
+    return Color{static_cast<float>((hex >> 16U) & 0xFFU) * inv,
+                 static_cast<float>((hex >> 8U) & 0xFFU) * inv,
+                 static_cast<float>(hex & 0xFFU) * inv, 1.0F};
+}
+
+// sRGB transfer functions (IEC 61966-2-1).
+[[nodiscard]] float srgb_to_linear(float c) noexcept;
+[[nodiscard]] float linear_to_srgb(float c) noexcept;
+
+// WCAG 2.x relative luminance of an opaque color, and contrast ratio (1..21).
+[[nodiscard]] float relative_luminance(const Color& c) noexcept;
+[[nodiscard]] float contrast_ratio(const Color& a, const Color& b) noexcept;
+
+// Component-wise interpolation in linear light (used for the theme crossfade).
+[[nodiscard]] Color mix(const Color& a, const Color& b, float t) noexcept;
+
+struct Palette {
+    Color background;     // window background base
+    Color background_alt; // soft glow behind the content (background gradient top)
+    Color surface;        // panels
+    Color surface_raised; // floating panels, keycaps
+    Color text_primary;
+    Color text_secondary;
+    Color text_muted;
+    Color accent;
+    Color border;      // hairlines
+    Color shadow;      // drop shadow tint (alpha carries strength)
+    Color keycap_edge; // bottom edge of keycap chips (depth cue)
+};
+
+[[nodiscard]] const Palette& palette(Theme theme) noexcept;
+[[nodiscard]] Palette mix(const Palette& a, const Palette& b, float t) noexcept;
+[[nodiscard]] Theme toggled(Theme theme) noexcept;
+
+// Spacing scale (dp), 4-based.
+namespace space {
+inline constexpr float xxs = 2.0F;
+inline constexpr float xs = 4.0F;
+inline constexpr float sm = 8.0F;
+inline constexpr float md = 12.0F;
+inline constexpr float lg = 16.0F;
+inline constexpr float xl = 24.0F;
+inline constexpr float xxl = 32.0F;
+inline constexpr float xxxl = 48.0F;
+} // namespace space
+
+// Type scale (dp, em-relative tracking).
+enum class FontWeight {
+    Regular,
+    Medium,
+    SemiBold,
+};
+
+struct TextStyle {
+    float size = 14.0F; // dp
+    FontWeight weight = FontWeight::Regular;
+    float tracking = 0.0F; // em; added after every glyph
+    bool tabular = false;  // OpenType tnum
+};
+
+namespace type {
+inline constexpr TextStyle caption{12.0F, FontWeight::Regular, 0.01F, false};
+inline constexpr TextStyle keycap{12.0F, FontWeight::Medium, 0.01F, false};
+inline constexpr TextStyle body{14.0F, FontWeight::Regular, 0.0F, false};
+inline constexpr TextStyle numeric{13.0F, FontWeight::Medium, 0.0F, true};
+inline constexpr TextStyle tagline{17.0F, FontWeight::Regular, 0.0F, false};
+inline constexpr TextStyle display{60.0F, FontWeight::SemiBold, -0.028F, false};
+} // namespace type
+
+namespace radius {
+inline constexpr float sm = 5.0F;
+inline constexpr float md = 8.0F;
+inline constexpr float lg = 12.0F;
+inline constexpr float pill = 999.0F;
+} // namespace radius
+
+namespace motion {
+inline constexpr double theme_crossfade_ms = 180.0;
+} // namespace motion
+
+} // namespace navigator::ui
