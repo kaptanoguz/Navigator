@@ -24,6 +24,10 @@ bool parse_float(std::string_view s, float& out) {
     return ec == std::errc{} && ptr == end;
 }
 
+// The window's minimum size (src/ui/shell/app.cpp); smaller requests would be clamped anyway.
+constexpr int kMinWidth = 720;
+constexpr int kMinHeight = 480;
+
 bool is_turkish(std::string_view v) noexcept {
     if (v.size() < 2 || v.substr(0, 2) != "tr") {
         return false;
@@ -109,6 +113,38 @@ Result<CliOptions> parse_cli(const std::vector<std::string_view>& args) {
                 return fail(ErrorCode::InvalidArgument,
                             "--lang expects 'en' or 'tr', got '" + std::string(*v) + "'");
             }
+        } else if (a == "--density") {
+            auto v = value(a);
+            if (!v) {
+                return fail(v.error().code, v.error().message);
+            }
+            if (*v == "compact") {
+                o.density = DensityChoice::Compact;
+            } else if (*v == "comfortable") {
+                o.density = DensityChoice::Comfortable;
+            } else {
+                return fail(ErrorCode::InvalidArgument,
+                            "--density expects 'compact' or 'comfortable', got '" +
+                                std::string(*v) + "'");
+            }
+        } else if (a == "--size") {
+            auto v = value(a);
+            if (!v) {
+                return fail(v.error().code, v.error().message);
+            }
+            const std::size_t x = v->find('x');
+            int w = 0;
+            int h = 0;
+            if (x == std::string_view::npos || !parse_int(v->substr(0, x), w) ||
+                !parse_int(v->substr(x + 1), h) || w < kMinWidth || h < kMinHeight || w > 16384 ||
+                h > 16384) {
+                return fail(ErrorCode::InvalidArgument, "--size expects WIDTHxHEIGHT of at least " +
+                                                            std::to_string(kMinWidth) + "x" +
+                                                            std::to_string(kMinHeight) + ", got '" +
+                                                            std::string(*v) + "'");
+            }
+            o.config.width = w;
+            o.config.height = h;
         } else if (a == "--fps") {
             o.config.show_fps = true;
         } else if (a == "--no-fps") {
@@ -185,6 +221,8 @@ std::string usage_text(std::string_view program) {
          "  --frames N        render N frames, then exit (headless smoke tests)\n"
          "  --theme THEME     start with the 'dark' or 'light' theme\n"
          "  --lang LANG       UI language: 'en' or 'tr' (default: from LANGUAGE/LC_*/LANG)\n"
+         "  --density D       list density: 'compact' (default) or 'comfortable'\n"
+         "  --size WxH        initial window size in logical pixels (default 1280x800)\n"
          "  --fps, --no-fps   show or hide the performance overlay (default: hidden)\n"
          "  --no-animations   turn off UI animations such as smooth scrolling\n"
          "                    (also: NAVIGATOR_NO_ANIMATIONS=1)\n"

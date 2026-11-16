@@ -59,6 +59,23 @@ TEST_CASE("Bad options are rejected", "[cli]") {
     CHECK_FALSE(parse_cli({"--no-animation"})); // typo is reported, not ignored
 }
 
+TEST_CASE("Density and window size", "[cli]") {
+    using navigator::app::DensityChoice;
+    CHECK(parse_cli({})->density == DensityChoice::Compact); // compact is the default
+    CHECK(parse_cli({"--density", "comfortable"})->density == DensityChoice::Comfortable);
+    CHECK(parse_cli({"--density", "compact"})->density == DensityChoice::Compact);
+    CHECK_FALSE(parse_cli({"--density", "dense"}));
+    auto o = parse_cli({"--size", "760x600"});
+    REQUIRE(o);
+    CHECK(o->config.width == 760);
+    CHECK(o->config.height == 600);
+    CHECK(parse_cli({})->config.width == 1280);
+    CHECK_FALSE(parse_cli({"--size", "760"}));
+    CHECK_FALSE(parse_cli({"--size", "100x100"})); // below the window minimum
+    CHECK_FALSE(parse_cli({"--size", "800x600x2"}));
+    CHECK_FALSE(parse_cli({"--size", "x600"}));
+}
+
 TEST_CASE("A positional PATH becomes the start path", "[cli]") {
     auto o = parse_cli({"/tmp/some dir"});
     REQUIRE(o);
@@ -91,8 +108,9 @@ TEST_CASE("Development flags parse", "[cli]") {
 
 TEST_CASE("Help documents every user-facing flag", "[cli]") {
     const std::string help = navigator::app::usage_text("navigator");
-    for (const char* flag : {"--frames", "--theme", "--lang", "--fps", "--no-fps",
-                             "--no-animations", "--version", "--help", "PATH"}) {
+    for (const char* flag :
+         {"--frames", "--theme", "--lang", "--fps", "--no-fps", "--no-animations", "--version",
+          "--help", "PATH", "--density", "--size"}) {
         INFO(flag);
         CHECK(help.find(flag) != std::string::npos);
     }

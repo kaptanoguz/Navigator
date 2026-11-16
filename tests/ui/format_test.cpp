@@ -89,6 +89,25 @@ TEST_CASE("Sizes use decimal units with three significant figures", "[format]") 
     CHECK(format_size(5'000'000'000'000ULL) == "5.0 TB");
 }
 
+TEST_CASE("Size column parts split number and unit", "[format]") {
+    {
+        const LanguageGuard en(Language::English);
+        const SizeParts b = format_size_parts(980);
+        CHECK(b.number == "980");
+        CHECK(b.unit == "B");
+        CHECK(format_size_parts(0).number == "0");
+        const SizeParts k = format_size_parts(88'123);
+        CHECK(k.number == "88.1");
+        CHECK(k.unit == "kB");
+        CHECK(format_size_parts(734'003'200).number == "734");
+        CHECK(format_size_parts(734'003'200).unit == "MB");
+        CHECK(format_size_parts(999'960).unit == "MB"); // same rounding as format_size
+    }
+    const LanguageGuard tr_(Language::Turkish);
+    CHECK(format_size_parts(4'500'000).number == "4,5");
+    CHECK(format_size_parts(12).unit == "B");
+}
+
 TEST_CASE("Turkish sizes use a decimal comma and bayt", "[format]") {
     const LanguageGuard tr_(Language::Turkish);
     CHECK(format_size(1) == "1 bayt");
@@ -105,6 +124,8 @@ TEST_CASE("Dates are short, local and relative for today/yesterday", "[format]")
         CHECK(format_date(at(2026, 11, 16, 9, 5), now) == "Today 09:05");
         CHECK(format_date(at(2026, 11, 15, 23, 59), now) == "Yesterday 23:59");
         CHECK(format_date(at(2024, 2, 3, 14, 30), now) == "Feb 3, 2024 14:30");
+        CHECK(format_date(at(2026, 3, 9, 8, 15), now) == "Mar 9 08:15"); // this year: no year
+        CHECK(format_date(at(2025, 12, 31, 23, 0), now) == "Dec 31, 2025 23:00");
         CHECK(format_date(Timestamp{}, now).empty());
     }
     {
@@ -112,6 +133,7 @@ TEST_CASE("Dates are short, local and relative for today/yesterday", "[format]")
         CHECK(format_date(at(2026, 11, 16, 9, 5), now) == "Bugün 09:05");
         CHECK(format_date(at(2026, 11, 15, 8, 0), now) == "Dün 08:00");
         CHECK(format_date(at(2024, 8, 30, 14, 30), now) == "30 Ağu 2024 14:30");
+        CHECK(format_date(at(2026, 8, 30, 14, 30), now) == "30 Ağu 14:30");
     }
 }
 

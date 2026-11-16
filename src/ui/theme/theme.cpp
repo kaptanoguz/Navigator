@@ -25,7 +25,7 @@ constexpr Palette kDark{
     .keycap_edge = rgb(0x0B0D11),
     .keycap_border = rgb(0x434A5C),
     .keycap_text = rgb(0x959BAA),
-    .row_alt = Color{1.0F, 1.0F, 1.0F, 0.018F},
+    .row_alt = Color{1.0F, 1.0F, 1.0F, 0.032F},
     .row_hover = Color{1.0F, 1.0F, 1.0F, 0.065F},
     .selection = Color{0.557F, 0.651F, 1.0F, 0.20F},
     .selection_inactive = Color{1.0F, 1.0F, 1.0F, 0.085F},

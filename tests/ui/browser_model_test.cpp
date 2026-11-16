@@ -435,6 +435,18 @@ TEST_CASE("A folder without permission raises a notice and the browser stays", "
     CHECK(notice_of(m).path == t.path() / "locked");
     CHECK(m.entries().size() == 2);
 
+    // Escape dismisses the banner first and leaves the selection; the next Escape clears it.
+    REQUIRE(m.notice_shown());
+    m.execute(Command{CommandId::ClearSelection, 0});
+    CHECK_FALSE(m.notice());
+    CHECK(m.selected_count() == 1);
+    m.execute(Command{CommandId::ClearSelection, 0});
+    CHECK(m.selected_count() == 0);
+    m.click_row(m.find("locked"), Modifiers::None);
+    m.activate();
+    settle(m);
+    REQUIRE(m.notice_shown());
+
     // Refreshing keeps it; dismissing clears it; a successful navigation would too.
     m.navigate_to(t.path() / ".");
     settle(m);
@@ -455,6 +467,8 @@ TEST_CASE("A start path that cannot be listed opens empty with a notice", "[brow
     CHECK(error_of(m).code == ErrorCode::NotFound);
     REQUIRE(m.notice());
     CHECK(notice_of(m).code == ErrorCode::NotFound);
+    // The empty state explains it; the banner would only repeat the same sentence.
+    CHECK_FALSE(m.notice_shown());
     // Up still works from there.
     REQUIRE(m.can_up());
     m.up();

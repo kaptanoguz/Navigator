@@ -34,6 +34,7 @@ add_library(navigator_ui STATIC
     shell/app.cpp
     shell/background.cpp
     shell/painter.cpp
+    shell/ui_settings.cpp
     text/font.cpp
     text/font_cache.cpp
     text/text_renderer.cpp

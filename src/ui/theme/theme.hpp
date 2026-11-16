@@ -6,6 +6,8 @@
 // Thread-safety: immutable data and pure functions; callable from any thread.
 #pragma once
 
+#include <cstdint>
+
 #include <navigator/ui.hpp>
 
 namespace navigator::ui {
@@ -147,19 +149,37 @@ inline constexpr double theme_crossfade_ms = 180.0;
 inline constexpr double scroll_settle_ms = 90.0; // smooth-scroll time constant (exponential)
 } // namespace motion
 
-// Browser metrics (dp).
+// Browser metrics (dp) that do not depend on the density.
 namespace metrics {
-inline constexpr float top_bar_height = 52.0F;
-inline constexpr float tool_button = 32.0F;
-inline constexpr float status_bar_height = 30.0F;
-inline constexpr float panel_margin = 10.0F;
-inline constexpr float header_height = 30.0F;
-inline constexpr float row_height = 28.0F;
 inline constexpr float row_inset = 6.0F; // row highlight inset from the panel edge
 inline constexpr float icon_size = 16.0F;
-inline constexpr float notice_height = 40.0F;
 inline constexpr float scrollbar_width = 4.0F;
 inline constexpr float scrollbar_width_hover = 8.0F;
 } // namespace metrics
+
+// List density. Compact (the default) suits a dense, keyboard-first file manager; Comfortable is
+// the roomier Phase 2 layout.
+enum class Density : std::uint8_t {
+    Compact,
+    Comfortable,
+};
+
+// Density-dependent browser metrics (dp).
+struct DensityMetrics {
+    float top_bar_height;
+    float tool_button;
+    float status_bar_height;
+    float panel_margin;
+    float header_height;
+    float row_height;
+    float notice_height;
+};
+
+[[nodiscard]] constexpr DensityMetrics density_metrics(Density d) noexcept {
+    if (d == Density::Comfortable) {
+        return DensityMetrics{52.0F, 32.0F, 30.0F, 10.0F, 30.0F, 28.0F, 40.0F};
+    }
+    return DensityMetrics{44.0F, 30.0F, 26.0F, 8.0F, 26.0F, 24.0F, 36.0F};
+}
 
 } // namespace navigator::ui

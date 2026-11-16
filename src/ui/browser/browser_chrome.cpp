@@ -107,7 +107,7 @@ bool BrowserView::tool_button(const BrowserFrame& f, const RectF& rect, WidgetId
     switch (glyph) {
     case kGlyphBack: draw_chevron(r, cx, cy, p.px(11.0F), Direction::Left, t, ink); break;
     case kGlyphForward: draw_chevron(r, cx, cy, p.px(11.0F), Direction::Right, t, ink); break;
-    case kGlyphUp: draw_arrow_up(r, cx, cy, p.px(12.0F), t, ink); break;
+    case kGlyphUp: draw_chevron(r, cx, cy, p.px(11.0F), Direction::Up, t, ink); break;
     case kGlyphTheme: {
         // The moon's bite is drawn in the colour behind the glyph.
         const Color behind =
@@ -126,8 +126,9 @@ bool BrowserView::tool_button(const BrowserFrame& f, const RectF& rect, WidgetId
 void BrowserView::draw_top_bar(const BrowserFrame& f, const Layout& l) {
     const Painter& p = f.painter;
     const BrowserModel& m = f.model;
-    const float margin = std::round(p.px(metrics::panel_margin));
-    const float b = std::round(p.px(metrics::tool_button));
+    const DensityMetrics dm = density_metrics(f.density);
+    const float margin = std::round(p.px(dm.panel_margin));
+    const float b = std::round(p.px(dm.tool_button));
     const float y = std::round(l.top.y + (0.5F * (l.top.h - b)));
     const float gap = std::round(p.px(2.0F));
 
@@ -420,7 +421,7 @@ void BrowserView::draw_status(const BrowserFrame& f, const Layout& l) {
     const Painter& p = f.painter;
     const Palette& pal = f.palette;
     const BrowserModel& m = f.model;
-    const float margin = std::round(p.px(metrics::panel_margin + 8.0F));
+    const float margin = std::round(p.px(density_metrics(f.density).panel_margin + 8.0F));
     const float mid = l.status.y + (0.5F * l.status.h);
     const std::string dot = "  \xC2\xB7  "; // middle dot
 
@@ -503,8 +504,9 @@ void BrowserView::draw_fps(const BrowserFrame& f) {
     const float w = std::ceil(pad_x + label_w + p.px(space::xl) + value_w + pad_x);
     const float h = std::ceil((2.0F * pad_y) + (row_h * static_cast<float>(rows.size())));
     const float margin = p.px(space::lg);
-    const RectF panel = snap(RectF{f.width - margin - w,
-                                   f.height - p.px(metrics::status_bar_height) - margin - h, w, h});
+    const RectF panel = snap(
+        RectF{f.width - margin - w,
+              f.height - p.px(density_metrics(f.density).status_bar_height) - margin - h, w, h});
     const float rad = p.px(radius::lg);
     Renderer& r = p.renderer();
     r.drop_shadow(panel, rad, p.px(space::lg), p.px(space::xs), pal.shadow);

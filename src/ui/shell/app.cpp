@@ -46,6 +46,7 @@
 #include "render/renderer.hpp"
 #include "render/sdl_handles.hpp"
 #include "shell/painter.hpp"
+#include "shell/ui_settings.hpp"
 #include "text/font_cache.hpp"
 #include "text/text_renderer.hpp"
 #include "theme/theme.hpp"
@@ -142,6 +143,7 @@ struct App::Impl {
     Path home;
     Uint32 wake_event = 0;
     bool focused = true;
+    ui::Density density = ui::Density::Compact; // from ui::ui_settings() at create
 
     std::string title;
     int max_frames = 0;
@@ -198,6 +200,7 @@ Result<void> App::Impl::init(const AppConfig& config) {
     theme = config.theme;
     previous_theme = config.theme;
     animations = config.animations && env("NAVIGATOR_NO_ANIMATIONS") == nullptr;
+    density = ui::ui_settings().density;
     if (const char* s = env("NAVIGATOR_DEBUG_SCREENSHOT")) {
         screenshot_path = s;
     }
@@ -245,10 +248,10 @@ Result<void> App::Impl::init(const AppConfig& config) {
     }
     // On X11 (and Wayland without fractional-scale support) the content scale is not part of the
     // pixel density: grow the window so the requested logical size holds at that scale.
-    const float density = std::max(SDL_GetWindowPixelDensity(window.get()), 0.01F);
-    float content = SDL_GetWindowDisplayScale(window.get()) / density;
+    const float pixel_ratio = std::max(SDL_GetWindowPixelDensity(window.get()), 0.01F);
+    float content = SDL_GetWindowDisplayScale(window.get()) / pixel_ratio;
     if (scale_override) {
-        content = *scale_override / density;
+        content = *scale_override / pixel_ratio;
     }
     if (content > 1.01F) {
         SDL_SetWindowSize(
@@ -553,6 +556,7 @@ void App::Impl::draw_frame(double t_ms, double dt_ms) {
         .height = static_cast<float>(h),
         .focused = focused,
         .animations = animations,
+        .density = density,
         .dt_ms = dt_ms,
         .now = now,
         .home = home.empty() ? nullptr : &home,
@@ -583,7 +587,8 @@ void App::Impl::bench_step(double frame_ms, double build_ms) {
             bench_phase = 2;
             view.scroll_by(-view.max_scroll());
         } else {
-            view.scroll_by(static_cast<float>(view.page_rows()) * ui::metrics::row_height);
+            view.scroll_by(static_cast<float>(view.page_rows()) *
+                           ui::density_metrics(density).row_height);
         }
         break;
     case 2:

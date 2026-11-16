@@ -5,6 +5,7 @@
 // Thread-safety: pure functions.
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -16,6 +17,10 @@
 
 namespace navigator::app {
 
+// List density (--density). Maps to the ui-internal ui::Density in main(); AppConfig has no
+// field for it yet.
+enum class DensityChoice : std::uint8_t { Compact, Comfortable };
+
 struct CliOptions {
     // config.animations follows --no-animations. config.start_path is left empty: it is a view,
     // and CliOptions is moved around; main() points it at `start_path` right before
@@ -24,7 +29,8 @@ struct CliOptions {
     std::string start_path; // positional PATH (raw bytes); empty: home
     bool show_help = false;
     bool show_version = false;
-    std::optional<Language> language; // --lang overrides the environment
+    std::optional<Language> language;               // --lang overrides the environment
+    DensityChoice density = DensityChoice::Compact; // --density compact|comfortable
     // Development-only (hidden from --help): passed to the UI through NAVIGATOR_DEBUG_* env vars.
     std::string screenshot_path;
     std::optional<float> scale;

@@ -122,6 +122,9 @@ public:
     void cursor_end(bool extend);
     void select_all();
     void clear_selection(); // cursor stays
+    // Escape (list.clear_selection): dismisses a visible banner first; with no banner, clears
+    // the selection.
+    void escape();
     // Executes a list/navigation/view command handled by the model (see CommandId). Returns
     // false for ids the model does not handle (app-level ones such as Quit).
     bool execute(const Command& command);
@@ -160,6 +163,9 @@ public:
     [[nodiscard]] bool can_forward() const noexcept { return !forward_.empty(); }
     [[nodiscard]] bool can_up() const noexcept;
     [[nodiscard]] const std::optional<Notice>& notice() const noexcept { return notice_; }
+    // The notice the banner shows: notice() minus an OpenFolderFailed about the folder being
+    // shown when its own listing failed (the empty state already says it, with a next action).
+    [[nodiscard]] bool notice_shown() const noexcept;
     // Listing error of the directory shown (start path that failed); nullopt when listed.
     [[nodiscard]] const std::optional<Error>& listing_error() const noexcept {
         return listing_error_;

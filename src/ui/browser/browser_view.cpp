@@ -27,9 +27,11 @@ constexpr float kColumnGap = 20.0F;    // dp
 constexpr float kSizeWidth = 84.0F;
 constexpr float kTypeWidth = 160.0F;
 constexpr float kDateWidth = 150.0F;
-constexpr float kTextPad = 10.0F;  // row highlight edge -> content
-constexpr float kGlyphGap = 10.0F; // glyph -> name text
-constexpr float kListPad = 4.0F;   // above the first row
+constexpr float kTextPad = 10.0F;          // row highlight edge -> content
+constexpr float kGlyphGap = 10.0F;         // glyph -> name text
+constexpr float kListPad = 4.0F;           // above the first row
+constexpr float kMinNameWithType = 260.0F; // name text room (dp) to keep the Type column
+constexpr float kMinNameWithDate = 160.0F; // ... and the Modified column
 
 } // namespace
 
@@ -39,43 +41,65 @@ constexpr float kListPad = 4.0F;   // above the first row
 
 BrowserView::Layout BrowserView::compute_layout(const BrowserFrame& f) const {
     const Painter& p = f.painter;
+    const DensityMetrics dm = density_metrics(f.density);
     Layout l;
     const float w = f.width;
     const float h = f.height;
-    const float margin = std::round(p.px(metrics::panel_margin));
-    l.top = RectF{0.0F, 0.0F, w, std::round(p.px(metrics::top_bar_height))};
+    const float margin = std::round(p.px(dm.panel_margin));
+    l.top = RectF{0.0F, 0.0F, w, std::round(p.px(dm.top_bar_height))};
     float y = l.top.bottom();
-    if (f.model.notice()) {
-        l.notice = RectF{margin, y, w - (2.0F * margin), std::round(p.px(metrics::notice_height))};
+    if (f.model.notice_shown()) {
+        l.notice = RectF{margin, y, w - (2.0F * margin), std::round(p.px(dm.notice_height))};
         y = l.notice.bottom() + margin;
     }
-    const float status_h = std::round(p.px(metrics::status_bar_height));
+    const float status_h = std::round(p.px(dm.status_bar_height));
     l.status = RectF{0.0F, h - status_h, w, status_h};
     l.panel = RectF{margin, y, w - (2.0F * margin), std::max(l.status.y - y, 0.0F)};
-    l.header = RectF{l.panel.x, l.panel.y, l.panel.w, std::round(p.px(metrics::header_height))};
+    l.header = RectF{l.panel.x, l.panel.y, l.panel.w, std::round(p.px(dm.header_height))};
     l.body = RectF{l.panel.x, l.header.bottom(), l.panel.w,
                    std::max(l.panel.bottom() - l.header.bottom(), 0.0F)};
     l.pad = std::round(p.px(kListPad));
-    l.row_h = std::round(p.px(metrics::row_height));
+    l.row_h = std::round(p.px(dm.row_height));
 
     const float inset = p.px(metrics::row_inset);
     const float left = std::round(l.panel.x + inset + p.px(kTextPad));
     const float right = std::round(l.panel.right() - inset - p.px(kTextPad));
     const float gap = std::round(p.px(kColumnGap));
-    l.show_type = l.panel.w >= p.px(660.0F);
-    l.date_r = right;
-    l.date_x = std::round(right - p.px(kDateWidth));
-    if (l.show_type) {
-        l.type_r = l.date_x - gap;
-        l.type_x = std::round(l.type_r - p.px(kTypeWidth));
-        l.size_r = l.type_x - gap;
-    } else {
-        l.type_x = l.type_r = l.date_x;
-        l.size_r = l.date_x - gap;
-    }
-    l.size_x = std::round(l.size_r - p.px(kSizeWidth));
     l.name_x = left;
     l.text_x = std::round(left + p.px(metrics::icon_size + kGlyphGap));
+
+    // Columns degrade gracefully on narrow windows: Type goes first, then Modified, so the
+    // name keeps a readable width. Size always stays.
+    const auto name_room = [&](bool type, bool date) {
+        float used = p.px(kSizeWidth) + gap;
+        if (type) {
+            used += p.px(kTypeWidth) + gap;
+        }
+        if (date) {
+            used += p.px(kDateWidth) + gap;
+        }
+        return (right - used) - l.text_x;
+    };
+    l.show_date = name_room(false, true) >= p.px(kMinNameWithDate);
+    l.show_type = l.show_date && name_room(true, true) >= p.px(kMinNameWithType);
+
+    float edge = right;
+    if (l.show_date) {
+        l.date_r = edge;
+        l.date_x = std::round(edge - p.px(kDateWidth));
+        edge = l.date_x - gap;
+    } else {
+        l.date_x = l.date_r = edge;
+    }
+    if (l.show_type) {
+        l.type_r = edge;
+        l.type_x = std::round(edge - p.px(kTypeWidth));
+        edge = l.type_x - gap;
+    } else {
+        l.type_x = l.type_r = edge;
+    }
+    l.size_r = edge;
+    l.size_x = std::round(l.size_r - p.px(kSizeWidth));
     l.name_r = std::max(l.size_x - gap, l.text_x + p.px(40.0F));
     return l;
 }
@@ -159,7 +183,7 @@ void BrowserView::update(const BrowserFrame& f) {
 
     const PointerInput& ptr = f.pointer;
     if (ptr.wheel_y != 0.0F && contains(l.panel, ptr.x, ptr.y)) {
-        target_ -= ptr.wheel_y * kWheelRows * metrics::row_height;
+        target_ -= ptr.wheel_y * kWheelRows * density_metrics(f.density).row_height;
         target_ = std::clamp(target_, 0.0F, max_scroll_);
         if (!f.animations) {
             scroll_ = target_;
@@ -210,7 +234,7 @@ void BrowserView::draw(const BrowserFrame& f) {
     r.clear(f.palette.background);
 
     draw_top_bar(f, l);
-    if (f.model.notice()) {
+    if (f.model.notice_shown()) {
         draw_notice(f, l);
     }
 
@@ -266,7 +290,9 @@ void BrowserView::draw_header(const BrowserFrame& f, const Layout& l) {
     if (l.show_type) {
         cols.push_back({"column.type", fs::SortKey::Extension, l.type_x, l.type_r, false});
     }
-    cols.push_back({"column.modified", fs::SortKey::Modified, l.date_x, l.date_r, false});
+    if (l.show_date) {
+        cols.push_back({"column.modified", fs::SortKey::Modified, l.date_x, l.date_r, false});
+    }
 
     const float baseline_mid = l.header.y + (0.5F * l.header.h);
     for (std::size_t i = 0; i < cols.size(); ++i) {
@@ -520,6 +546,13 @@ void BrowserView::draw_rows(const BrowserFrame& f, const Layout& l) {
 
     // 4. Content: glyph, name, size, type, date.
     const float glyph = std::round(p.px(metrics::icon_size));
+    float unit_slot = 0.0F;
+    for (const std::string_view key :
+         {"size.unit.b", "size.unit.kb", "size.unit.mb", "size.unit.gb", "size.unit.tb"}) {
+        unit_slot = std::max(unit_slot, p.shape(type::row_numeric, tr(key)).width());
+    }
+    unit_slot = std::ceil(unit_slot);
+    const float unit_gap = std::round(p.px(3.5F));
     for (std::size_t i = first; i <= last; ++i) {
         const fs::DirEntry& e = entries[i];
         const float y = row_y(i);
@@ -538,15 +571,21 @@ void BrowserView::draw_rows(const BrowserFrame& f, const Layout& l) {
         p.draw(name_text, l.text_x, baseline, name_ink);
 
         if (!dir && !e.metadata_error) {
-            const ShapedText size = p.shape(type::row_numeric, format_size(e.size));
-            p.draw(size, l.size_r - size.width(), baseline, pal.text_secondary);
+            // Numbers right-aligned in one slot, units left-aligned in the next, so "980 B"
+            // and "88.1 kB" line up on the digits.
+            const SizeParts parts = format_size_parts(e.size);
+            const ShapedText number = p.shape(type::row_numeric, parts.number);
+            const ShapedText unit = p.shape(type::row_numeric, parts.unit);
+            const float unit_x = l.size_r - unit_slot;
+            p.draw(number, unit_x - unit_gap - number.width(), baseline, pal.text_secondary);
+            p.draw(unit, unit_x, baseline, pal.text_muted);
         }
         if (l.show_type) {
             const ShapedText kind =
                 fitter_.fit(p, type::row, type_label(e), l.type_r - l.type_x, Elide::End);
             p.draw(kind, l.type_x, baseline, pal.text_secondary);
         }
-        const std::string date = format_date(e.mtime, f.now);
+        const std::string date = l.show_date ? format_date(e.mtime, f.now) : std::string();
         if (!date.empty()) {
             const ShapedText when =
                 fitter_.fit(p, type::row_numeric, date, l.date_r - l.date_x, Elide::End);

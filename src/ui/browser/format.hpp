@@ -20,8 +20,18 @@ namespace navigator::ui {
 // Files). Turkish uses a decimal comma ("1,2 MB") and "bayt".
 [[nodiscard]] std::string format_size(std::uint64_t bytes);
 
-// Local-time short date with 24-hour time: "Nov 16, 2026 14:05" / "16 Kas 2026 14:05";
-// "Today 14:05" / "Bugün 14:05" and "Yesterday 09:12" / "Dün 09:12" relative to `now`.
+// The Size column's form: the number and a short unit as separate runs, so the column can
+// right-align numbers in one slot and units in the next ("980" "B", "88.1" "kB"). Same
+// rounding as format_size(); units "B", "kB", "MB", ... (catalog keys size.unit.*).
+struct SizeParts {
+    std::string number;
+    std::string unit;
+};
+[[nodiscard]] SizeParts format_size_parts(std::uint64_t bytes);
+
+// Local-time short date with 24-hour time: "Nov 16, 2025 14:05" / "16 Kas 2025 14:05"; the year
+// is dropped within the year of `now` ("Nov 10 10:00" / "10 Kas 10:00"); "Today 14:05" /
+// "Bugün 14:05" and "Yesterday 09:12" / "Dün 09:12" relative to `now`.
 // Empty for Timestamp{} (unknown).
 [[nodiscard]] std::string format_date(Timestamp when, Timestamp now);
 

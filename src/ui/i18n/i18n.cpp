@@ -74,7 +74,7 @@ constexpr std::array kStrings{
     Entry{"error.invalid_argument", "It is not a folder or not a valid path.",
           "Bir klasör ya da geçerli bir yol değil."},
     Entry{"error.not_found", "No such file or folder.", "Böyle bir dosya ya da klasör yok."},
-    Entry{"error.permission_denied", "You don't have permission to access it.",
+    Entry{"error.permission_denied", "You don’t have permission to access it.",
           "Buna erişim izniniz yok."},
     Entry{"error.already_exists", "It already exists.", "Zaten var."},
     Entry{"error.io_error", "A read or write error occurred.",
@@ -86,10 +86,10 @@ constexpr std::array kStrings{
     Entry{"error.platform_error", "The system reported an error.", "Sistem bir hata bildirdi."},
 
     // Notices.
-    Entry{"notice.open_folder_failed", "Couldn't open “{name}”", "“{name}” açılamadı"},
-    Entry{"notice.open_file_failed", "Couldn't open “{name}” with its default app",
+    Entry{"notice.open_folder_failed", "Couldn’t open “{name}”", "“{name}” açılamadı"},
+    Entry{"notice.open_file_failed", "Couldn’t open “{name}” with its default app",
           "“{name}” varsayılan uygulamasıyla açılamadı"},
-    Entry{"notice.refresh_failed", "Couldn't refresh “{name}”", "“{name}” yenilenemedi"},
+    Entry{"notice.refresh_failed", "Couldn’t refresh “{name}”", "“{name}” yenilenemedi"},
     Entry{"notice.folder_gone", "This folder was moved or deleted",
           "Bu klasör taşındı ya da silindi"},
     Entry{"notice.folder_gone_detail", "The list shows its last known contents.",
@@ -105,7 +105,7 @@ constexpr std::array kStrings{
     Entry{"empty.hidden_only.one", "This folder has only {n} hidden item", ""},
     Entry{"empty.hidden_only.other", "This folder has only {n} hidden items",
           "Bu klasörde yalnızca {n} gizli öğe var"},
-    Entry{"empty.unreadable", "This folder can't be shown", "Bu klasör gösterilemiyor"},
+    Entry{"empty.unreadable", "This folder can’t be shown", "Bu klasör gösterilemiyor"},
 
     // Status bar.
     Entry{"status.items.one", "{n} item", ""},
@@ -132,9 +132,16 @@ constexpr std::array kStrings{
     Entry{"size.gb", "{n} GB", "{n} GB"},
     Entry{"size.tb", "{n} TB", "{n} TB"},
     Entry{"size.pb", "{n} PB", "{n} PB"},
+    Entry{"size.unit.b", "B", "B"},
+    Entry{"size.unit.kb", "kB", "kB"},
+    Entry{"size.unit.mb", "MB", "MB"},
+    Entry{"size.unit.gb", "GB", "GB"},
+    Entry{"size.unit.tb", "TB", "TB"},
+    Entry{"size.unit.pb", "PB", "PB"},
 
     // Dates: {d} day, {mon} short month, {y} year, {date}, {time} (24-hour HH:MM).
     Entry{"date.format", "{mon} {d}, {y}", "{d} {mon} {y}"},
+    Entry{"date.format_this_year", "{mon} {d}", "{d} {mon}"},
     Entry{"date.with_time", "{date} {time}", "{date} {time}"},
     Entry{"date.today", "Today", "Bugün"},
     Entry{"date.yesterday", "Yesterday", "Dün"},

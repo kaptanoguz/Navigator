@@ -138,14 +138,6 @@ void draw_chevron(Renderer& r, float cx, float cy, float size, Direction dir, fl
     }
 }
 
-void draw_arrow_up(Renderer& r, float cx, float cy, float size, float thickness,
-                   const Color& color) {
-    const float h = 0.5F * size;
-    r.stroke_line(cx, cy + h, cx, cy - h, thickness, color);
-    r.stroke_line(cx - (0.75F * h), cy - (0.2F * h), cx, cy - h, thickness, color);
-    r.stroke_line(cx, cy - h, cx + (0.75F * h), cy - (0.2F * h), thickness, color);
-}
-
 void draw_theme_glyph(Renderer& r, float cx, float cy, float radius, Theme current,
                       const Color& color, const Color& background) {
     if (current == Theme::Dark) {

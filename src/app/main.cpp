@@ -11,6 +11,7 @@
 
 #include "bench_fixture.hpp"
 #include "cli.hpp"
+#include "shell/ui_settings.hpp"
 
 namespace {
 
@@ -75,6 +76,11 @@ int main(int argc, char** argv) {
     }
     // NOLINTEND(concurrency-mt-unsafe)
 
+    navigator::ui::set_ui_settings(navigator::ui::UiSettings{
+        .density = options->density == navigator::app::DensityChoice::Comfortable
+                       ? navigator::ui::Density::Comfortable
+                       : navigator::ui::Density::Compact,
+    });
     navigator::AppConfig config = options->config;
     config.start_path = options->start_path; // `options` outlives the App
     int code = 1;

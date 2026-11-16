@@ -42,21 +42,46 @@ bool same_day(const std::tm& a, const std::tm& b) noexcept {
 
 } // namespace
 
+namespace {
+
+struct Scaled {
+    double value = 0.0;
+    std::size_t unit = 0; // 0 = kB, 1 = MB, ...
+    int decimals = 1;
+};
+
+// bytes >= 1000 in decimal SI units with three significant figures.
+Scaled scale_bytes(std::uint64_t bytes) {
+    Scaled s;
+    s.value = static_cast<double>(bytes) / 1000.0;
+    while (s.unit + 1 < 5 && s.value >= 999.95) {
+        s.value /= 1000.0;
+        ++s.unit;
+    }
+    s.decimals = s.value < 99.95 ? 1 : 0;
+    return s;
+}
+
+} // namespace
+
 std::string format_size(std::uint64_t bytes) {
     if (bytes < 1000) {
         return tr_count("size.bytes", bytes);
     }
     constexpr std::array<std::string_view, 5> keys{"size.kb", "size.mb", "size.gb", "size.tb",
                                                    "size.pb"};
-    double value = static_cast<double>(bytes) / 1000.0;
-    std::size_t unit = 0;
-    while (unit + 1 < keys.size() && value >= 999.95) {
-        value /= 1000.0;
-        ++unit;
+    const Scaled s = scale_bytes(bytes);
+    return substitute(tr(keys[s.unit]), "n", with_decimal(s.value, s.decimals));
+}
+
+SizeParts format_size_parts(std::uint64_t bytes) {
+    if (bytes < 1000) {
+        return SizeParts{format_count(bytes), std::string(tr("size.unit.b"))};
     }
-    // Three significant figures: 1.23 is shown as 1.2 (one decimal below 100), 123.4 as 123.
-    const int decimals = value < 99.95 ? 1 : 0;
-    return substitute(tr(keys[unit]), "n", with_decimal(value, decimals));
+    constexpr std::array<std::string_view, 5> keys{"size.unit.kb", "size.unit.mb", "size.unit.gb",
+                                                   "size.unit.tb", "size.unit.pb"};
+    const Scaled s = scale_bytes(bytes);
+    return SizeParts{with_decimal(s.value, s.decimals), std::string(tr(keys[s.unit]))};
 }
 
 std::string format_date(Timestamp when, Timestamp now) {
@@ -82,7 +107,9 @@ std::string format_date(Timestamp when, Timestamp now) {
         date = std::string(tr("date.yesterday"));
     } else {
         const std::string month_key = "date.month." + std::to_string(tw.tm_mon + 1);
-        date = substitute(tr("date.format"), "d", std::to_string(tw.tm_mday));
+        const bool this_year = tw.tm_year == tn.tm_year;
+        date = substitute(tr(this_year ? "date.format_this_year" : "date.format"), "d",
+                          std::to_string(tw.tm_mday));
         date = substitute(date, "mon", tr(month_key));
         date = substitute(date, "y", std::to_string(tw.tm_year + 1900));
     }

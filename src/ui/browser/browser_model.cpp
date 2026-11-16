@@ -349,6 +349,23 @@ void BrowserModel::raise(NoticeKind kind, ErrorCode code, Path path) {
 
 void BrowserModel::dismiss_notice() noexcept { notice_.reset(); }
 
+bool BrowserModel::notice_shown() const noexcept {
+    if (!notice_) {
+        return false;
+    }
+    const bool about_shown_folder = notice_->kind == NoticeKind::OpenFolderFailed &&
+                                    listing_error_.has_value() && notice_->path == current_.dir;
+    return !about_shown_folder;
+}
+
+void BrowserModel::escape() {
+    if (notice_shown()) {
+        dismiss_notice();
+        return;
+    }
+    clear_selection();
+}
+
 // ---------------------------------------------------------------------------------------------
 // Cursor and selection
 // ---------------------------------------------------------------------------------------------
@@ -507,7 +524,7 @@ bool BrowserModel::execute(const Command& command) {
     case CommandId::Refresh: refresh(); return true;
     case CommandId::Activate: activate(); return true;
     case CommandId::SelectAll: select_all(); return true;
-    case CommandId::ClearSelection: clear_selection(); return true;
+    case CommandId::ClearSelection: escape(); return true;
     case CommandId::CursorUp: cursor_by(-1, extend); return true;
     case CommandId::CursorDown: cursor_by(1, extend); return true;
     case CommandId::CursorPageUp: cursor_page(-1, extend); return true;

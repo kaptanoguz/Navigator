@@ -25,10 +25,6 @@ void draw_entry_glyph(Renderer& r, const Palette& pal, const fs::DirEntry& entry
 void draw_chevron(Renderer& r, float cx, float cy, float size, Direction dir, float thickness,
                   const Color& color);
 
-// Arrow pointing up (shaft + head), `size` tall, centred at (cx, cy).
-void draw_arrow_up(Renderer& r, float cx, float cy, float size, float thickness,
-                   const Color& color);
-
 // Half-moon/sun theme glyph of radius `radius`: shows the theme a click switches to.
 void draw_theme_glyph(Renderer& r, float cx, float cy, float radius, Theme current,
                       const Color& color, const Color& background);

@@ -141,6 +141,10 @@ TEST_CASE("Browser tokens keep text readable on banners and selection", "[theme]
             CHECK(contrast_ratio(p.text_primary, bg) >= 7.0F);
             CHECK(contrast_ratio(p.text_secondary, bg) >= 4.5F);
         }
+        // Alternating rows are perceptible but stay quiet.
+        const float stripe = contrast_ratio(over(p.surface, p.row_alt), p.surface);
+        CHECK(stripe >= 1.05F);
+        CHECK(stripe <= 1.15F);
         // The selection marker and focus ring are visible UI components (>= 3:1).
         CHECK(contrast_ratio(p.selection_marker, over(p.surface, p.selection)) >= 3.0F);
         CHECK(contrast_ratio(over(p.surface, p.focus_ring), p.surface) >= 3.0F);

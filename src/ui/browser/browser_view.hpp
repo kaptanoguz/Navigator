@@ -46,6 +46,7 @@ struct BrowserFrame {
     float height = 0.0F;
     bool focused = true; // window has keyboard focus
     bool animations = true;
+    Density density = Density::Compact;
     double dt_ms = 16.0;        // since the previous frame
     Timestamp now{};            // for "Today"/"Yesterday"
     const Path* home = nullptr; // breadcrumb "Home" root (may be null)
@@ -97,6 +98,7 @@ private:
         float date_x = 0.0F;
         float date_r = 0.0F;
         bool show_type = true;
+        bool show_date = true;
     };
     struct Crumb {
         std::string label;
