@@ -53,6 +53,10 @@ function(navigator_add_subdir dir)
     endif()
 endfunction()
 
+if(NAVIGATOR_BUILD_TESTS)
+    enable_testing() # before any subdirectory that registers tests (e.g. tools/)
+endif()
+
 navigator_add_subdir(src/core)
 navigator_add_subdir(src/platform)
 navigator_add_subdir(src/commands)
