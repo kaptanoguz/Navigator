@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Navigator
+GenericName=File Manager
+GenericName[tr]=Dosya Yöneticisi
+Comment=Fast keyboard-driven file manager
+Comment[tr]=Hızlı, klavye odaklı dosya yöneticisi
+Exec=navigator %U
+Icon=navigator
+Terminal=false
+Categories=System;FileTools;FileManager;
+MimeType=inode/directory;
+Keywords=folder;files;explorer;manager;
+Keywords[tr]=klasör;dosya;gezgin;yönetici;
+StartupNotify=true

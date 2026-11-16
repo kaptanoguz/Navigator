@@ -1,0 +1,29 @@
+# Build trees (presets write to build/<preset>)
+build/
+build-*/
+cmake-build-*/
+out/
+_deps/
+
+# Tooling caches
+.cache/
+.clangd/
+compile_commands.json
+CMakeUserPresets.json
+Testing/
+
+# vcpkg
+vcpkg_installed/
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Packaging outputs
+*.deb
+*.AppImage
+*.flatpak
+.flatpak-builder/

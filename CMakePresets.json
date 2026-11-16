@@ -1,0 +1,75 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "NAVIGATOR_BUILD_TESTS": "ON",
+        "NAVIGATOR_BUILD_APP": "ON",
+        "NAVIGATOR_FETCH_DEPS": "ON"
+      }
+    },
+    {
+      "name": "dev",
+      "displayName": "Dev (Debug, -Werror)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "NAVIGATOR_WERROR": "ON",
+        "NAVIGATOR_SANITIZE": "OFF"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release (LTO)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON",
+        "NAVIGATOR_WERROR": "OFF"
+      }
+    },
+    {
+      "name": "tidy",
+      "displayName": "Tidy (clang + clang-tidy-18 during build)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_CXX_CLANG_TIDY": "clang-tidy-18",
+        "NAVIGATOR_WERROR": "ON"
+      }
+    },
+    {
+      "name": "vcpkg",
+      "displayName": "Dev with vcpkg manifest (requires VCPKG_ROOT)",
+      "inherits": "dev",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "condition": { "type": "notEquals", "lhs": "$env{VCPKG_ROOT}", "rhs": "" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev", "configurePreset": "dev" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "tidy", "configurePreset": "tidy" },
+    { "name": "vcpkg", "configurePreset": "vcpkg" }
+  ],
+  "testPresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "ignore" }
+    },
+    { "name": "dev", "inherits": "base", "configurePreset": "dev" },
+    { "name": "release", "inherits": "base", "configurePreset": "release" },
+    { "name": "tidy", "inherits": "base", "configurePreset": "tidy" },
+    { "name": "vcpkg", "inherits": "base", "configurePreset": "vcpkg" }
+  ]
+}

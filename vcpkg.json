@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "navigator",
+  "version": "0.0.1",
+  "description": "Independent Linux file manager",
+  "dependencies": [
+    "sdl3",
+    "catch2",
+    "freetype",
+    "harfbuzz",
+    "fontconfig"
+  ]
+}
