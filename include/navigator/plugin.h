@@ -31,6 +31,8 @@
 extern "C" {
 #endif
 
+/* C ABI: typedef and (void) are required for C11; C++ modernize checks do not apply. */
+/* NOLINTBEGIN(modernize-use-using,modernize-redundant-void-arg) */
 typedef struct NavigatorPluginInfo {
     uint32_t abi_version; /* must equal NAVIGATOR_PLUGIN_ABI_VERSION */
     uint32_t struct_size; /* sizeof(NavigatorPluginInfo) as compiled by the plugin */
@@ -41,6 +43,7 @@ typedef struct NavigatorPluginInfo {
 
 /* Signature of the entry point. Returns NULL to refuse loading. */
 typedef const NavigatorPluginInfo* (*NavigatorPluginGetInfoFn)(void);
+/* NOLINTEND(modernize-use-using,modernize-redundant-void-arg) */
 
 #ifdef __cplusplus
 } /* extern "C" */
