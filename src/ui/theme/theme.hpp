@@ -6,6 +6,8 @@
 // Thread-safety: immutable data and pure functions; callable from any thread.
 #pragma once
 
+#include <cstdint>
+
 #include <navigator/ui.hpp>
 
 namespace navigator::ui {
@@ -55,6 +57,36 @@ struct Palette {
     Color keycap_edge;   // bottom edge of keycap chips (depth cue)
     Color keycap_border; // keycap outline; >= 2:1 on background so chips survive dim panels
     Color keycap_text;   // keycap legends: one step quieter than text_secondary (action labels)
+
+    // Phase 2 browser. Overlays (row_*, selection*, control_*) are translucent and composited
+    // over `surface` (list) or `background` (chrome); their alpha carries the strength.
+    Color row_alt;            // alternating row stripe
+    Color row_hover;          // pointer over a row
+    Color selection;          // selected rows, window focused
+    Color selection_inactive; // selected rows, window not focused
+    Color selection_marker;   // 3dp bar at the left of selected rows (not colour alone)
+    Color focus_ring;         // cursor row outline
+    Color control_hover;      // toolbar buttons and breadcrumb segments
+    Color control_pressed;
+    Color danger;         // notice icon and accents; >= 4.5:1 on surface as text
+    Color danger_surface; // notice banner fill (opaque)
+    Color danger_border;
+    Color scrollbar; // overlay scrollbar thumb
+    Color scrollbar_hover;
+    Color icon_folder_back;  // folder glyph, back plate + tab
+    Color icon_folder_front; // folder glyph, front plate
+    Color icon_page;         // file glyph paper
+    Color icon_page_border;
+    Color tint_image; // file-type badges on the file glyph
+    Color tint_audio;
+    Color tint_video;
+    Color tint_archive;
+    Color tint_code;
+    Color tint_document;
+    Color tint_pdf;
+    Color tint_sheet;
+    Color tint_slides;
+    Color tint_program;
 };
 
 [[nodiscard]] const Palette& palette(Theme theme) noexcept;
@@ -94,6 +126,15 @@ inline constexpr TextStyle body{14.0F, FontWeight::Regular, 0.0F, false};
 inline constexpr TextStyle numeric{13.0F, FontWeight::Medium, 0.0F, true};
 inline constexpr TextStyle tagline{17.0F, FontWeight::Regular, 0.0F, false};
 inline constexpr TextStyle display{60.0F, FontWeight::SemiBold, -0.028F, false};
+// Phase 2 browser.
+inline constexpr TextStyle row{13.0F, FontWeight::Regular, 0.0F, false};
+inline constexpr TextStyle row_numeric{13.0F, FontWeight::Regular, 0.0F, true};
+inline constexpr TextStyle column_header{12.0F, FontWeight::Medium, 0.01F, false};
+inline constexpr TextStyle crumb{13.0F, FontWeight::Regular, 0.0F, false};
+inline constexpr TextStyle crumb_current{13.0F, FontWeight::SemiBold, 0.0F, false};
+inline constexpr TextStyle status{12.0F, FontWeight::Regular, 0.01F, true};
+inline constexpr TextStyle notice_title{13.0F, FontWeight::Medium, 0.0F, false};
+inline constexpr TextStyle empty_title{15.0F, FontWeight::Medium, 0.0F, false};
 } // namespace type
 
 namespace radius {
@@ -105,6 +146,40 @@ inline constexpr float pill = 999.0F;
 
 namespace motion {
 inline constexpr double theme_crossfade_ms = 180.0;
+inline constexpr double scroll_settle_ms = 90.0; // smooth-scroll time constant (exponential)
 } // namespace motion
+
+// Browser metrics (dp) that do not depend on the density.
+namespace metrics {
+inline constexpr float row_inset = 6.0F; // row highlight inset from the panel edge
+inline constexpr float icon_size = 16.0F;
+inline constexpr float scrollbar_width = 4.0F;
+inline constexpr float scrollbar_width_hover = 8.0F;
+} // namespace metrics
+
+// List density. Compact (the default) suits a dense, keyboard-first file manager; Comfortable is
+// the roomier Phase 2 layout.
+enum class Density : std::uint8_t {
+    Compact,
+    Comfortable,
+};
+
+// Density-dependent browser metrics (dp).
+struct DensityMetrics {
+    float top_bar_height;
+    float tool_button;
+    float status_bar_height;
+    float panel_margin;
+    float header_height;
+    float row_height;
+    float notice_height;
+};
+
+[[nodiscard]] constexpr DensityMetrics density_metrics(Density d) noexcept {
+    if (d == Density::Comfortable) {
+        return DensityMetrics{52.0F, 32.0F, 30.0F, 10.0F, 30.0F, 28.0F, 40.0F};
+    }
+    return DensityMetrics{44.0F, 30.0F, 26.0F, 8.0F, 26.0F, 24.0F, 36.0F};
+}
 
 } // namespace navigator::ui

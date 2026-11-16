@@ -42,6 +42,14 @@ RectF snap(const RectF& r) noexcept {
     return RectF{x0, y0, x1 - x0, y1 - y0};
 }
 
+RectF intersect(const RectF& a, const RectF& b) noexcept {
+    const float x0 = std::max(a.x, b.x);
+    const float y0 = std::max(a.y, b.y);
+    const float x1 = std::min(a.right(), b.right());
+    const float y1 = std::min(a.bottom(), b.bottom());
+    return RectF{x0, y0, std::max(x1 - x0, 0.0F), std::max(y1 - y0, 0.0F)};
+}
+
 SDL_FColor to_sdl(const Color& c) noexcept { return SDL_FColor{c.r, c.g, c.b, c.a}; }
 
 void Renderer::clear(const Color& color) {
@@ -113,6 +121,9 @@ void Renderer::fill_rounded_rect(const RectF& rect, float radius, const Color& c
     const float half_min = 0.5F * std::min(rect.w, rect.h);
     radius = std::clamp(radius, 0.0F, half_min);
     feather = std::max(feather, 0.5F);
+    if (feather <= 1.0F && radius >= 1.0F && fill_rounded_rect_aligned(rect, radius, color)) {
+        return;
+    }
     const float inner_inset = std::min(0.5F * feather, half_min);
     const float outer_inset = -0.5F * feather;
     const int segments = segments_for(radius + (0.5F * feather));
@@ -136,6 +147,68 @@ void Renderer::fill_rounded_rect(const RectF& rect, float radius, const Color& c
     }
     band(ring_b_, clear, ring_a_, solid, vertices_, indices_);
     draw_geometry(nullptr, vertices_, indices_);
+}
+
+bool Renderer::fill_rounded_rect_aligned(const RectF& rect, float radius, const Color& color) {
+    // Fast path for large pixel-aligned rects (list rows, panels): the straight parts are plain
+    // rect fills, which every backend (notably the software renderer) fills far faster than a
+    // triangle fan; only the four corners are geometry. Pixel-aligned straight edges are crisp
+    // in the general path too, so the result is the same apart from the radius rounding up to
+    // a whole pixel.
+    const auto whole = [](float v) { return std::abs(v - std::round(v)) < 0.001F; };
+    const float ri = std::ceil(radius);
+    if (!whole(rect.x) || !whole(rect.y) || !whole(rect.w) || !whole(rect.h) ||
+        rect.w < (2.0F * ri) + 2.0F || rect.h < (2.0F * ri) + 2.0F || rect.w * rect.h < 2048.0F) {
+        return false;
+    }
+    const float x0 = rect.x;
+    const float y0 = rect.y;
+    const float x1 = rect.right();
+    const float y1 = rect.bottom();
+    fill_rect(RectF{x0 + ri, y0, rect.w - (2.0F * ri), rect.h}, color);
+    fill_rect(RectF{x0, y0 + ri, ri, rect.h - (2.0F * ri)}, color);
+    fill_rect(RectF{x1 - ri, y0 + ri, ri, rect.h - (2.0F * ri)}, color);
+
+    constexpr float pi = std::numbers::pi_v<float>;
+    const int segments = segments_for(ri + 0.5F);
+    const SDL_FColor solid = to_sdl(color);
+    const SDL_FColor clear = to_sdl(color.with_alpha(0.0F));
+    vertices_.clear();
+    indices_.clear();
+    struct Corner {
+        float cx;
+        float cy;
+        float start;
+    };
+    const Corner corners[4] = {
+        {x0 + ri, y0 + ri, pi},
+        {x1 - ri, y0 + ri, 1.5F * pi},
+        {x1 - ri, y1 - ri, 0.0F},
+        {x0 + ri, y1 - ri, 0.5F * pi},
+    };
+    const float step = (0.5F * pi) / static_cast<float>(segments);
+    const float r_in = ri - 0.5F;
+    const float r_out = ri + 0.5F;
+    for (const Corner& c : corners) {
+        const auto base = static_cast<int>(vertices_.size());
+        vertices_.push_back(vertex({c.cx, c.cy}, solid));
+        for (int i = 0; i <= segments; ++i) {
+            const float a = c.start + (step * static_cast<float>(i));
+            const float ca = std::cos(a);
+            const float sa = std::sin(a);
+            vertices_.push_back(vertex({c.cx + (r_in * ca), c.cy + (r_in * sa)}, solid));
+            vertices_.push_back(vertex({c.cx + (r_out * ca), c.cy + (r_out * sa)}, clear));
+        }
+        for (int i = 0; i < segments; ++i) {
+            const int in0 = base + 1 + (2 * i);
+            const int out0 = in0 + 1;
+            const int in1 = in0 + 2;
+            const int out1 = in0 + 3;
+            indices_.insert(indices_.end(), {base, in0, in1, in0, out0, out1, in0, out1, in1});
+        }
+    }
+    draw_geometry(nullptr, vertices_, indices_);
+    return true;
 }
 
 void Renderer::stroke_rounded_rect(const RectF& rect, float radius, float thickness,
@@ -184,6 +257,67 @@ void Renderer::draw_texture(SDL_Texture* texture, const RectF& dst, float alpha)
     const SDL_FRect r{dst.x, dst.y, dst.w, dst.h};
     SDL_RenderTexture(renderer_, texture, nullptr, &r);
     SDL_SetTextureAlphaModFloat(texture, 1.0F);
+}
+
+void Renderer::stroke_line(float x0, float y0, float x1, float y1, float thickness,
+                           const Color& color) {
+    const float dx = x1 - x0;
+    const float dy = y1 - y0;
+    const float len = std::sqrt((dx * dx) + (dy * dy));
+    if (len < 1.0e-4F || color.a <= 0.0F || thickness <= 0.0F) {
+        return;
+    }
+    // Direction and normal; the core quad is (thickness - 1) wide and fully opaque, a 1 px
+    // feather on both sides and both ends fades to transparent (round caps come from circles).
+    const float ux = dx / len;
+    const float uy = dy / len;
+    const float nx = -uy;
+    const float ny = ux;
+    const float core = std::max((0.5F * thickness) - 0.5F, 0.0F);
+    const float outer = (0.5F * thickness) + 0.5F;
+    // Thin lines get proportionally less coverage so a 1 px line is not drawn at full strength
+    // over 2 px.
+    const float coverage = std::min(thickness, 1.0F);
+    const SDL_FColor solid = to_sdl(color.with_alpha(color.a * coverage));
+    const SDL_FColor clear = to_sdl(color.with_alpha(0.0F));
+    vertices_.clear();
+    indices_.clear();
+    const auto push = [&](float off, const SDL_FColor& c) {
+        vertices_.push_back(vertex({x0 + (nx * off), y0 + (ny * off)}, c));
+        vertices_.push_back(vertex({x1 + (nx * off), y1 + (ny * off)}, c));
+    };
+    push(-outer, clear); // 0 1
+    push(-core, solid);  // 2 3
+    push(core, solid);   // 4 5
+    push(outer, clear);  // 6 7
+    for (int band_index = 0; band_index < 3; ++band_index) {
+        const int a = band_index * 2;
+        indices_.insert(indices_.end(), {a, a + 1, a + 3, a, a + 3, a + 2});
+    }
+    draw_geometry(nullptr, vertices_, indices_);
+    const float cap = 0.5F * thickness;
+    if (cap >= 0.75F) {
+        fill_circle(x0, y0, cap, color);
+        fill_circle(x1, y1, cap, color);
+    }
+}
+
+void Renderer::fill_circle(float cx, float cy, float radius, const Color& color) {
+    fill_rounded_rect(RectF{cx - radius, cy - radius, 2.0F * radius, 2.0F * radius}, radius, color);
+}
+
+void Renderer::set_clip(const std::optional<RectF>& rect) {
+    clip_ = rect;
+    if (!rect) {
+        SDL_SetRenderClipRect(renderer_, nullptr);
+        return;
+    }
+    const auto x0 = static_cast<int>(std::floor(rect->x));
+    const auto y0 = static_cast<int>(std::floor(rect->y));
+    const auto x1 = static_cast<int>(std::ceil(rect->right()));
+    const auto y1 = static_cast<int>(std::ceil(rect->bottom()));
+    const SDL_Rect r{x0, y0, std::max(x1 - x0, 0), std::max(y1 - y0, 0)};
+    SDL_SetRenderClipRect(renderer_, &r);
 }
 
 void Renderer::draw_geometry(SDL_Texture* texture, const std::vector<SDL_Vertex>& vertices,

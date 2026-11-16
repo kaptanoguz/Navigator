@@ -47,7 +47,7 @@ struct TextLayout {
 
 class FontCache {
 public:
-    static constexpr std::size_t kShapeCacheCapacity = 512;
+    static constexpr std::size_t kShapeCacheCapacity = 2048;
 
     // Discovers the UI family (Regular, Medium, SemiBold faces). Errors: NotFound (no usable
     // font: the app refuses to start with a clear message), PlatformError.

@@ -1,7 +1,7 @@
 # QA gates
 
-Phase 0 gates are below. Phase 1 adds the gates in "Phase 1 additions"; every Phase 0 gate
-still applies.
+Phase 0 gates are below. Phase 1 adds the gates in "Phase 1 additions", Phase 2 those in
+"Phase 2 additions"; every earlier gate still applies.
 
 ## Phase 0
 
@@ -60,6 +60,34 @@ cmake --preset dev -B build/tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   then exercise both the Overflow path and the no-loss path. With a raised
   `max_queued_events`, they take the no-loss branch and still pass.
 - Findings and timings: `docs/qa-phase1.md`.
+
+## Phase 2 additions (single-pane browser)
+
+Every Phase 0 and Phase 1 gate still applies. New suites: `navigator_browser_integration_tests`
+(ctest prefix `integration.`, label `integration`; links `navigator_ui_browser` only,
+no SDL, no window) and the app script `integration.app_headless_start_paths`
+(`tests/integration/app_smoke.sh`).
+
+| # | Gate | Command | Pass condition |
+|---|------|---------|----------------|
+| 17 | Browser races + keymap e2e | `ctest --preset dev -R '^integration\.'` | all pass; the `BUG-P2-*` cases are `[!mayfail]` and may fail (open bugs, `docs/qa-phase2.md`); remove the tag when a fix lands |
+| 18 | Flake repeat | `ctest --preset dev -R '^integration\.' --repeat until-fail:10` | 10 clean runs |
+| 19 | Keymap doc sync | `ctest --preset dev -R '^integration\..*(keymap\|chord)'` | `docs/keymap.md` rows equal `load_default_keymap()` row for row; every default chord has an effect check |
+| 20 | Headless start paths | `ctest --preset dev -R app_headless_start_paths` | fixture folder, unreadable folder and missing path each exit 0 after 120 frames on `SDL_VIDEODRIVER=dummy` |
+| 21 | ASan + UBSan, TSan | gates 14 and 15 with `-R '^integration\.'` (TSan still needs `setarch -R`) | no sanitizer report |
+| 22 | No spawn in tests | `grep -rn "create_default_launcher\|open_with_default(" tests` | the default launcher is only built in `tests/platform/launcher_test.cpp` (probe programs, `true`) and in `tests/contracts` (compiled, never linked); a BrowserModel that activates a file always gets a recording launcher |
+
+Notes:
+
+- The browser tests use inotify (one instance per model) and a writer thread; they share the
+  Phase 1 limits note above.
+- `invariant_violation()` (tests/integration/browser_support.hpp) checks order and the hidden
+  filter only while no listing is pending: `sort_by()` / `toggle_hidden()` switch `sort()` and
+  `show_hidden()` at once and the old order stays visible until the re-list commits (documented
+  "no flash to empty" behaviour, not a bug).
+- `integration.app_headless_start_paths` needs the `navigator` target; build it in sanitizer
+  build dirs too or exclude the test there.
+- Findings: `docs/qa-phase2.md`.
 
 ## Manual check (developer machine, not CI)
 

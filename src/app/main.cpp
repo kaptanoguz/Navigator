@@ -9,7 +9,9 @@
 #include <navigator/i18n.hpp>
 #include <navigator/ui.hpp>
 
+#include "bench_fixture.hpp"
 #include "cli.hpp"
+#include "shell/ui_settings.hpp"
 
 namespace {
 
@@ -47,25 +49,52 @@ int main(int argc, char** argv) {
         navigator::app::detect_language(env_or_empty("LANGUAGE"), env_or_empty("LC_ALL"),
                                         env_or_empty("LC_MESSAGES"), env_or_empty("LANG"))));
 
-    // --no-animations and the development-only switches reach the UI through its documented
-    // environment (src/ui/shell/app.cpp).
+    // Development-only switches reach the UI through its documented debug environment
+    // (src/ui/shell/app.cpp). --no-animations is AppConfig::animations.
     // NOLINTBEGIN(concurrency-mt-unsafe): single-threaded at this point.
     if (!options->screenshot_path.empty()) {
         setenv("NAVIGATOR_DEBUG_SCREENSHOT", options->screenshot_path.c_str(), 1);
     }
-    if (options->no_animations) {
-        setenv("NAVIGATOR_NO_ANIMATIONS", "1", 1);
-    }
     if (const std::optional<float> scale = options->scale; scale.has_value()) {
         setenv("NAVIGATOR_DEBUG_SCALE", std::to_string(scale.value()).c_str(), 1);
     }
+    if (!options->debug_script.empty()) {
+        setenv("NAVIGATOR_DEBUG_SCRIPT", options->debug_script.c_str(), 1);
+    }
+    std::optional<navigator::app::BenchFixture> bench;
+    if (options->bench_scroll > 0) {
+        setenv("NAVIGATOR_DEBUG_BENCH_SCROLL", "1", 1);
+        if (options->start_path.empty()) {
+            auto fx = navigator::app::create_bench_fixture(options->bench_scroll);
+            if (!fx) {
+                std::fprintf(stderr, "navigator: bench fixture: %s\n", fx.error().message.c_str());
+                return 1;
+            }
+            bench = std::move(*fx);
+            options->start_path = bench->root.string();
+        }
+    }
     // NOLINTEND(concurrency-mt-unsafe)
 
-    auto app = navigator::App::create(options->config);
-    if (!app) {
-        std::fprintf(stderr, "navigator: error: %s (%s)\n", app.error().message.c_str(),
-                     std::string(navigator::to_string(app.error().code)).c_str());
-        return 1;
+    navigator::ui::set_ui_settings(navigator::ui::UiSettings{
+        .density = options->density == navigator::app::DensityChoice::Comfortable
+                       ? navigator::ui::Density::Comfortable
+                       : navigator::ui::Density::Compact,
+    });
+    navigator::AppConfig config = options->config;
+    config.start_path = options->start_path; // `options` outlives the App
+    int code = 1;
+    {
+        auto app = navigator::App::create(config);
+        if (!app) {
+            std::fprintf(stderr, "navigator: error: %s (%s)\n", app.error().message.c_str(),
+                         std::string(navigator::to_string(app.error().code)).c_str());
+        } else {
+            code = (*app)->run();
+        }
     }
-    return (*app)->run();
+    if (bench) {
+        navigator::app::remove_bench_fixture(*bench);
+    }
+    return code;
 }

@@ -5,6 +5,7 @@
 // "cmd.<name>" title to the English and Turkish catalogs.
 #include <array>
 #include <string>
+#include <string_view>
 
 #include <navigator/commands.hpp>
 
@@ -22,6 +23,21 @@ constexpr std::array kBuiltins{
     Builtin{CommandId::Quit, "app.quit", "cmd.app.quit"},
     Builtin{CommandId::ToggleFpsOverlay, "view.toggle_fps_overlay", "cmd.view.toggle_fps_overlay"},
     Builtin{CommandId::ToggleTheme, "view.toggle_theme", "cmd.view.toggle_theme"},
+    Builtin{CommandId::ToggleHidden, "view.toggle_hidden", "cmd.view.toggle_hidden"},
+    Builtin{CommandId::NavigateBack, "nav.back", "cmd.nav.back"},
+    Builtin{CommandId::NavigateForward, "nav.forward", "cmd.nav.forward"},
+    Builtin{CommandId::NavigateUp, "nav.up", "cmd.nav.up"},
+    Builtin{CommandId::Refresh, "nav.refresh", "cmd.nav.refresh"},
+    Builtin{CommandId::FocusAddressBar, "nav.focus_address_bar", "cmd.nav.focus_address_bar"},
+    Builtin{CommandId::Activate, "list.activate", "cmd.list.activate"},
+    Builtin{CommandId::SelectAll, "list.select_all", "cmd.list.select_all"},
+    Builtin{CommandId::ClearSelection, "list.clear_selection", "cmd.list.clear_selection"},
+    Builtin{CommandId::CursorUp, "list.cursor_up", "cmd.list.cursor_up"},
+    Builtin{CommandId::CursorDown, "list.cursor_down", "cmd.list.cursor_down"},
+    Builtin{CommandId::CursorPageUp, "list.cursor_page_up", "cmd.list.cursor_page_up"},
+    Builtin{CommandId::CursorPageDown, "list.cursor_page_down", "cmd.list.cursor_page_down"},
+    Builtin{CommandId::CursorHome, "list.cursor_home", "cmd.list.cursor_home"},
+    Builtin{CommandId::CursorEnd, "list.cursor_end", "cmd.list.cursor_end"},
 };
 
 } // namespace
@@ -32,6 +48,21 @@ std::string_view to_string(CommandId id) noexcept {
     case CommandId::Quit: return "app.quit";
     case CommandId::ToggleFpsOverlay: return "view.toggle_fps_overlay";
     case CommandId::ToggleTheme: return "view.toggle_theme";
+    case CommandId::ToggleHidden: return "view.toggle_hidden";
+    case CommandId::NavigateBack: return "nav.back";
+    case CommandId::NavigateForward: return "nav.forward";
+    case CommandId::NavigateUp: return "nav.up";
+    case CommandId::Refresh: return "nav.refresh";
+    case CommandId::FocusAddressBar: return "nav.focus_address_bar";
+    case CommandId::Activate: return "list.activate";
+    case CommandId::SelectAll: return "list.select_all";
+    case CommandId::ClearSelection: return "list.clear_selection";
+    case CommandId::CursorUp: return "list.cursor_up";
+    case CommandId::CursorDown: return "list.cursor_down";
+    case CommandId::CursorPageUp: return "list.cursor_page_up";
+    case CommandId::CursorPageDown: return "list.cursor_page_down";
+    case CommandId::CursorHome: return "list.cursor_home";
+    case CommandId::CursorEnd: return "list.cursor_end";
     }
     return "unknown";
 }

@@ -28,6 +28,16 @@ struct AppConfig {
     bool show_fps = false;     // initial FPS overlay state (ToggleFpsOverlay flips it)
     Theme theme = Theme::Dark; // initial theme (ToggleTheme flips it)
     int max_frames = 0;        // 0: run until Quit; >0: exit after N frames (headless smoke tests)
+    // false: no UI animations (theme crossfade, smooth scroll); `--no-animations`. The environment
+    // variable NAVIGATOR_NO_ANIMATIONS=1 also forces false.
+    bool animations = true;
+
+    // Phase 2. Directory the browser opens first; copied by App::create. Raw path bytes (need not
+    // be UTF-8). Empty: platform::user_dir(UserDir::Home), or "/" if that fails. A relative path
+    // resolves against the process working directory. A path that cannot be listed (missing,
+    // permission denied, not a directory) does not fail App::create: the browser opens with an
+    // empty list and an error notice, and NavigateUp / Refresh still work from there.
+    std::string_view start_path;
 };
 
 struct FrameStats {
