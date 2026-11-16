@@ -38,6 +38,23 @@ struct AppConfig {
     // permission denied, not a directory) does not fail App::create: the browser opens with an
     // empty list and an error notice, and NavigateUp / Refresh still work from there.
     std::string_view start_path;
+
+    // Phase 3: session and layouts (docs/architecture.md "Phase 3").
+    // Navigator config root holding session.json and layouts/; copied by App::create. Empty:
+    // platform::user_dir(UserDir::Config) / layout::kConfigDirName (~/.config/navigator; honours
+    // $XDG_CONFIG_HOME). Tests point it at a temporary directory.
+    std::string_view config_dir;
+    // Load <config_dir>/session.json at startup (tabs, panes, closed tabs, window geometry).
+    // A missing or unreadable session is not an error: one tab on the start folder. With a
+    // non-empty start_path the session is still restored and start_path opens as a new active
+    // tab in the restored active pane (so `navigator DIR` never discards the saved session).
+    bool restore_session = true;
+    // Also apply the saved window geometry (size, maximized, X11 position). The command line
+    // sets this false when the user passes an explicit size; width/height are used then.
+    bool restore_window_geometry = true;
+    // Write the session (debounced after changes, and on quit). false: never write it
+    // (`--no-session` also clears restore_session; headless smoke tests use it).
+    bool save_session = true;
 };
 
 struct FrameStats {
@@ -45,11 +62,6 @@ struct FrameStats {
     double frame_ms = 0.0;         // duration of the last frame, milliseconds
     std::uint64_t frame_index = 0; // frames completed since run() started
 };
-
-// Later phases (forward declarations only; not part of the Phase 0 contract).
-class Pane;
-class Tab;
-class Layout;
 
 class App {
 public:

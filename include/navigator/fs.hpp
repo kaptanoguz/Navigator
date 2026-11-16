@@ -173,6 +173,8 @@ struct SortOptions {
     bool folders_first = true;    // is_directory_like() entries form a group placed first
     bool natural = true;          // numeric digit runs, see compare_names
     bool case_insensitive = true; // fold as described above
+
+    friend constexpr bool operator==(const SortOptions&, const SortOptions&) = default;
 };
 
 // ---------------------------------------------------------------------------------------------
