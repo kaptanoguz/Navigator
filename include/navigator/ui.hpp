@@ -25,7 +25,7 @@ struct AppConfig {
     std::string_view title = "Navigator"; // copied by App::create
     int width = 1280;                     // initial logical window size
     int height = 800;
-    bool show_fps = true;      // initial FPS overlay state (ToggleFpsOverlay flips it)
+    bool show_fps = false;     // initial FPS overlay state (ToggleFpsOverlay flips it)
     Theme theme = Theme::Dark; // initial theme (ToggleTheme flips it)
     int max_frames = 0;        // 0: run until Quit; >0: exit after N frames (headless smoke tests)
 };
