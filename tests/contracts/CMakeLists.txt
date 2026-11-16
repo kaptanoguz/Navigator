@@ -25,6 +25,7 @@ set(NAVIGATOR_CONTRACT_HEADERS
     commands
     ui
     platform
+    mime
     i18n
     detail/expected
 )
@@ -69,6 +70,11 @@ foreach(std IN ITEMS 20 23)
     _navigator_header_object(navigator_contract_phase1_cxx${std}
                              "${CMAKE_CURRENT_SOURCE_DIR}/phase1_usage.cpp" CXX ${std})
     list(APPEND _nav_check_targets navigator_contract_phase1_cxx${std})
+
+    # Phase 2 commands/keymap, platform launcher seam, mime, AppConfig (compile only).
+    _navigator_header_object(navigator_contract_phase2_cxx${std}
+                             "${CMAKE_CURRENT_SOURCE_DIR}/phase2_usage.cpp" CXX ${std})
+    list(APPEND _nav_check_targets navigator_contract_phase2_cxx${std})
 endforeach()
 
 # plugin.h from C11
