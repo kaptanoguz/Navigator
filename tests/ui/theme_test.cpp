@@ -119,3 +119,30 @@ TEST_CASE("Backdrop stays within one step of its palette and is opaque", "[theme
         }
     }
 }
+
+TEST_CASE("Browser tokens keep text readable on banners and selection", "[theme]") {
+    const auto over = [](const Color& base, const Color& overlay) {
+        const float a = overlay.a;
+        return Color{(base.r * (1.0F - a)) + (overlay.r * a),
+                     (base.g * (1.0F - a)) + (overlay.g * a),
+                     (base.b * (1.0F - a)) + (overlay.b * a), 1.0F};
+    };
+    for (const Theme t : {Theme::Dark, Theme::Light}) {
+        const Palette& p = palette(t);
+        INFO((t == Theme::Dark ? "dark" : "light"));
+        // Notice banner: title, detail and the alert glyph.
+        CHECK(contrast_ratio(p.text_primary, p.danger_surface) >= 7.0F);
+        CHECK(contrast_ratio(p.text_secondary, p.danger_surface) >= 4.5F);
+        CHECK(contrast_ratio(p.danger, p.danger_surface) >= 3.0F);
+        CHECK(contrast_ratio(p.danger, p.surface) >= 4.5F);
+        // Rows: secondary columns on stripes, hover and selection stay AA.
+        for (const Color& overlay : {p.row_alt, p.row_hover, p.selection, p.selection_inactive}) {
+            const Color bg = over(p.surface, overlay);
+            CHECK(contrast_ratio(p.text_primary, bg) >= 7.0F);
+            CHECK(contrast_ratio(p.text_secondary, bg) >= 4.5F);
+        }
+        // The selection marker and focus ring are visible UI components (>= 3:1).
+        CHECK(contrast_ratio(p.selection_marker, over(p.surface, p.selection)) >= 3.0F);
+        CHECK(contrast_ratio(over(p.surface, p.focus_ring), p.surface) >= 3.0F);
+    }
+}

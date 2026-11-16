@@ -20,7 +20,10 @@ TEST_CASE("Defaults come from AppConfig", "[cli]") {
     CHECK(o->config.max_frames == 0);
     CHECK(o->config.theme == Theme::Dark);
     CHECK_FALSE(o->config.show_fps); // overlay is opt-in (--fps); default launch idles
-    CHECK_FALSE(o->no_animations);
+    CHECK(o->config.animations);
+    CHECK(o->start_path.empty());
+    CHECK(o->config.start_path.empty());
+    CHECK(o->bench_scroll == 0);
     CHECK_FALSE(o->show_help);
     CHECK_FALSE(o->language.has_value());
 }
@@ -33,7 +36,7 @@ TEST_CASE("Options parse", "[cli]") {
     CHECK(o->language == Language::Turkish);
     CHECK_FALSE(o->config.show_fps);
     CHECK(parse_cli({"--fps"})->config.show_fps);
-    CHECK(parse_cli({"--no-animations"})->no_animations);
+    CHECK_FALSE(parse_cli({"--no-animations"})->config.animations);
     CHECK(parse_cli({"--help"})->show_help);
     CHECK(parse_cli({"-V"})->show_version);
 }
@@ -56,10 +59,40 @@ TEST_CASE("Bad options are rejected", "[cli]") {
     CHECK_FALSE(parse_cli({"--no-animation"})); // typo is reported, not ignored
 }
 
+TEST_CASE("A positional PATH becomes the start path", "[cli]") {
+    auto o = parse_cli({"/tmp/some dir"});
+    REQUIRE(o);
+    CHECK(o->start_path == "/tmp/some dir");
+    auto mixed = parse_cli({"--theme", "light", "relative/İş", "--fps"});
+    REQUIRE(mixed);
+    CHECK(mixed->start_path == "relative/İş");
+    CHECK(mixed->config.show_fps);
+    // "--" ends options, so a folder may start with a dash.
+    auto dashed = parse_cli({"--", "--weird"});
+    REQUIRE(dashed);
+    CHECK(dashed->start_path == "--weird");
+    CHECK(parse_cli({"-"})->start_path == "-");
+    CHECK_FALSE(parse_cli({"a", "b"})); // one PATH only
+    CHECK_FALSE(parse_cli({""}));
+}
+
+TEST_CASE("Development flags parse", "[cli]") {
+    auto o = parse_cli({"--bench-scroll", "50000", "--debug-script", "cmd:list.select_all"});
+    REQUIRE(o);
+    CHECK(o->bench_scroll == 50000);
+    CHECK(o->debug_script == "cmd:list.select_all");
+    CHECK_FALSE(parse_cli({"--bench-scroll", "0"}));
+    CHECK_FALSE(parse_cli({"--bench-scroll"}));
+    // Hidden from --help.
+    const std::string help = navigator::app::usage_text("navigator");
+    CHECK(help.find("--bench-scroll") == std::string::npos);
+    CHECK(help.find("--debug-script") == std::string::npos);
+}
+
 TEST_CASE("Help documents every user-facing flag", "[cli]") {
     const std::string help = navigator::app::usage_text("navigator");
     for (const char* flag : {"--frames", "--theme", "--lang", "--fps", "--no-fps",
-                             "--no-animations", "--version", "--help"}) {
+                             "--no-animations", "--version", "--help", "PATH"}) {
         INFO(flag);
         CHECK(help.find(flag) != std::string::npos);
     }
