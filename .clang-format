@@ -1,0 +1,33 @@
+---
+Language: Cpp
+BasedOnStyle: LLVM
+Standard: Latest
+IndentWidth: 4
+ColumnLimit: 100
+PointerAlignment: Left
+DerivePointerAlignment: false
+AccessModifierOffset: -4
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: true
+NamespaceIndentation: None
+FixNamespaceComments: true
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  # Own public headers: <navigator/...> or "navigator/..."
+  - Regex: '^[<"]navigator/'
+    Priority: 3
+  # C ABI / C headers with .h from third parties (SDL, ImGui, Catch2, ...)
+  - Regex: '^<(SDL3|SDL|imgui|catch2|ft2build|freetype|harfbuzz|hb)'
+    Priority: 2
+  # Standard library (no extension)
+  - Regex: '^<[a-z_]+>$'
+    Priority: 1
+  # Other angle-bracket includes
+  - Regex: '^<.*>'
+    Priority: 2
+  # Local quoted includes
+  - Regex: '.*'
+    Priority: 4
+...
