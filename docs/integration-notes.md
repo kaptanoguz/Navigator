@@ -16,3 +16,7 @@ Each role appends its own section. Never rewrite another role's section.
   `SDL_VIDEODRIVER=dummy;SDL_RENDER_DRIVER=software`, TIMEOUT 30.
 - The `dev` preset must set `CMAKE_EXPORT_COMPILE_COMMANDS=ON` (needed by `scripts/run-tidy.sh`).
 - CI: run `scripts/check-format.sh` and `scripts/run-tidy.sh build/dev`. Both exit non-zero on findings.
+- Phase 1: add `navigator_add_subdir(tests/integration)` to the root `CMakeLists.txt` right after
+  `navigator_add_subdir(tests/platform)`. It must stay inside the root project scope so it gets the
+  root's `CMAKE_CXX_STANDARD 23`. A TU built with C++20 picks `detail::Expected`, not `std::expected`,
+  and crashes at runtime against the C++23 libraries (types.hpp: one `Result` definition).

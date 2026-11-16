@@ -71,3 +71,5 @@ being worked around. Contracts: `include/navigator/watch.hpp`, `include/navigato
 - **Space** is read when the table changes, not live. Space changes are not events.
 - **Containers.** If `/` is an `overlay` (Docker, Flatpak build sandboxes), it is kept, because
   `/` is never dropped, but its kind is Virtual: rule K checks Virtual first.
+
+- **Overflow can hide a directory removal.** When the inotify queue overflows, the kernel may drop the event that would produce `WatchedDirGone`. Consumers get `Overflow`; if the re-list then fails with `NotFound`, treat the watched directory as gone and `remove()` its handle.
