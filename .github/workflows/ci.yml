@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Build dependencies shared by build-test and tidy (Ubuntu 24.04 package names).
+  APT_BUILD_DEPS: >-
+    ninja-build cmake pkg-config git
+    libfreetype-dev libharfbuzz-dev libfontconfig-dev
+    libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev
+    libxss-dev libxkbcommon-dev libwayland-dev wayland-protocols
+    libegl-dev libgl-dev libvulkan-dev libdecor-0-dev libdbus-1-dev libudev-dev
+    libxtst-dev libdrm-dev libgbm-dev libasound2-dev libpulse-dev libpipewire-0.3-dev
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-format-18
+      - name: Check formatting
+        env:
+          CLANG_FORMAT: clang-format-18
+        run: bash scripts/check-format.sh
+
+  build-test:
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc-13
+      CXX: g++-13
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $APT_BUILD_DEPS g++-13 xvfb xauth
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/dev/_deps
+          key: deps-dev-${{ runner.os }}-gcc13-${{ hashFiles('cmake/Dependencies.cmake') }}
+      - name: Configure
+        run: cmake --preset dev
+      - name: Build
+        run: cmake --build --preset dev
+      - name: Test
+        run: ctest --preset dev
+      - name: X11 smoke run
+        env:
+          SDL_VIDEODRIVER: x11
+        run: xvfb-run -a ./build/dev/src/app/navigator --frames 120
+
+  tidy:
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang-18
+      CXX: clang++-18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $APT_BUILD_DEPS clang-18 clang-tidy-18
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/clang/_deps
+          key: deps-clang-${{ runner.os }}-clang18-${{ hashFiles('cmake/Dependencies.cmake') }}
+      - name: Configure (clang)
+        run: >-
+          cmake --preset dev -B build/clang
+          -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18
+      - name: Build (clang)
+        run: cmake --build build/clang
+      - name: clang-tidy
+        env:
+          CLANG_TIDY: clang-tidy-18
+          RUN_CLANG_TIDY: run-clang-tidy-18
+        run: bash scripts/run-tidy.sh build/clang
