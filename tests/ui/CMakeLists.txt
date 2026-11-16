@@ -12,6 +12,7 @@ target_link_libraries(navigator_ui_tests
         navigator_app_cli
         navigator::commands
         navigator::options
+        SDL3::SDL3  # internal ui headers (e.g. shell/background.hpp) include SDL
         Catch2::Catch2WithMain
 )
 catch_discover_tests(navigator_ui_tests
