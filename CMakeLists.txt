@@ -63,6 +63,7 @@ if(NAVIGATOR_BUILD_TESTS)
     enable_testing()
     navigator_add_subdir(tests/contracts)
     navigator_add_subdir(tests/commands)
+    navigator_add_subdir(tests/ui)
     navigator_add_subdir(tests/smoke)   # after src/app: smoke may use the navigator target
 endif()
 
