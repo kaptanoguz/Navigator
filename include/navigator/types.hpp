@@ -1,7 +1,7 @@
 // navigator/types.hpp
 //
-// Purpose: vocabulary types shared by every module: Path, FileId, Span, Arena, and the single
-//          error policy (ErrorCode, Error, Result<T>, fail(), ok()).
+// Purpose: vocabulary types shared by every module: Path, FileId, Timestamp, Span, Arena, and the
+//          single error policy (ErrorCode, Error, Result<T>, fail(), ok()).
 // Owner:   contracts.
 // Thread-safety: all types here are plain values with no shared state. Distinct objects may be
 //                used from different threads; one object must not be mutated concurrently.
@@ -13,10 +13,13 @@
 //     Use only the common subset documented in navigator/detail/expected.hpp.
 //   - Create errors with `return navigator::fail(ErrorCode::NotFound, "msg");`
 //     and void success with `return navigator::ok();` (or `return {};`).
+//   - Cancellation of long-running calls uses std::stop_token (C++20); a cancelled call fails with
+//     ErrorCode::Cancelled.
 //   - Every translation unit of one build must be compiled with the same compiler and -std, so
 //     that Result has one definition program-wide.
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -50,6 +53,11 @@ struct FileId {
 
     friend constexpr bool operator==(const FileId&, const FileId&) = default;
 };
+
+// Point in time with nanosecond resolution, UTC (Unix epoch). Range is about 1677..2262, which
+// covers every timestamp a Linux filesystem reports in practice; out-of-range values are clamped
+// by the producer. Timestamp{} (the epoch) also means "unknown" where a field says so.
+using Timestamp = std::chrono::sys_time<std::chrono::nanoseconds>;
 
 // Bump/arena allocator for per-frame and per-listing allocations. Phase 1+: declaration only.
 class Arena;

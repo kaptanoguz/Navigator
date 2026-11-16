@@ -64,6 +64,11 @@ foreach(std IN ITEMS 20 23)
     _navigator_header_object(navigator_contract_usage_cxx${std}
                              "${CMAKE_CURRENT_SOURCE_DIR}/result_usage.cpp" CXX ${std})
     list(APPEND _nav_check_targets navigator_contract_usage_cxx${std})
+
+    # Phase 1 fs/watch/volume usage and test fakes (compile only, never linked).
+    _navigator_header_object(navigator_contract_phase1_cxx${std}
+                             "${CMAKE_CURRENT_SOURCE_DIR}/phase1_usage.cpp" CXX ${std})
+    list(APPEND _nav_check_targets navigator_contract_phase1_cxx${std})
 endforeach()
 
 # plugin.h from C11
