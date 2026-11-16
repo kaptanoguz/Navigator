@@ -50,7 +50,7 @@ command is its primary key hint.
 | `F5` | `nav.refresh` | `Refresh` (1003) | 0 | |
 | `Ctrl+R` | `nav.refresh` | `Refresh` (1003) | 0 | |
 | `Ctrl+A` | `list.select_all` | `SelectAll` (1101) | 0 | |
-| `Escape` | `list.clear_selection` | `ClearSelection` (1102) | 0 | Cursor stays |
+| `Escape` | `list.clear_selection` | `ClearSelection` (1102) | 0 | Dismisses a visible notice first; otherwise clears the selection. Cursor stays |
 | `Ctrl+H` | `view.toggle_hidden` | `ToggleHidden` (4) | 0 | GNOME convention |
 | `Up` | `list.cursor_up` | `CursorUp` (1110) | 0 | Selection = cursor row |
 | `Shift+Up` | `list.cursor_up` | `CursorUp` (1110) | `Extend` | Extend from anchor |
