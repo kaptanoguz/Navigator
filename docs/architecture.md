@@ -45,7 +45,7 @@ The single-pane Details browser keeps its state in a **`BrowserModel`, internal 
 `BrowserModel` holds:
 
 - `current_dir` (`Path`), the listing generation number, and the last listing error (`std::optional<Error>`).
-- `entries`: `std::vector<fs::DirEntry>`, always sorted with `fs::sort_entries` and the current `fs::SortOptions` (default: Name, folders first). Hidden entries are filtered by the listing itself (`ListOptions::show_hidden`); `ToggleHidden` re-lists.
+- `entries`: `std::vector<fs::DirEntry>`, always sorted with `fs::sort_entries` and the current `fs::SortOptions` (default: Name, folders first). The listing worker lists with `show_hidden = true` and filters hidden entries itself, so the status bar and the hidden-only empty state know the hidden count (cost: one stat per hidden entry); `ToggleHidden` re-filters/re-lists.
 - Selection: a per-entry flag (or bitset) indexed like `entries`, plus `cursor` and `anchor` row indices. Across re-sorts, refreshes and watch updates, selection, cursor and anchor are carried over **by entry name**, never by stale index.
 - Scroll offset (in rows or pixels; the widget decides) and the visible page size used by `CursorPageUp/Down`.
 - History: back and forward stacks of locations; each location remembers the cursor entry name so Back/Forward/Up restore the cursor (Up puts the cursor on the folder it came from).
@@ -166,3 +166,4 @@ stubs: `fs::EntryKind`, `fs::DirEntry`, `fs::SortKey`, `fs::ListOptions`, `fs::l
   - **mime** (new header, platform, `src/platform`): `navigator::mime` constants, `guess_from_name` (fixed extension table in the header, ASCII case-insensitive, compound `tar.*` first), `guess_for_entry` (inode types, links, executables), `type_label_key` (i18n keys `type.*`, English texts listed in the header; ui adds both catalogs).
   - **ui** (ui, `src/ui`): `AppConfig::animations` (default true; `NAVIGATOR_NO_ANIMATIONS=1` still forces false) and `AppConfig::start_path` (empty = home). Phase 2 data flow documented above; `BrowserModel` is ui-internal.
   - Known breakage until the parallel agents land: exhaustive `switch` over `CommandId` in `src/commands/builtin_commands.cpp` (`to_string`) and `src/ui/shell/app.cpp` (`App::Impl::execute`) fail `-Werror=switch`; `tests/ui/keybindings_test.cpp` gets an ambiguous `KeyBinding` (it has `using namespace navigator; using namespace navigator::ui;`) and goes away with `src/ui/input/keybindings.*`.
+- Phase 2 integration: the browser counts hidden entries (worker lists with `show_hidden = true` and filters), and re-sorting re-lists off the UI thread.
