@@ -1,9 +1,12 @@
 // Keymap end to end (owner: qa): every default chord in docs/keymap.md -> parse_key_chord ->
-// load_default_keymap + register_builtin_commands -> resolve_command -> BrowserModel::execute,
-// and the effect on a fixture folder. The doc is parsed at test time, so a row added to the doc
-// without a binding (or a binding without a row, or a row without an effect check here) fails.
+// load_default_keymap + register_builtin_commands -> resolve_command -> ui::Workspace::execute
+// (tab, pane and list.open_in_new_tab commands; browser commands go on to the active tab's
+// BrowserModel), and the effect on a fixture folder. The doc is parsed at test time (every
+// "## Phase N defaults" table), so a row added to the doc without a binding (or a binding without
+// a row, or a row without an effect check here) fails.
 //
-// Activate on a file goes to a recording launcher; nothing is ever spawned.
+// Activate on a file goes to a recording launcher; nothing is ever spawned. The Workspace has no
+// config root: nothing is written outside the fixture.
 #include <algorithm>
 #include <cerrno>
 #include <cstddef>
@@ -17,6 +20,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -24,15 +28,20 @@
 
 #include <navigator/commands.hpp>
 #include <navigator/fs.hpp>
+#include <navigator/layout.hpp>
 
 #include "browser/browser_model.hpp"
 #include "browser_support.hpp"
 #include "fixture.hpp"
+#include "workspace/workspace.hpp"
 
 using namespace navigator;
 using namespace navigator::integration_test;
+using navigator::layout::PaneId;
+using navigator::layout::TabId;
 using navigator::ui::BrowserModel;
 using navigator::ui::kNoRow;
+using navigator::ui::Workspace;
 
 #ifndef NAVIGATOR_KEYMAP_DOC
 #error "NAVIGATOR_KEYMAP_DOC must name docs/keymap.md"
@@ -41,7 +50,7 @@ using navigator::ui::kNoRow;
 namespace {
 
 struct DocRow {
-    std::string chord;
+    std::string chord; // empty for an "(unbound)" row
     std::string command;
     std::uint64_t arg = 0;
     int line = 0;
@@ -65,27 +74,32 @@ std::optional<std::string> code_span(const std::string& cell) {
     return cell.substr(1, cell.size() - 2);
 }
 
-// Binding rows of "## Phase 0 defaults" and "## Phase 2 defaults ..." (up to "### Mouse").
-std::vector<DocRow> read_doc_rows() {
+struct DocTables {
+    std::vector<DocRow> bound;   // in doc order (Phase 0, Phase 2, Phase 3, ...)
+    std::vector<DocRow> unbound; // "(unbound)" rows of every table
+    std::map<int, std::size_t> per_phase;
+};
+
+// Every "## Phase N defaults ..." table (rows up to the next heading). Phase 0 has no arg
+// column; later tables do.
+DocTables read_doc() {
     std::ifstream in(NAVIGATOR_KEYMAP_DOC);
     REQUIRE(in.good());
-    std::vector<DocRow> rows;
-    enum class Section : std::uint8_t { None, Phase0, Phase2 } section = Section::None;
+    DocTables doc;
+    int phase = -1; // -1: not in a defaults table
     std::string line;
     int number = 0;
     while (std::getline(in, line)) {
         ++number;
         if (line.starts_with("#")) {
-            if (line.starts_with("## Phase 0 defaults")) {
-                section = Section::Phase0;
-            } else if (line.starts_with("## Phase 2 defaults")) {
-                section = Section::Phase2;
-            } else {
-                section = Section::None;
+            phase = -1;
+            constexpr std::string_view kHead = "## Phase ";
+            if (line.starts_with(kHead) && line.find(" defaults") != std::string::npos) {
+                phase = std::stoi(line.substr(kHead.size()));
             }
             continue;
         }
-        if (section == Section::None || !line.starts_with("|")) {
+        if (phase < 0 || !line.starts_with("|")) {
             continue;
         }
         std::vector<std::string> cells;
@@ -101,31 +115,37 @@ std::vector<DocRow> read_doc_rows() {
         if (cells.size() < 3) {
             continue;
         }
-        const std::optional<std::string> chord = code_span(cells[0]);
         const std::optional<std::string> command = code_span(cells[1]);
-        if (!chord || !command) {
-            continue; // header, separator, "window close", "(unbound)"
+        if (!command) {
+            continue; // header, separator
         }
-        DocRow row{*chord, *command, 0, number};
-        if (section == Section::Phase2) {
+        const std::optional<std::string> chord = code_span(cells[0]);
+        DocRow row{chord.value_or(std::string()), *command, 0, number};
+        if (phase > 0) {
+            INFO("keymap.md line " << number);
             REQUIRE(cells.size() >= 4);
             if (cells[3] == "`Extend`") {
                 row.arg = CursorArg::Extend;
             } else {
-                INFO("keymap.md line " << number);
                 REQUIRE(cells[3] == "0");
             }
         }
-        rows.push_back(std::move(row));
+        if (chord) {
+            doc.bound.push_back(std::move(row));
+            ++doc.per_phase[phase];
+        } else if (cells[0] == "(unbound)") {
+            doc.unbound.push_back(std::move(row));
+        } // else: "window close" (not a chord)
     }
-    return rows;
+    return doc;
 }
 
-// Fixture: 2 folders, 30 files f01..f30, a 3-byte c.txt, a hidden file.
+// Fixture: 2 folders, 30 files f01..f30, a 3-byte c.txt, a hidden file. One Workspace (one pane,
+// one tab on the fixture root), no watcher, recording launcher.
 struct Scene {
     TempDir t;
     NoSpawnLauncher launcher;
-    std::unique_ptr<BrowserModel> model;
+    std::unique_ptr<Workspace> ws;
 
     Scene() {
         std::filesystem::create_directories(t / "alpha" / "inner");
@@ -135,23 +155,84 @@ struct Scene {
         }
         { std::ofstream(t / "c.txt") << "abc"; }
         (void)touch(t / ".hidden");
-        BrowserModel::Options o;
-        o.launcher = &launcher;
-        model = std::make_unique<BrowserModel>(std::move(o));
-        model->open_start(t.path());
+        Workspace::Options o;
+        o.model.launcher = &launcher;
+        o.home = t / "beta";
+        ws = std::make_unique<Workspace>(std::move(o));
+        ws->start(std::nullopt, t.path());
         settle();
-        model->set_page_rows(5);
+        m().set_page_rows(5);
     }
     void settle() const {
-        REQUIRE(model->wait_listing(kBrowserWait));
-        (void)model->frame_start();
-        REQUIRE_FALSE(model->busy());
+        for (int round = 0; round < 3; ++round) {
+            for (const TabId tab : ws->visible_tabs()) {
+                REQUIRE(ws->model(tab) != nullptr);
+                REQUIRE(ws->model(tab)->wait_listing(kBrowserWait));
+            }
+            (void)ws->frame_start();
+        }
+        REQUIRE(ws->settled());
+        REQUIRE_FALSE(m().busy());
     }
+    [[nodiscard]] bool exec(const Command& c) const { return ws->execute(c); }
     void run(const Command& c) const {
-        model->execute(c);
+        (void)ws->execute(c);
         settle();
     }
-    [[nodiscard]] BrowserModel& m() const { return *model; }
+    void go(const Path& dir) const {
+        m().navigate_to(dir);
+        settle();
+    }
+    [[nodiscard]] BrowserModel& m() const { return ws->active_model(); }
+    [[nodiscard]] const layout::Layout& l() const { return ws->layout(); }
+    [[nodiscard]] const layout::PaneNode& pane(std::size_t index) const {
+        const std::vector<PaneId> order = l().pane_order();
+        REQUIRE(index < order.size());
+        return *l().find_pane(order[index]);
+    }
+    [[nodiscard]] const layout::PaneNode& active_pane() const {
+        return *l().find_pane(l().active_pane());
+    }
+    [[nodiscard]] std::size_t active_pane_index() const {
+        const std::vector<PaneId> order = l().pane_order();
+        return static_cast<std::size_t>(std::find(order.begin(), order.end(), l().active_pane()) -
+                                        order.begin());
+    }
+    // Folder of every tab of the active pane, in tab-bar order (live folder for loaded models).
+    [[nodiscard]] std::vector<Path> tab_dirs(std::size_t pane_index) const {
+        std::vector<Path> out;
+        for (const layout::Tab& tab : pane(pane_index).tabs) {
+            const BrowserModel* model = ws->model(tab.id);
+            out.push_back(model != nullptr && model->loaded() ? model->current_dir()
+                                                              : tab.state.path);
+        }
+        return out;
+    }
+    // Only the visible tab of each pane has a live model; every tab has one.
+    [[nodiscard]] bool lazy_ok() const {
+        const std::vector<TabId> visible = ws->visible_tabs();
+        for (const PaneId p : l().pane_order()) {
+            for (const layout::Tab& tab : l().find_pane(p)->tabs) {
+                const BrowserModel* model = ws->model(tab.id);
+                const bool shown =
+                    std::find(visible.begin(), visible.end(), tab.id) != visible.end();
+                if (model == nullptr || model->suspended() == shown) {
+                    return false;
+                }
+            }
+        }
+        return l().validate().has_value();
+    }
+    // Three tabs in the one pane: root, alpha, beta; the last one active.
+    void three_tabs() const {
+        const Command new_tab{CommandId::NewTab, 0};
+        run(new_tab);
+        go(t / "alpha");
+        run(new_tab);
+        go(t / "beta");
+        REQUIRE(tab_dirs(0) == std::vector<Path>{t.path(), t / "alpha", t / "beta"});
+        REQUIRE(active_pane().active_tab == 2);
+    }
 };
 
 // The chord of a canonical text, or a failed check and an Unknown chord.
@@ -191,7 +272,7 @@ void check_cursor_command(Scene& s, const Command& c) {
     case CommandId::CursorEnd: want = last; break;
     default: FAIL("not a cursor command");
     }
-    REQUIRE(m.execute(c));
+    REQUIRE(s.exec(c));
     CHECK(m.cursor() == want);
     std::set<std::size_t> selected;
     for (std::size_t i = 0; i < m.entries().size(); ++i) {
@@ -214,17 +295,88 @@ void check_cursor_command(Scene& s, const Command& c) {
     CHECK(invariant_violation(m).empty());
 }
 
+// Commands the Workspace does not handle: the App (quit, overlay, theme) or the shell's popups
+// (Search Tabs, layout prompt and picker). Nothing changes.
+void check_not_handled(Scene& s, const Command& c) {
+    const auto before = entry_names(s.m());
+    const std::size_t tabs = s.l().tab_count();
+    const std::size_t panes = s.l().pane_count();
+    const std::uint64_t serial = s.ws->persist_serial();
+    CHECK_FALSE(s.exec(c));
+    CHECK(entry_names(s.m()) == before);
+    CHECK(s.l().tab_count() == tabs);
+    CHECK(s.l().pane_count() == panes);
+    CHECK(s.ws->persist_serial() == serial);
+    CHECK_FALSE(s.m().busy());
+}
+
+void check_open_in_new_tab(Scene& s, const Command& c) {
+    BrowserModel& m = s.m();
+    const TabId origin = s.ws->active_tab();
+    m.toggle_hidden(); // the new tab inherits sort and hidden
+    s.settle();
+    m.click_row(m.find("alpha"), Modifiers::None);
+    REQUIRE(s.exec(c));
+    s.settle();
+    // Background tab right of the active one; the active tab and its folder stay.
+    CHECK(s.ws->active_tab() == origin);
+    CHECK(s.m().current_dir() == s.t.path());
+    REQUIRE(s.pane(0).tabs.size() == 2);
+    CHECK(s.pane(0).active_tab == 0);
+    const layout::Tab& bg = s.pane(0).tabs[1];
+    CHECK(bg.state.path == s.t / "alpha");
+    CHECK(bg.state.show_hidden);
+    REQUIRE(s.ws->model(bg.id) != nullptr);
+    CHECK(s.ws->model(bg.id)->suspended());
+    CHECK(s.lazy_ok());
+    // First activation lists it.
+    s.ws->activate_tab(bg.id);
+    s.settle();
+    CHECK(s.m().current_dir() == s.t / "alpha");
+    CHECK(entry_names(s.m()) == std::vector<std::string>{"inner"});
+    CHECK(s.ws->model(origin)->suspended());
+    // On a file: same as Enter, no tab.
+    s.ws->activate_tab(origin);
+    s.settle();
+    s.m().click_row(s.m().find("c.txt"), Modifiers::None);
+    REQUIRE(s.exec(c));
+    s.settle();
+    REQUIRE(s.launcher.requests.size() == 1);
+    CHECK(s.launcher.requests[0].argv.back() == (s.t / "c.txt").string());
+    CHECK(s.l().tab_count() == 2);
+}
+
+void check_split(Scene& s, const Command& c, layout::SplitAxis axis) {
+    s.go(s.t / "alpha");
+    s.m().click_row(0, Modifiers::None);
+    const TabId first = s.ws->active_tab();
+    REQUIRE(s.exec(c));
+    s.settle();
+    REQUIRE(s.l().pane_count() == 2);
+    const auto* split = std::get_if<layout::SplitNode>(&s.l().root().node);
+    REQUIRE(split != nullptr);
+    CHECK(split->axis == axis);
+    CHECK(s.active_pane_index() == 1); // the new pane, after the old one
+    CHECK(s.m().current_dir() == s.t / "alpha");
+    CHECK(s.ws->active_tab() != first);
+    CHECK_FALSE(s.ws->model(first)->suspended()); // both panes are visible
+    CHECK(s.lazy_ok());
+    // A second split of the same axis adds a third child to the same split (n-ary, I6).
+    REQUIRE(s.exec(c));
+    s.settle();
+    CHECK(s.l().pane_count() == 3);
+    split = std::get_if<layout::SplitNode>(&s.l().root().node);
+    REQUIRE(split != nullptr);
+    CHECK(split->children.size() == 3);
+    CHECK(s.active_pane_index() == 2);
+    CHECK(s.lazy_ok());
+}
+
 std::map<std::string, Check> effect_checks() {
     std::map<std::string, Check> checks;
-    const Check app_level = [](Scene& s, const Command& c) {
-        const auto before = entry_names(s.m());
-        CHECK_FALSE(s.m().execute(c)); // handled by the App, not the model
-        CHECK(entry_names(s.m()) == before);
-        CHECK_FALSE(s.m().busy());
-    };
-    checks["app.quit"] = app_level;
-    checks["view.toggle_fps_overlay"] = app_level;
-    checks["view.toggle_theme"] = app_level;
+    checks["app.quit"] = check_not_handled;
+    checks["view.toggle_fps_overlay"] = check_not_handled;
+    checks["view.toggle_theme"] = check_not_handled;
 
     checks["list.activate"] = [](Scene& s, const Command& c) {
         BrowserModel& m = s.m();
@@ -238,11 +390,11 @@ std::map<std::string, Check> effect_checks() {
         CHECK(m.current_dir() == s.t / "alpha");
         CHECK(entry_names(m) == std::vector<std::string>{"inner"});
         CHECK(s.launcher.requests.size() == 1);
+        CHECK(s.l().tab_count() == 1);
     };
     checks["nav.back"] = [](Scene& s, const Command& c) {
         BrowserModel& m = s.m();
-        m.navigate_to(s.t / "beta");
-        s.settle();
+        s.go(s.t / "beta");
         s.run(c);
         CHECK(m.current_dir() == s.t.path());
         CHECK(m.can_forward());
@@ -251,8 +403,7 @@ std::map<std::string, Check> effect_checks() {
     };
     checks["nav.forward"] = [](Scene& s, const Command& c) {
         BrowserModel& m = s.m();
-        m.navigate_to(s.t / "beta");
-        s.settle();
+        s.go(s.t / "beta");
         m.back();
         s.settle();
         s.run(c);
@@ -263,8 +414,7 @@ std::map<std::string, Check> effect_checks() {
     };
     checks["nav.up"] = [](Scene& s, const Command& c) {
         BrowserModel& m = s.m();
-        m.navigate_to(s.t / "alpha" / "inner");
-        s.settle();
+        s.go(s.t / "alpha" / "inner");
         s.run(c);
         CHECK(m.current_dir() == s.t / "alpha");
         CHECK(cursor_entry(m) == "inner");
@@ -285,7 +435,7 @@ std::map<std::string, Check> effect_checks() {
     checks["list.select_all"] = [](Scene& s, const Command& c) {
         BrowserModel& m = s.m();
         m.click_row(4, Modifiers::None);
-        REQUIRE(m.execute(c));
+        REQUIRE(s.exec(c));
         CHECK(m.selected_count() == m.entries().size());
         CHECK(m.selected_bytes() == 3U); // c.txt; folders count 0
         CHECK(m.cursor() == 4);
@@ -294,7 +444,7 @@ std::map<std::string, Check> effect_checks() {
         BrowserModel& m = s.m();
         m.click_row(6, Modifiers::None);
         m.select_all();
-        REQUIRE(m.execute(c));
+        REQUIRE(s.exec(c));
         CHECK(m.selected_count() == 0);
         CHECK(m.cursor() == 6); // cursor stays
     };
@@ -313,32 +463,256 @@ std::map<std::string, Check> effect_checks() {
                              "list.cursor_page_down", "list.cursor_home", "list.cursor_end"}) {
         checks[name] = check_cursor_command;
     }
+
+    // ---- Phase 3 -------------------------------------------------------------------------------
+    checks["tab.new"] = [](Scene& s, const Command& c) {
+        s.go(s.t / "alpha");
+        s.m().sort_by(fs::SortKey::Size);
+        s.settle();
+        const TabId origin = s.ws->active_tab();
+        const fs::SortOptions sort = s.m().sort();
+        REQUIRE(s.exec(c));
+        s.settle();
+        // New active tab right of the old one, on the active tab's folder and sort.
+        REQUIRE(s.pane(0).tabs.size() == 2);
+        CHECK(s.pane(0).active_tab == 1);
+        CHECK(s.ws->active_tab() != origin);
+        CHECK(s.m().current_dir() == s.t / "alpha");
+        CHECK(s.m().sort() == sort);
+        CHECK(entry_names(s.m()) == std::vector<std::string>{"inner"});
+        CHECK(s.ws->model(origin)->suspended());
+        CHECK(s.lazy_ok());
+        // A new tab from the middle goes right after the active tab.
+        s.ws->activate_tab(origin);
+        s.settle();
+        REQUIRE(s.exec(c));
+        s.settle();
+        CHECK(s.pane(0).tabs.size() == 3);
+        CHECK(s.pane(0).active_tab == 1);
+    };
+    const Check close_tab = [](Scene& s, const Command& c) {
+        // The last tab of the last pane is never closed.
+        REQUIRE(s.exec(c));
+        s.settle();
+        CHECK(s.l().tab_count() == 1);
+        CHECK(s.ws->closed_tabs().empty());
+        s.three_tabs();
+        const TabId root_tab = s.pane(0).tabs[0].id;
+        const TabId beta_tab = s.pane(0).tabs[2].id;
+        s.ws->activate_tab(s.pane(0).tabs[1].id); // alpha
+        s.settle();
+        s.m().click_row(s.m().find("inner"), Modifiers::None);
+        REQUIRE(s.exec(c));
+        s.settle();
+        // Right neighbour becomes active; the closed tab carries its folder and cursor.
+        CHECK(s.tab_dirs(0) == std::vector<Path>{s.t.path(), s.t / "beta"});
+        CHECK(s.ws->active_tab() == beta_tab);
+        REQUIRE(s.ws->closed_tabs().size() == 1);
+        const layout::ClosedTab& closed = s.ws->closed_tabs().entries()[0];
+        CHECK(closed.state.path == s.t / "alpha");
+        CHECK(closed.state.cursor_name == "inner");
+        CHECK(closed.index == 1);
+        CHECK(s.lazy_ok());
+        // Closing the last tab of the bar activates its left neighbour.
+        REQUIRE(s.exec(c));
+        s.settle();
+        CHECK(s.ws->active_tab() == root_tab);
+        CHECK(s.ws->closed_tabs().size() == 2);
+        CHECK(s.lazy_ok());
+    };
+    checks["tab.close"] = close_tab;
+    checks["tab.reopen_closed"] = [](Scene& s, const Command& c) {
+        REQUIRE(s.exec(c)); // nothing closed: no-op
+        s.settle();
+        CHECK(s.l().tab_count() == 1);
+        s.three_tabs();
+        s.ws->activate_tab(s.pane(0).tabs[1].id); // alpha
+        s.settle();
+        s.m().click_row(s.m().find("inner"), Modifiers::None);
+        REQUIRE(s.exec(Command{CommandId::CloseTab, 0}));
+        s.settle();
+        REQUIRE(s.ws->closed_tabs().size() == 1);
+        REQUIRE(s.exec(c));
+        s.settle();
+        // Back at its old index, active, on its folder and cursor.
+        CHECK(s.tab_dirs(0) == std::vector<Path>{s.t.path(), s.t / "alpha", s.t / "beta"});
+        CHECK(s.pane(0).active_tab == 1);
+        CHECK(s.m().current_dir() == s.t / "alpha");
+        CHECK(cursor_entry(s.m()) == "inner");
+        CHECK(s.ws->closed_tabs().empty());
+        CHECK(s.lazy_ok());
+    };
+    const Check next_previous = [](Scene& s, const Command& c) {
+        s.three_tabs(); // active: index 2
+        const bool next = c.id == CommandId::NextTab;
+        REQUIRE(s.exec(c));
+        s.settle();
+        CHECK(s.pane(0).active_tab == (next ? 0U : 1U)); // next wraps
+        REQUIRE(s.exec(c));
+        s.settle();
+        CHECK(s.pane(0).active_tab == (next ? 1U : 0U));
+        REQUIRE(s.exec(c));
+        s.settle();
+        CHECK(s.pane(0).active_tab == 2U); // previous wraps
+        CHECK(s.m().current_dir() == s.t / "beta");
+        CHECK(s.lazy_ok());
+        // Only within the active pane.
+        REQUIRE(s.exec(Command{CommandId::SplitRight, 0}));
+        s.settle();
+        const PaneId pane = s.l().active_pane();
+        REQUIRE(s.exec(c));
+        s.settle();
+        CHECK(s.l().active_pane() == pane);
+        CHECK(s.active_pane().tabs.size() == 1);
+    };
+    checks["tab.next"] = next_previous;
+    checks["tab.previous"] = next_previous;
+    const Check move_tab = [](Scene& s, const Command& c) {
+        s.three_tabs();
+        const bool left = c.id == CommandId::MoveTabLeft;
+        const std::size_t start = left ? 2 : 0;
+        const TabId moving = s.pane(0).tabs[start].id;
+        s.ws->activate_tab(moving);
+        s.settle();
+        const Path dir = s.m().current_dir();
+        for (std::size_t step = 1; step <= 3; ++step) { // the third step hits the end: no wrap
+            REQUIRE(s.exec(c));
+            s.settle();
+            const std::size_t want =
+                left ? (step >= 2 ? 0 : 2 - step) : std::min<std::size_t>(step, 2);
+            CHECK(s.pane(0).active_tab == want);
+            CHECK(s.pane(0).tabs[want].id == moving);
+            CHECK(s.ws->active_tab() == moving);
+            CHECK(s.m().current_dir() == dir);
+        }
+        CHECK(s.lazy_ok());
+    };
+    checks["tab.move_left"] = move_tab;
+    checks["tab.move_right"] = move_tab;
+    checks["tab.duplicate"] = [](Scene& s, const Command& c) {
+        s.go(s.t / "alpha");
+        s.m().click_row(s.m().find("inner"), Modifiers::None);
+        const TabId origin = s.ws->active_tab();
+        REQUIRE(s.exec(c));
+        s.settle();
+        REQUIRE(s.pane(0).tabs.size() == 2);
+        CHECK(s.pane(0).active_tab == 1);
+        CHECK(s.ws->active_tab() != origin);
+        CHECK(s.m().current_dir() == s.t / "alpha");
+        CHECK(cursor_entry(s.m()) == "inner");
+        CHECK(selected_set(s.m()) == std::set<std::string>{"inner"});
+        CHECK(s.m().can_back()); // history is copied
+        s.m().back();
+        s.settle();
+        CHECK(s.m().current_dir() == s.t.path());
+        CHECK(s.ws->model(origin)->current_dir() == s.t / "alpha"); // the source is untouched
+        CHECK(s.lazy_ok());
+    };
+    checks["tab.search"] = check_not_handled;
+    checks["layout.save"] = check_not_handled;
+    checks["layout.load"] = check_not_handled;
+    checks["list.open_in_new_tab"] = check_open_in_new_tab;
+    checks["pane.split_right"] = [](Scene& s, const Command& c) {
+        check_split(s, c, layout::SplitAxis::Horizontal);
+    };
+    checks["pane.split_down"] = [](Scene& s, const Command& c) {
+        check_split(s, c, layout::SplitAxis::Vertical);
+    };
+    const Check focus_pane = [](Scene& s, const Command& c) {
+        REQUIRE(s.exec(c)); // one pane: no-op
+        CHECK(s.active_pane_index() == 0);
+        const Command split{CommandId::SplitRight, 0};
+        REQUIRE(s.exec(split));
+        s.settle();
+        s.go(s.t / "alpha");
+        REQUIRE(s.exec(Command{CommandId::SplitDown, 0}));
+        s.settle();
+        s.go(s.t / "beta");
+        REQUIRE(s.l().pane_count() == 3);
+        REQUIRE(s.active_pane_index() == 2);
+        const bool next = c.id == CommandId::FocusNextPane;
+        const std::vector<std::size_t> want =
+            next ? std::vector<std::size_t>{0, 1, 2} : std::vector<std::size_t>{1, 0, 2};
+        const std::vector<Path> dirs{s.t.path(), s.t / "alpha", s.t / "beta"};
+        for (const std::size_t w : want) {
+            REQUIRE(s.exec(c));
+            s.settle();
+            CHECK(s.active_pane_index() == w);
+            CHECK(s.m().current_dir() == dirs[w]);
+        }
+        CHECK(s.lazy_ok());
+    };
+    checks["pane.focus_next"] = focus_pane;
+    checks["pane.focus_previous"] = focus_pane;
+    checks["pane.close"] = [](Scene& s, const Command& c) {
+        REQUIRE(s.exec(c)); // the only pane: no-op
+        s.settle();
+        CHECK(s.l().pane_count() == 1);
+        CHECK(s.l().tab_count() == 1);
+        REQUIRE(s.exec(Command{CommandId::SplitRight, 0}));
+        s.settle();
+        s.go(s.t / "alpha");
+        REQUIRE(s.exec(Command{CommandId::NewTab, 0}));
+        s.settle();
+        s.go(s.t / "beta");
+        REQUIRE(s.l().pane_count() == 2);
+        REQUIRE(s.exec(c));
+        s.settle();
+        CHECK(s.l().pane_count() == 1);
+        CHECK(std::holds_alternative<layout::PaneNode>(s.l().root().node));
+        CHECK(s.m().current_dir() == s.t.path());
+        REQUIRE(s.ws->closed_tabs().size() == 2); // both tabs of the closed pane, in tab order
+        CHECK(s.ws->closed_tabs().entries()[0].state.path == s.t / "alpha");
+        CHECK(s.ws->closed_tabs().entries()[1].state.path == s.t / "beta");
+        CHECK(s.lazy_ok());
+    };
     return checks;
 }
 
 } // namespace
 
 TEST_CASE("docs/keymap.md and load_default_keymap agree row for row", "[keymap][e2e]") {
-    const std::vector<DocRow> rows = read_doc_rows();
-    REQUIRE(rows.size() == 3 + 25); // Phase 0 chords + Phase 2 chords
+    const DocTables doc = read_doc();
+    // Phase 0, Phase 2 and Phase 3 tables.
+    CHECK(doc.per_phase.size() == 3);
+    CHECK(doc.per_phase.at(0) == 3);
+    CHECK(doc.per_phase.at(2) == 25);
+    CHECK(doc.per_phase.at(3) == 21);
+    REQUIRE(doc.bound.size() == 49);
     Keymap keymap;
     REQUIRE(load_default_keymap(keymap));
     const Span<const KeyBinding> bindings = keymap.bindings();
-    REQUIRE(bindings.size() == rows.size());
-    for (std::size_t i = 0; i < rows.size(); ++i) {
-        INFO("keymap.md line " << rows[i].line << ": " << rows[i].chord);
-        const KeyChord chord = chord_of(rows[i].chord);
+    REQUIRE(bindings.size() == doc.bound.size());
+    for (std::size_t i = 0; i < doc.bound.size(); ++i) {
+        const DocRow& row = doc.bound[i];
+        INFO("keymap.md line " << row.line << ": " << row.chord);
+        const KeyChord chord = chord_of(row.chord);
         REQUIRE(chord.key != Key::Unknown);
-        CHECK(to_string(chord) == rows[i].chord); // the doc uses canonical text
-        CHECK(bindings[i].chord == chord);        // same order as the doc
-        CHECK(bindings[i].command == rows[i].command);
-        CHECK(bindings[i].arg == rows[i].arg);
+        CHECK(to_string(chord) == row.chord); // the doc uses canonical text
+        CHECK(bindings[i].chord == chord);    // same order as the doc
+        CHECK(bindings[i].command == row.command);
+        CHECK(bindings[i].arg == row.arg);
+    }
+    // No chord is bound twice (resolve_command would pick only one).
+    std::set<std::string> chords;
+    for (const DocRow& row : doc.bound) {
+        INFO("keymap.md line " << row.line);
+        CHECK(chords.insert(row.chord).second);
+    }
+    // "(unbound)" rows are registered commands without a default chord.
+    CommandRegistry registry;
+    REQUIRE(register_builtin_commands(registry));
+    REQUIRE(doc.unbound.size() == 4);
+    for (const DocRow& row : doc.unbound) {
+        INFO("keymap.md line " << row.line << ": " << row.command);
+        CHECK(registry.find(row.command) != nullptr);
+        CHECK(keymap.chords_for(row.command).empty());
     }
 }
 
-TEST_CASE("Every default chord resolves to its command and has its effect on the browser",
-          "[keymap][e2e][browser]") {
-    const std::vector<DocRow> rows = read_doc_rows();
+TEST_CASE("Every default chord resolves to its command and has its effect on the workspace",
+          "[keymap][e2e][browser][workspace]") {
+    const DocTables doc = read_doc();
     Keymap keymap;
     REQUIRE(load_default_keymap(keymap));
     CommandRegistry registry;
@@ -346,7 +720,7 @@ TEST_CASE("Every default chord resolves to its command and has its effect on the
     const std::map<std::string, Check> checks = effect_checks();
 
     std::set<std::string> covered;
-    for (const DocRow& row : rows) {
+    for (const DocRow& row : doc.bound) {
         INFO("keymap.md line " << row.line << ": " << row.chord << " -> " << row.command);
         const Command command = command_of(keymap, registry, chord_of(row.chord));
         REQUIRE(command.id != CommandId::None);
@@ -357,21 +731,53 @@ TEST_CASE("Every default chord resolves to its command and has its effect on the
         Scene scene;
         it->second(scene, command);
         CHECK(invariant_violation(scene.m()).empty());
+        CHECK(scene.lazy_ok());
         covered.insert(row.command);
     }
-    // Every registered command except the unbound Phase 4 placeholder has a default chord.
-    for (const CommandInfo& info : registry.all()) {
-        if (info.id != CommandId::FocusAddressBar) {
-            CHECK(covered.contains(std::string(info.name)));
-        }
+    // Every registered command has a default chord or an "(unbound)" doc row, not both.
+    std::set<std::string> unbound;
+    for (const DocRow& row : doc.unbound) {
+        unbound.insert(row.command);
     }
-    CHECK(keymap.chords_for("nav.focus_address_bar").empty());
+    for (const CommandInfo& info : registry.all()) {
+        const std::string name(info.name);
+        INFO(name);
+        CHECK(covered.contains(name) != unbound.contains(name));
+    }
 
-    // Near misses do not resolve: extra modifiers and unbound keys.
-    CHECK_FALSE(resolve_command(keymap, registry, chord_of("Ctrl+Shift+A")));
-    CHECK_FALSE(resolve_command(keymap, registry, chord_of("Ctrl+Enter")));
-    CHECK_FALSE(resolve_command(keymap, registry, chord_of("Alt+Shift+Left")));
-    CHECK_FALSE(resolve_command(keymap, registry, chord_of("Delete")));
+    // Near misses do not resolve: extra modifiers, chords reserved for later phases (Ctrl+N:
+    // window.new, deferred; Ctrl+E, Ctrl+B, Ctrl+Shift+P, Ctrl+Shift+N) and unbound keys.
+    for (const char* text :
+         {"Ctrl+N", "Ctrl+E", "Ctrl+B", "Ctrl+Shift+P", "Ctrl+Shift+N", "Ctrl+Alt+Left",
+          "Alt+Shift+Left", "Delete", "Ctrl+Shift+F3", "Ctrl+F6", "Ctrl+Alt+T", "Shift+Enter"}) {
+        INFO(text);
+        CHECK_FALSE(resolve_command(keymap, registry, chord_of(text)));
+    }
+}
+
+TEST_CASE("Unbound Phase 3 commands through the workspace", "[keymap][e2e][workspace]") {
+    Scene s;
+    // window.new: reserved, handled as a no-op.
+    const std::uint64_t serial = s.ws->persist_serial();
+    CHECK(s.exec(Command{CommandId::NewWindow, 0}));
+    CHECK(s.l().tab_count() == 1);
+    CHECK(s.ws->persist_serial() == serial);
+    // layout.delete: a popup of the shell.
+    CHECK_FALSE(s.exec(Command{CommandId::DeleteLayout, 0}));
+    // tab.close_left with a TabId arg (tab context menu).
+    s.three_tabs();
+    const TabId beta = s.pane(0).tabs[2].id;
+    CHECK(s.exec(Command{CommandId::CloseLeftTabs, beta.value}));
+    s.settle();
+    CHECK(s.tab_dirs(0) == std::vector<Path>{s.t / "beta"});
+    REQUIRE(s.ws->closed_tabs().size() == 2);
+    CHECK(s.ws->closed_tabs().entries()[0].state.path == s.t.path());
+    CHECK(s.ws->closed_tabs().entries()[1].state.path == s.t / "alpha");
+    CHECK(s.lazy_ok());
+    // Tab commands with a stale id do nothing.
+    CHECK(s.exec(Command{CommandId::CloseTab, 0xFFFFFFF0U}));
+    CHECK(s.exec(Command{CommandId::DuplicateTab, std::uint64_t{1} << 40}));
+    CHECK(s.l().tab_count() == 1);
 }
 
 TEST_CASE("Activate through the keymap never spawns a process", "[keymap][e2e][launcher]") {
@@ -380,15 +786,16 @@ TEST_CASE("Activate through the keymap never spawns a process", "[keymap][e2e][l
     REQUIRE(load_default_keymap(keymap));
     CommandRegistry registry;
     REQUIRE(register_builtin_commands(registry));
-    for (const char* chord : {"Enter", "KeypadEnter"}) {
+    for (const char* chord : {"Enter", "KeypadEnter", "Ctrl+Enter", "Ctrl+KeypadEnter"}) {
         const Command c = command_of(keymap, registry, chord_of(chord));
-        REQUIRE(c.id == CommandId::Activate);
+        REQUIRE((c.id == CommandId::Activate || c.id == CommandId::OpenInNewTab));
         for (const char* name : {"c.txt", "f01", "f30"}) {
             s.m().click_row(s.m().find(name), Modifiers::None);
             s.run(c);
         }
     }
-    CHECK(s.launcher.requests.size() == 6);
+    CHECK(s.launcher.requests.size() == 12);
+    CHECK(s.l().tab_count() == 1); // files never open a tab
     for (const platform::LaunchRequest& r : s.launcher.requests) {
         CHECK(r.argv.front() == "xdg-open"); // what would have run, recorded only
     }
