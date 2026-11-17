@@ -26,10 +26,15 @@ catch_discover_tests(navigator_integration_tests
 # BrowserModel). Activate on files goes to a recording launcher; nothing is spawned.
 # Phase 3: Workspace session / named-layout round trips, the session-writer hammer and lazy tabs
 # (workspace_session_test.cpp; the Workspace sources are part of navigator_ui_browser).
+# Phase 4: GoTo / address bar with the real path worker (goto_e2e_test.cpp), bookmarks and
+# recents across unmount / restart / remount on a fake volume table, and the three config-dir
+# writers racing (places_e2e_test.cpp).
 if(TARGET navigator_ui_browser)
     add_executable(navigator_browser_integration_tests
         browser_race_test.cpp
+        goto_e2e_test.cpp
         keymap_e2e_test.cpp
+        places_e2e_test.cpp
         workspace_session_test.cpp
     )
     target_link_libraries(navigator_browser_integration_tests
@@ -70,6 +75,20 @@ if(TARGET navigator)
         COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/session_app_smoke.sh $<TARGET_FILE:navigator>
     )
     set_tests_properties(integration.app_session_restart PROPERTIES
+        TIMEOUT 120
+        LABELS "integration;app"
+    )
+endif()
+
+# Phase 4 headless app: Ctrl+B / Ctrl+D / Ctrl+L / Ctrl+G / Ctrl+Shift+C through the real key
+# path, a bookmark on a fake volume table across unmount and remount elsewhere
+# (NAVIGATOR_DEBUG_VOLUMES), and no writes under a temporary HOME / XDG_CONFIG_HOME without
+# --config-dir (tests/integration/places_app_smoke.sh).
+if(TARGET navigator)
+    add_test(NAME integration.app_places_chords
+        COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/places_app_smoke.sh $<TARGET_FILE:navigator>
+    )
+    set_tests_properties(integration.app_places_chords PROPERTIES
         TIMEOUT 120
         LABELS "integration;app"
     )

@@ -1,7 +1,8 @@
 # QA gates
 
 Phase 0 gates are below. Phase 1 adds the gates in "Phase 1 additions", Phase 2 those in
-"Phase 2 additions", Phase 3 those in "Phase 3 additions"; every earlier gate still applies.
+"Phase 2 additions", Phase 3 those in "Phase 3 additions", Phase 4 those in "Phase 4
+additions"; every earlier gate still applies.
 
 ## Phase 0
 
@@ -113,6 +114,33 @@ Notes:
 - Thread and inotify counts are process-wide: the lazy-tab tests must not run in a process that
   has other live workers (Catch2 runs test cases one after another, so this holds).
 - Findings: `docs/qa-phase3.md`.
+
+## Phase 4 additions (sidebar, bookmarks, recents, GoTo, address bar, copy path)
+
+Every earlier gate still applies. `navigator_browser_integration_tests` gains
+`goto_e2e_test.cpp` (PathEntry + the real PathWorker) and `places_e2e_test.cpp` (PlacesModel
+with its real volume and probe workers over a fake mount table, the three config-dir writers);
+the keymap e2e knows the Phase 4 table. New app script `integration.app_places_chords`
+(`tests/integration/places_app_smoke.sh`); `integration.app_session_restart` now accepts
+`recents.json` next to `session.json`.
+
+| # | Gate | Command | Pass condition |
+|---|------|---------|----------------|
+| 29 | Keymap doc sync, all phases | `ctest --preset dev -R '^integration\..*(keymap\|chord)'` | 4 phase tables, 54 chords (3 + 25 + 21 + 5) equal `load_default_keymap()` row for row; 10 `(unbound)` rows (the exact set is checked); Phase 4 chords are not handled by `Workspace::execute` and their effect is checked on the headless pieces the shell calls (`set_sidebar`, address-bar / GoTo `PathEntry`, `PlacesModel::toggle_bookmark`, `copy_path_text`) |
+| 30 | Phase 4 chords in the app | `ctest --preset dev -R app_places_chords` | `key:Ctrl+B` flips `"visible"` in session.json; `Ctrl+D` adds then removes the folder in bookmarks.json (mode 600); `Ctrl+L` + Enter and `Ctrl+G` + Enter navigate (`~/downloads` -> `~/Downloads`, `~/indirilenler` -> `~/İndirilenler`), `Ctrl+Enter` opens a background tab; a bookmark on a fake stick keeps its file while unmounted and is rebased when the stick returns elsewhere; `--frames` without `--config-dir` creates nothing under a temporary `HOME` / `XDG_CONFIG_HOME` |
+| 31 | Offline tolerance | `ctest --preset dev -R 'integration\.Bookmarks and recents survive'` | unmount -> Offline (never dropped, never Missing), files keep the entries; restart offline, rename/move save and reload; remount at another mount point -> Online, rebased, saved; a recent landing on an existing path is merged (visit counts summed); a missing folder on a network share stays Online (never probed), a deleted local folder is Missing |
+| 32 | GoTo / address bar | `ctest --preset dev -R 'integration\.(GoTo\|Completion)'` | `~/Downloads`, `/`, `$HOME/x`, `${HOME}`, `%HOME%`, `..`, quoted and `file://` input resolve; unique case correction incl. Turkish I; ambiguous names and unknown variables keep the text and name the variable; 20k-entry folder under rapid typing shows 0 stale completions in GoTo and the address bar; `BUG-P4-*` cases are `[!mayfail]` (`docs/qa-phase4.md`) |
+| 33 | Config-dir writers | `ctest --preset dev -R 'integration\.Bookmark, recents and session writers'` | 3 reader threads see 0 torn or invalid bookmarks / recents / session files; each file == its last snapshot after the quit flush (a recents change inside the debounce window included); exactly the three files, no temp files |
+| 34 | Flake, parallel, sanitizers | gates 18, 13, 14 and 15 with `-R '^integration\.'` | all pass |
+
+Notes:
+
+- `places_app_smoke.sh` feeds the fake volume table through the dev-only
+  `NAVIGATOR_DEBUG_VOLUMES` (src/ui/shell/debug_volumes.hpp); it never reads the real mount
+  table for the sidebar.
+- The GoTo cases set `HOME` and a few test variables before any worker starts; ctest runs each
+  Catch2 case in its own process, so this never leaks into other cases.
+- Findings: `docs/qa-phase4.md`.
 
 ## Manual check (developer machine, not CI)
 
