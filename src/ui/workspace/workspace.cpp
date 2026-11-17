@@ -162,7 +162,7 @@ void Workspace::reconcile() {
             auto it = models_.find(t.id.value);
             if (it == models_.end()) {
                 auto m = make_model();
-                m->restore(t.state, options_.row_dp);
+                m->restore(t.state, options_.row_dp, record_tabs_.erase(t.id.value) > 0);
                 it = models_.emplace(t.id.value, std::move(m)).first;
             }
             if (i == p->active_tab) {
@@ -262,7 +262,11 @@ bool Workspace::execute(const Command& command) {
             const PaneId pane = l.active_pane();
             const layout::PaneNode* p = l.find_pane(pane);
             const std::size_t at = p != nullptr ? p->active_tab + 1 : 0;
-            return l.add_tab(pane, new_tab_state(pane, home), at, true).has_value();
+            const Result<TabId> added = l.add_tab(pane, new_tab_state(pane, home), at, true);
+            if (added) {
+                record_tabs_.insert(added->value);
+            }
+            return added.has_value();
         });
         return true;
     }
@@ -373,7 +377,12 @@ bool Workspace::execute(const Command& command) {
             const layout::SplitEdge edge = command.id == CommandId::SplitRight
                                                ? layout::SplitEdge::Right
                                                : layout::SplitEdge::Bottom;
-            return l.split_pane(pane, edge, new_tab_state(pane, false)).has_value();
+            const Result<layout::SplitResult> r =
+                l.split_pane(pane, edge, new_tab_state(pane, false));
+            if (r) {
+                record_tabs_.insert(r->tab.value);
+            }
+            return r.has_value();
         });
         return true;
     }
@@ -415,19 +424,24 @@ bool Workspace::execute(const Command& command) {
             m.activate();
             return true;
         }
-        TabState s;
-        s.path = m.current_dir() / e->name;
-        s.sort = m.sort();
-        s.show_hidden = m.show_hidden();
-        edit([&] {
-            const PaneId pane = l.active_pane();
-            const layout::PaneNode* p = l.find_pane(pane);
-            const std::size_t at = p != nullptr ? p->active_tab + 1 : 0;
-            return l.add_tab(pane, s, at, false).has_value();
-        });
+        (void)open_tab(m.current_dir() / e->name, false);
         return true;
     }
-    case CommandId::NewWindow: return true; // reserved: one window until the multi-window phase
+    case CommandId::NewWindow:
+        return true; // reserved: one window until the multi-window phase
+    // Phase 4: shell level (sidebar, GoTo, address bar, bookmarks, clipboard; ui::App).
+    case CommandId::FocusAddressBar:
+    case CommandId::GoTo:
+    case CommandId::ToggleSidebar:
+    case CommandId::ToggleViewLock:
+    case CommandId::FocusSidebar:
+    case CommandId::ToggleBookmark:
+    case CommandId::RenameBookmark:
+    case CommandId::MoveBookmarkUp:
+    case CommandId::MoveBookmarkDown:
+    case CommandId::ClearRecents:
+    case CommandId::ToggleRecentsTracking:
+    case CommandId::CopyPath:
     case CommandId::SearchTabs:
     case CommandId::SaveLayout:
     case CommandId::LoadLayout:
@@ -441,7 +455,6 @@ bool Workspace::execute(const Command& command) {
     case CommandId::NavigateForward:
     case CommandId::NavigateUp:
     case CommandId::Refresh:
-    case CommandId::FocusAddressBar:
     case CommandId::Activate:
     case CommandId::SelectAll:
     case CommandId::ClearSelection:
@@ -453,6 +466,54 @@ bool Workspace::execute(const Command& command) {
     case CommandId::CursorEnd: return active_model().execute(command);
     }
     return false;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Phase 4: sidebar, GoTo, address bar
+// ---------------------------------------------------------------------------------------------
+
+void Workspace::navigate_active(const Path& dir, std::string cursor_name) {
+    active_model().navigate_to(dir, std::move(cursor_name));
+}
+
+bool Workspace::open_tab(const Path& dir, bool activate) {
+    layout::Layout& l = session_.layout;
+    BrowserModel& m = active_model();
+    TabState s;
+    s.path = normalize_dir(dir);
+    s.sort = m.sort();
+    s.show_hidden = m.show_hidden();
+    bool done = false;
+    (void)sync();
+    const PaneId pane = l.active_pane();
+    const layout::PaneNode* p = l.find_pane(pane);
+    const std::size_t at = p != nullptr ? p->active_tab + 1 : 0;
+    if (const Result<TabId> added = l.add_tab(pane, s, at, activate); added) {
+        record_tabs_.insert(added->value);
+        changed();
+        done = true;
+    }
+    reconcile();
+    return done;
+}
+
+std::vector<Path> Workspace::take_visits() {
+    std::vector<Path> out;
+    for (auto& [id, m] : models_) {
+        for (Path& v : m->take_visits()) {
+            out.push_back(std::move(v));
+        }
+    }
+    return out;
+}
+
+void Workspace::set_sidebar(const layout::SidebarState& state) {
+    layout::SidebarState next = state;
+    next.width = std::clamp(next.width, layout::kSidebarMinWidth, layout::kSidebarMaxWidth);
+    if (!(next == session_.sidebar)) {
+        session_.sidebar = next;
+        changed();
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

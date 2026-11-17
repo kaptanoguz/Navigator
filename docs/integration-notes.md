@@ -61,3 +61,20 @@ Each role appends its own section. Never rewrite another role's section.
   `integration.Every default chord resolves ...` (`tests/integration/keymap_e2e_test.cpp`) fail
   since the commands agent added the Phase 3 rows: the doc parser and the per-command effect
   table only know the Phase 2 rows. Not caused by src/ui.
+
+## ui (Phase 4)
+
+- `src/ui/CMakeLists.txt`: `navigator_ui_browser` gains `path/{copy_path,path_entry,path_worker}.cpp`,
+  `sidebar/{places_model,sidebar_model}.cpp`, `widgets/text_edit.cpp`; `navigator_ui` gains
+  `sidebar/sidebar_view.cpp`, `widgets/text_field.cpp`, `workspace/goto_popup.cpp`,
+  `shell/debug_volumes.cpp`. No new external dependency.
+- `tests/ui`: `sidebar_test.cpp`, `path_entry_test.cpp`, and the gate smoke
+  `ui.smoke_goto_downloads_and_root` (`tests/ui/goto_smoke.sh`: temporary HOME and --config-dir).
+- `bookmarks.json` / `recents.json` are written to the config dir on quit only when their store
+  changed during the run (an untouched store never creates a file); headless `--frames` runs
+  without `--config-dir` neither read nor write them (same rule as the session).
+- For qa: `integration.app_session_restart` (run 1 navigates, so `recents.json` is now a legitimate
+  file next to `session.json`) and the two keymap e2e tests (`docs/keymap.md` gained the Phase 4
+  table: 4 phase tables, 54 bound rows; `view.toggle_sidebar` etc. need effect checks) need updates.
+- `--debug-script` gains `key:CHORD`, `sbhover:ROW`, `sbfocus[:ROW]`, `sbmenu:ROW`; dev-only
+  `NAVIGATOR_DEBUG_VOLUMES=<dir>` feeds a fake volume table (documented in `shell/app.cpp`).

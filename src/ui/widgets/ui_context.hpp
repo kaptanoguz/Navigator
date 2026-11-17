@@ -63,6 +63,17 @@ struct Intent {
         SaveLayout,    // text (name)
         LoadLayout,    // text
         DeleteLayout,  // text
+        // Phase 4 (sidebar; applied by the App).
+        SidebarOpen,          // row (index into the frame's rows), additive = new tab
+        SidebarToggleSection, // index = layout::SidebarSection
+        SidebarResize,        // position = width in dp
+        SidebarMenu,          // row, x / y (px): context menu of that row
+        SidebarFocusRow,      // row: keyboard focus moves into the sidebar, on that row
+        RenameBookmark,       // index = BookmarkId value, text = new name
+        MoveBookmark,         // index = BookmarkId value, row = destination index
+        BookmarkTab,          // tab = dragged tab, row = insertion index among bookmarks
+        OpenPath,             // path, additive = new tab (context menus)
+        CopyText,             // text: put on the clipboard (context menus, "Copy path")
     };
     Kind kind = Kind::ClickRow;
     // The tab whose model a list intent applies to (layout::TabId value); set by the view.
@@ -80,6 +91,8 @@ struct Intent {
     bool additive = false;
     fs::SortKey sort_key = fs::SortKey::Name;
     Path path;
+    float x = 0.0F; // px (Phase 4 menus)
+    float y = 0.0F;
 };
 
 // Identifies the widget that owns a press until release ("active" in IMGUI terms).
@@ -104,6 +117,12 @@ enum class WidgetId : std::uint16_t {
     PopupRow,
     PopupButton,
     PopupDelete,
+    // Phase 4.
+    Sidebar,       // + row
+    SidebarSplit,  // the sidebar's resize edge
+    SidebarButton, // + button index
+    Star,          // address bar bookmark button
+    AddressField,  // click inside the address bar text
 };
 
 } // namespace navigator::ui

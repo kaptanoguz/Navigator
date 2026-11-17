@@ -4,9 +4,10 @@
 
 find_package(Threads REQUIRED)
 
-# Headless browser logic (no SDL): model, listing/watch workers, formatting, i18n catalog, and
-# the Phase 3 workspace (tabs/panes state, pane geometry, tab strip math, drag and drop, Search
-# Tabs filtering, session writer).
+# Headless browser logic (no SDL): model, listing/watch workers, formatting, i18n catalog, the
+# Phase 3 workspace (tabs/panes state, pane geometry, tab strip math, drag and drop, Search
+# Tabs filtering, session writer) and the Phase 4 places model (bookmarks, recents, volume and
+# probe workers), sidebar rows, path entry (GoTo / address bar) with its worker, text editing.
 # Unit-tested on fixture directories in tests/ui.
 add_library(navigator_ui_browser STATIC
     browser/browser_model.cpp
@@ -14,6 +15,12 @@ add_library(navigator_ui_browser STATIC
     browser/listing_worker.cpp
     browser/watch_worker.cpp
     i18n/i18n.cpp
+    path/copy_path.cpp
+    path/path_entry.cpp
+    path/path_worker.cpp
+    sidebar/places_model.cpp
+    sidebar/sidebar_model.cpp
+    widgets/text_edit.cpp
     workspace/drag_drop.cpp
     workspace/pane_geometry.cpp
     workspace/session_writer.cpp
@@ -41,14 +48,18 @@ add_library(navigator_ui STATIC
     render/renderer.cpp
     shell/app.cpp
     shell/background.cpp
+    shell/debug_volumes.cpp
     shell/painter.cpp
     shell/ui_settings.cpp
     text/font.cpp
     text/font_cache.cpp
+    sidebar/sidebar_view.cpp
     text/text_renderer.cpp
     theme/theme.cpp
     widgets/icons.cpp
+    widgets/text_field.cpp
     widgets/text_fit.cpp
+    workspace/goto_popup.cpp
     workspace/popups.cpp
     workspace/workspace_view.cpp
 )

@@ -124,7 +124,9 @@ public:
     // First location of a tab restored from the session (or created by tab.new): sort, hidden
     // setting, cursor name and scroll (rows * row_dp) come from `state`. Lists right away when
     // live, on resume() when suspended.
-    void restore(const layout::TabState& state, float row_dp);
+    // Phase 4: record_visit makes the first successful listing count as a visit (tabs opened by
+    // the user); session restore passes false.
+    void restore(const layout::TabState& state, float row_dp, bool record_visit = false);
     // Full copy of `other`'s browsing state (folder, entries, sort, selection, cursor, anchor,
     // scroll, back/forward history, pending navigation) for tab.duplicate. Call on a fresh,
     // suspended model; resume() then re-lists the copy.
@@ -136,6 +138,8 @@ public:
     // First location. Relative paths resolve against the working directory.
     void open_start(const Path& dir);
     void navigate_to(const Path& dir); // push history on success
+    // Phase 4 (GoTo / address bar on a file): navigate and put the cursor on `cursor_name`.
+    void navigate_to(const Path& dir, std::string cursor_name);
     void back();
     void forward();
     void up();
@@ -175,6 +179,11 @@ public:
     // View geometry reported by the details view (frame end).
     void set_page_rows(std::size_t rows) noexcept { page_rows_ = rows > 0 ? rows : 1; }
     void set_scroll(float dp) noexcept { scroll_ = dp; }
+
+    // Phase 4 recents: folders whose listing committed as a NEW location since the last call
+    // (navigation, back/forward, up, and the first listing of a tab restored with
+    // record_visit). Refresh, re-lists, resume and session restore never appear here.
+    [[nodiscard]] std::vector<Path> take_visits();
 
     // Applies one watch batch (normally called by frame_start; public for tests).
     bool apply_watch_batch(const WatchBatch& batch);
@@ -266,6 +275,8 @@ private:
     std::unique_ptr<ListingWorker> lister_;
     bool suspended_ = false;
     std::optional<Deferred> deferred_; // navigation requested while suspended
+    bool record_start_ = false;        // the Start listing counts as a visit
+    std::vector<Path> visits_;
     // restore()'s scroll as given (persisted form), for tab_state() before the first listing.
     Path restored_dir_;
     std::optional<double> restored_rows_;

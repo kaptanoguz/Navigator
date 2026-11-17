@@ -3,6 +3,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
+#include <utility>
+#include <vector>
 
 #include "browser/format.hpp"
 
@@ -199,6 +202,141 @@ void draw_layout_glyph(Renderer& r, float x, float y, float size, float thicknes
     r.fill_rect(RectF{mx, box.y, thickness, box.h}, color);
     const float my = std::round(box.y + (0.5F * box.h));
     r.fill_rect(RectF{mx, my, box.right() - mx, thickness}, color);
+}
+
+void draw_line_icon(Renderer& r, LineIcon icon, float x, float y, float size, float t,
+                    const Color& color, const Color& background, bool filled) {
+    const Grid g{x, y, size / 16.0F};
+    const auto line = [&](float x0, float y0, float x1, float y1) {
+        r.stroke_line(g.at_x(x0), g.at_y(y0), g.at_x(x1), g.at_y(y1), t, color);
+    };
+    const auto box = [&](float gx, float gy, float gw, float gh, float rad) {
+        r.stroke_rounded_rect(g.rect(gx, gy, gw, gh), g.px(rad), t, color);
+    };
+    const auto dot = [&](float gx, float gy, float rad) {
+        r.fill_circle(g.at_x(gx), g.at_y(gy), g.px(rad), color);
+    };
+    const auto poly = [&](std::initializer_list<std::pair<float, float>> pts) {
+        std::vector<SDL_FPoint> v;
+        v.reserve(pts.size());
+        for (const auto& [px, py] : pts) {
+            v.push_back(SDL_FPoint{g.at_x(px), g.at_y(py)});
+        }
+        r.fill_polygon(v, color);
+    };
+    switch (icon) {
+    case LineIcon::Folder:
+        r.fill_rounded_rect(g.rect(1.6F, 2.6F, 5.6F, 3.0F), g.px(1.0F), color);
+        box(1.6F, 4.2F, 12.8F, 9.4F, 1.7F);
+        break;
+    case LineIcon::Clock:
+        box(1.6F, 1.6F, 12.8F, 12.8F, 6.4F);
+        line(8.0F, 8.0F, 8.0F, 4.6F);
+        line(8.0F, 8.0F, 10.6F, 9.6F);
+        break;
+    case LineIcon::Home:
+        line(1.9F, 7.7F, 8.0F, 2.3F);
+        line(8.0F, 2.3F, 14.1F, 7.7F);
+        line(3.6F, 6.3F, 3.6F, 13.7F);
+        line(3.6F, 13.7F, 12.4F, 13.7F);
+        line(12.4F, 13.7F, 12.4F, 6.3F);
+        line(6.7F, 13.7F, 6.7F, 9.8F);
+        line(6.7F, 9.8F, 9.3F, 9.8F);
+        line(9.3F, 9.8F, 9.3F, 13.7F);
+        break;
+    case LineIcon::Desktop:
+        box(1.5F, 2.4F, 13.0F, 9.0F, 1.6F);
+        line(8.0F, 11.6F, 8.0F, 13.7F);
+        line(5.2F, 13.7F, 10.8F, 13.7F);
+        break;
+    case LineIcon::Documents:
+        box(3.0F, 1.5F, 10.0F, 13.0F, 1.6F);
+        line(5.6F, 5.4F, 10.4F, 5.4F);
+        line(5.6F, 8.0F, 10.4F, 8.0F);
+        line(5.6F, 10.6F, 8.6F, 10.6F);
+        break;
+    case LineIcon::Downloads:
+        line(8.0F, 1.9F, 8.0F, 9.8F);
+        line(4.9F, 6.8F, 8.0F, 9.8F);
+        line(8.0F, 9.8F, 11.1F, 6.8F);
+        line(2.0F, 10.6F, 2.0F, 13.6F);
+        line(2.0F, 13.6F, 14.0F, 13.6F);
+        line(14.0F, 13.6F, 14.0F, 10.6F);
+        break;
+    case LineIcon::Music:
+        dot(4.6F, 12.2F, 2.1F);
+        dot(11.6F, 10.6F, 2.1F);
+        line(6.5F, 12.0F, 6.5F, 3.4F);
+        line(13.5F, 10.4F, 13.5F, 1.9F);
+        line(6.5F, 3.4F, 13.5F, 1.9F);
+        line(6.5F, 5.9F, 13.5F, 4.4F);
+        break;
+    case LineIcon::Pictures:
+        box(1.5F, 2.5F, 13.0F, 11.0F, 1.6F);
+        line(2.6F, 11.6F, 6.4F, 7.6F);
+        line(6.4F, 7.6F, 9.6F, 10.8F);
+        line(9.6F, 10.8F, 11.0F, 9.4F);
+        line(11.0F, 9.4F, 13.4F, 11.6F);
+        dot(10.6F, 5.8F, 1.3F);
+        break;
+    case LineIcon::Videos:
+        box(1.5F, 3.0F, 13.0F, 10.0F, 2.0F);
+        poly({{6.6F, 5.7F}, {10.9F, 8.0F}, {6.6F, 10.3F}});
+        break;
+    case LineIcon::Drive:
+        box(1.5F, 4.2F, 13.0F, 7.6F, 2.0F);
+        line(4.2F, 9.2F, 8.2F, 9.2F);
+        dot(11.4F, 9.2F, 1.0F);
+        break;
+    case LineIcon::Removable:
+        box(4.4F, 6.0F, 7.2F, 8.6F, 1.7F);
+        box(6.0F, 1.6F, 4.0F, 4.6F, 0.7F);
+        dot(7.2F, 3.6F, 0.6F);
+        dot(8.8F, 3.6F, 0.6F);
+        break;
+    case LineIcon::Network:
+        box(1.6F, 1.6F, 12.8F, 12.8F, 6.4F);
+        box(5.0F, 1.6F, 6.0F, 12.8F, 3.0F);
+        line(1.9F, 8.0F, 14.1F, 8.0F);
+        break;
+    case LineIcon::Star: {
+        constexpr float cx = 8.0F;
+        constexpr float cy = 8.4F;
+        std::vector<SDL_FPoint> pts;
+        for (int i = 0; i < 10; ++i) {
+            const float a = (-1.5707963F) + (static_cast<float>(i) * 0.6283185F);
+            const float rad = (i % 2 == 0) ? 7.0F : 2.9F;
+            pts.push_back(
+                SDL_FPoint{g.at_x(cx + (std::cos(a) * rad)), g.at_y(cy + (std::sin(a) * rad))});
+        }
+        if (filled) {
+            r.fill_polygon(pts, color);
+        } else {
+            for (std::size_t i = 0; i < pts.size(); ++i) {
+                const SDL_FPoint& a = pts[i];
+                const SDL_FPoint& b = pts[(i + 1) % pts.size()];
+                r.stroke_line(a.x, a.y, b.x, b.y, t, color);
+            }
+        }
+        break;
+    }
+    case LineIcon::Lock:
+        box(4.6F, 1.8F, 6.8F, 9.0F, 3.4F);
+        r.fill_rounded_rect(g.rect(3.0F, 7.0F, 10.0F, 7.6F), g.px(1.6F), background);
+        box(3.0F, 7.0F, 10.0F, 7.6F, 1.6F);
+        dot(8.0F, 10.8F, 0.9F);
+        break;
+    case LineIcon::Sidebar:
+        box(1.5F, 2.5F, 13.0F, 11.0F, 2.0F);
+        r.fill_rect(snap(RectF{g.at_x(5.8F), g.at_y(2.9F), std::max(t, 1.0F), g.px(10.2F)}), color);
+        line(3.4F, 5.4F, 4.2F, 5.4F);
+        line(3.4F, 7.6F, 4.2F, 7.6F);
+        break;
+    case LineIcon::Unplugged:
+        line(3.0F, 13.0F, 13.0F, 3.0F);
+        box(2.4F, 5.4F, 8.0F, 6.0F, 1.6F);
+        break;
+    }
 }
 
 } // namespace navigator::ui

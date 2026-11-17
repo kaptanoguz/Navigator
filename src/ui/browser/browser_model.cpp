@@ -83,7 +83,8 @@ void BrowserModel::resume() {
     }
 }
 
-void BrowserModel::restore(const layout::TabState& state, float row_dp) {
+void BrowserModel::restore(const layout::TabState& state, float row_dp, bool record_visit) {
+    record_start_ = record_visit;
     sort_ = state.sort;
     show_hidden_ = state.show_hidden;
     Location target;
@@ -312,17 +313,33 @@ void BrowserModel::open_start(const Path& dir) {
     request(NavKind::Start, std::move(target));
 }
 
-void BrowserModel::navigate_to(const Path& dir) {
+void BrowserModel::navigate_to(const Path& dir) { navigate_to(dir, std::string()); }
+
+void BrowserModel::navigate_to(const Path& dir, std::string cursor_name) {
     const Path target = normalize(dir);
     if (loaded_ && target == current_.dir) {
         // Stay here. This must not fold into a pending navigation elsewhere: the newest request
         // wins.
+        if (!cursor_name.empty()) {
+            if (const std::size_t row = find(cursor_name); row != kNoRow) {
+                set_cursor(row, false);
+                select_only(row);
+                return;
+            }
+        }
         request(NavKind::Refresh, here(), /*fold=*/false);
         return;
     }
     Location loc;
     loc.dir = target;
+    loc.cursor_name = std::move(cursor_name);
     request(NavKind::Push, std::move(loc));
+}
+
+std::vector<Path> BrowserModel::take_visits() {
+    std::vector<Path> out;
+    out.swap(visits_);
+    return out;
 }
 
 void BrowserModel::back() {
@@ -484,6 +501,12 @@ void BrowserModel::commit(Pending& pending, ListingResult& result) {
         scroll_ = pending.target.scroll;
         notice_.reset(); // a successful navigation retires the previous notice
         ++location_serial_;
+        // Recents (docs/architecture.md "Phase 4"): a NEW folder was listed. Session restore
+        // (Start without record_start_) does not count.
+        if (pending.kind != NavKind::Start || record_start_) {
+            visits_.push_back(current_.dir);
+        }
+        record_start_ = false;
     }
     if (entries_.empty()) {
         cursor_ = kNoRow;
@@ -740,7 +763,6 @@ bool BrowserModel::execute(const Command& command) {
     case CommandId::CursorPageDown: cursor_page(1, extend); return true;
     case CommandId::CursorHome: cursor_home(extend); return true;
     case CommandId::CursorEnd: cursor_end(extend); return true;
-    case CommandId::FocusAddressBar: return true; // Phase 4; registered no-op
     case CommandId::None:
     case CommandId::Quit:
     case CommandId::ToggleFpsOverlay:
@@ -765,7 +787,20 @@ bool BrowserModel::execute(const Command& command) {
     case CommandId::SaveLayout:
     case CommandId::LoadLayout:
     case CommandId::DeleteLayout:
-    case CommandId::NewWindow: return false;
+    case CommandId::NewWindow:
+    // Phase 4: shell level (sidebar, GoTo, address bar, bookmarks, clipboard).
+    case CommandId::FocusAddressBar:
+    case CommandId::GoTo:
+    case CommandId::ToggleSidebar:
+    case CommandId::ToggleViewLock:
+    case CommandId::FocusSidebar:
+    case CommandId::ToggleBookmark:
+    case CommandId::RenameBookmark:
+    case CommandId::MoveBookmarkUp:
+    case CommandId::MoveBookmarkDown:
+    case CommandId::ClearRecents:
+    case CommandId::ToggleRecentsTracking:
+    case CommandId::CopyPath: return false;
     }
     return false;
 }

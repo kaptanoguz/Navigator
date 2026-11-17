@@ -82,4 +82,34 @@ private:
     std::jthread thread_; // last member
 };
 
+// Phase 4: the same latest-wins background writer for any small file (bookmarks.json,
+// recents.json). A job is a closure that owns a copy of what it writes; submit() replaces a
+// queued job that has not started. flush() waits until idle. Failures are logged by the job.
+class JobWriter {
+public:
+    using Job = std::function<Result<void>()>;
+
+    JobWriter();
+    ~JobWriter(); // finishes the write in progress; a queued job is still run
+    JobWriter(const JobWriter&) = delete;
+    JobWriter& operator=(const JobWriter&) = delete;
+    JobWriter(JobWriter&&) = delete;
+    JobWriter& operator=(JobWriter&&) = delete;
+
+    void submit(Job job);
+    bool flush(std::chrono::milliseconds timeout = std::chrono::milliseconds(5000));
+    [[nodiscard]] std::uint64_t writes() const;
+
+private:
+    void run(const std::stop_token& stop);
+
+    mutable std::mutex mutex_;
+    std::condition_variable_any cv_;
+    std::condition_variable idle_cv_;
+    Job mailbox_;
+    bool writing_ = false;
+    std::uint64_t writes_ = 0;
+    std::jthread thread_; // last member
+};
+
 } // namespace navigator::ui

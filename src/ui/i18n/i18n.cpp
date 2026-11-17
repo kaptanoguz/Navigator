@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <iterator>
 #include <string>
 #include <unordered_map>
 
@@ -25,7 +26,8 @@ struct Entry {
     std::string_view tr;
 };
 
-constexpr std::array kStrings{
+// A plain array: CTAD of std::array over this many entries exceeds clang's fold limit.
+constexpr Entry kStrings[] = {
     Entry{"app.title", "Navigator", "Navigator"},
     Entry{"app.tagline", "A fast, keyboard-first file manager for Linux",
           "Linux için hızlı, klavye odaklı dosya yöneticisi"},
@@ -81,6 +83,18 @@ constexpr std::array kStrings{
     Entry{"cmd.layout.load", "Load layout…", "Yerleşim yükle…"},
     Entry{"cmd.layout.delete", "Delete layout…", "Yerleşim sil…"},
     Entry{"cmd.window.new", "Duplicate tab in new window", "Sekmeyi yeni pencerede çoğalt"},
+    // Phase 4 commands.
+    Entry{"cmd.view.toggle_sidebar", "Show/hide sidebar", "Kenar çubuğunu göster/gizle"},
+    Entry{"cmd.view.toggle_view_lock", "Lock view settings", "Görünüm ayarlarını kilitle"},
+    Entry{"cmd.nav.goto", "Go to folder…", "Klasöre git…"},
+    Entry{"cmd.sidebar.focus", "Focus sidebar", "Kenar çubuğuna odaklan"},
+    Entry{"cmd.bookmarks.toggle", "Bookmark this folder", "Bu klasörü yer imlerine ekle"},
+    Entry{"cmd.bookmarks.rename", "Rename bookmark", "Yer imini yeniden adlandır"},
+    Entry{"cmd.bookmarks.move_up", "Move bookmark up", "Yer imini yukarı taşı"},
+    Entry{"cmd.bookmarks.move_down", "Move bookmark down", "Yer imini aşağı taşı"},
+    Entry{"cmd.recents.clear", "Clear recent folders", "Son kullanılanları temizle"},
+    Entry{"cmd.recents.toggle_tracking", "Track recent folders", "Son kullanılanları izle"},
+    Entry{"cmd.edit.copy_path", "Copy path", "Yolu kopyala"},
 
     // Modifier names for key hints (key legends themselves are not translated).
     Entry{"key.ctrl", "Ctrl", "Ctrl"},
@@ -203,6 +217,83 @@ constexpr std::array kStrings{
     Entry{"layout.delete_failed", "Couldn’t delete layout “{name}”.",
           "“{name}” yerleşimi silinemedi."},
 
+    // Places (labelled by kind in the UI language, places::label_key).
+    Entry{"place.home", "Home", "Ev"},
+    Entry{"place.desktop", "Desktop", "Masaüstü"},
+    Entry{"place.documents", "Documents", "Belgeler"},
+    Entry{"place.downloads", "Downloads", "İndirilenler"},
+    Entry{"place.music", "Music", "Müzik"},
+    Entry{"place.pictures", "Pictures", "Resimler"},
+    Entry{"place.videos", "Videos", "Videolar"},
+    Entry{"place.trash", "Trash", "Çöp"},
+    Entry{"place.file_system", "File System", "Dosya Sistemi"},
+
+    // Sidebar (Phase 4).
+    Entry{"sidebar.bookmarks", "Bookmarks", "Yer imleri"},
+    Entry{"sidebar.recents", "Recents", "Son kullanılanlar"},
+    Entry{"sidebar.places", "Places", "Yerler"},
+    Entry{"sidebar.storage", "Storage", "Depolama"},
+    Entry{"sidebar.bookmarks_empty", "No bookmarks yet", "Henüz yer imi yok"},
+    Entry{"sidebar.bookmarks_hint", "{key} bookmarks this folder", "{key} bu klasörü ekler"},
+    Entry{"sidebar.recents_empty", "No recent folders yet", "Henüz son kullanılan yok"},
+    Entry{"sidebar.recents_hint", "Folders you open show up here",
+          "Açtığınız klasörler burada görünür"},
+    Entry{"sidebar.recents_off", "Recents tracking is off", "Son kullanılanlar izlenmiyor"},
+    Entry{"sidebar.recents_off_hint", "Turn it on from the context menu",
+          "Sağ tık menüsünden açabilirsiniz"},
+    Entry{"sidebar.clear", "Clear", "Temizle"},
+    Entry{"sidebar.paused", "paused", "duraklatıldı"},
+    Entry{"sidebar.badge_offline", "offline", "çevrimdışı"},
+    Entry{"sidebar.badge_missing", "missing", "kayıp"},
+    Entry{"sidebar.free", "{n} free", "{n} boş"},
+    Entry{"sidebar.rename_placeholder", "Bookmark name", "Yer imi adı"},
+    Entry{"sidebar.offline_notice", "“{name}” is on a volume that isn’t mounted",
+          "“{name}” bağlı olmayan bir birimde"},
+    Entry{"sidebar.missing_notice", "“{name}” was moved or deleted",
+          "“{name}” taşınmış ya da silinmiş"},
+    Entry{"bookmarks.added", "Bookmarked “{name}”", "“{name}” yer imlerine eklendi"},
+    Entry{"bookmarks.removed", "Removed bookmark “{name}”", "“{name}” yer imlerinden çıkarıldı"},
+    Entry{"bookmarks.exists", "“{name}” is already bookmarked", "“{name}” zaten yer imlerinde"},
+    Entry{"bookmarks.add_failed", "Couldn’t bookmark “{name}”", "“{name}” yer imlerine eklenemedi"},
+    Entry{"bookmarks.rename_failed", "That name can’t be used for a bookmark.",
+          "Bu ad bir yer imi için kullanılamaz."},
+    Entry{"recents.tracking_on", "Recent folders are tracked again",
+          "Son kullanılan klasörler yeniden izleniyor"},
+    Entry{"recents.tracking_off", "Recent folders are no longer tracked",
+          "Son kullanılan klasörler artık izlenmiyor"},
+    Entry{"menu.open", "Open", "Aç"},
+    Entry{"menu.open_in_new_tab", "Open in new tab", "Yeni sekmede aç"},
+    Entry{"menu.copy_path", "Copy path", "Yolu kopyala"},
+    Entry{"menu.rename", "Rename…", "Yeniden adlandır…"},
+    Entry{"menu.move_up", "Move up", "Yukarı taşı"},
+    Entry{"menu.move_down", "Move down", "Aşağı taşı"},
+    Entry{"menu.remove_bookmark", "Remove bookmark", "Yer imini kaldır"},
+    Entry{"menu.clear_recents", "Clear recents", "Son kullanılanları temizle"},
+    Entry{"menu.stop_tracking", "Stop tracking recents", "Son kullanılanları izlemeyi durdur"},
+    Entry{"menu.resume_tracking", "Resume tracking recents", "Son kullanılanları yeniden izle"},
+    Entry{"menu.bookmark_folder", "Bookmark the current folder",
+          "Geçerli klasörü yer imlerine ekle"},
+    Entry{"copy.copied_one", "Copied “{path}”", "“{path}” kopyalandı"},
+    Entry{"copy.copied.one", "Copied {n} path", ""},
+    Entry{"copy.copied.other", "Copied {n} paths", "{n} yol kopyalandı"},
+
+    // GoTo and the address bar (Phase 4).
+    Entry{"goto.placeholder", "Type a path, or search recents and bookmarks",
+          "Bir yol yazın ya da son kullanılanlarda ve yer imlerinde arayın"},
+    Entry{"goto.go_to", "Go to", "Git:"},
+    Entry{"goto.section_matches", "Folders", "Klasörler"},
+    Entry{"goto.section_recents", "Recents", "Son kullanılanlar"},
+    Entry{"goto.section_places", "Places & bookmarks", "Yerler ve yer imleri"},
+    Entry{"goto.empty", "Nothing here yet", "Henüz bir şey yok"},
+    Entry{"goto.not_found", "“{path}” doesn’t exist", "“{path}” yok"},
+    Entry{"goto.unknown_variable", "Unknown variable {name}", "Bilinmeyen değişken {name}"},
+    Entry{"goto.invalid", "That isn’t a local path", "Bu yerel bir yol değil"},
+    Entry{"goto.offline", "“{name}” is on a volume that isn’t mounted",
+          "“{name}” bağlı olmayan bir birimde"},
+    Entry{"hint.go", "Go", "Git"},
+    Entry{"hint.new_tab", "New tab", "Yeni sekme"},
+    Entry{"hint.complete", "Complete", "Tamamla"},
+
     // Sizes ({n} is already formatted with the language's decimal separator).
     Entry{"size.bytes.one", "{n} byte", ""},
     Entry{"size.bytes.other", "{n} bytes", "{n} bayt"},
@@ -283,7 +374,7 @@ std::atomic<Language> g_language{Language::English};
 const Entry* find_entry(std::string_view key) noexcept {
     static const std::unordered_map<std::string_view, const Entry*> index = [] {
         std::unordered_map<std::string_view, const Entry*> m;
-        m.reserve(kStrings.size());
+        m.reserve(std::size(kStrings));
         for (const Entry& e : kStrings) {
             m.emplace(e.key, &e);
         }
@@ -322,7 +413,7 @@ bool has_translation(std::string_view key, Language lang) noexcept {
 
 std::vector<std::string_view> catalog_keys() {
     std::vector<std::string_view> out;
-    out.reserve(kStrings.size());
+    out.reserve(std::size(kStrings));
     for (const Entry& e : kStrings) {
         out.push_back(e.key);
     }

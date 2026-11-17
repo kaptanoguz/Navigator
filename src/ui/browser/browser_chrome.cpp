@@ -14,6 +14,7 @@
 #include "i18n/catalog.hpp"
 #include "input/sdl_input.hpp"
 #include "widgets/icons.hpp"
+#include "widgets/text_field.hpp"
 
 namespace navigator::ui {
 namespace {
@@ -146,7 +147,68 @@ void BrowserView::draw_top_bar(const BrowserFrame& f, const Layout& l) {
     }
     x += b + std::round(p.px(10.0F));
 
-    draw_breadcrumbs(f, RectF{x, y, l.top.right() - margin - x, b});
+    // Right end: view lock (stub, drawn disabled) and the bookmark star (bookmarks.toggle).
+    const float icon = std::round(p.px(16.0F));
+    const float t = std::max(1.0F, p.px(1.35F));
+    float right = l.top.right() - margin;
+    const RectF star{right - b, y, b, b};
+    {
+        const PointerInput& ptr = f.pointer;
+        const bool inside = contains(star, ptr.x, ptr.y);
+        if (inside && ptr.pressed && active_ == WidgetId::None) {
+            active_ = WidgetId::Star;
+        }
+        if (active_ == WidgetId::Star && ptr.released && inside) {
+            f.queue.enqueue(CommandId::ToggleBookmark);
+        }
+        Renderer& r = p.renderer();
+        if (inside && (active_ == WidgetId::None || active_ == WidgetId::Star)) {
+            r.fill_rounded_rect(star, p.px(radius::md),
+                                active_ == WidgetId::Star ? f.palette.control_pressed
+                                                          : f.palette.control_hover);
+        }
+        const Color ink = f.bookmarked ? f.palette.accent
+                          : inside     ? f.palette.text_primary
+                                       : f.palette.text_secondary;
+        draw_line_icon(r, LineIcon::Star, std::round(star.center_x() - (0.5F * icon)),
+                       std::round(star.center_y() - (0.5F * icon)), icon, t, ink,
+                       f.palette.background, f.bookmarked);
+    }
+    right = star.x - gap;
+    {
+        const RectF lock{right - b, y, b, b};
+        draw_line_icon(p.renderer(), LineIcon::Lock, std::round(lock.center_x() - (0.5F * icon)),
+                       std::round(lock.center_y() - (0.5F * icon)), icon, t,
+                       f.palette.text_muted.with_alpha(0.55F), f.palette.background);
+        right = lock.x - std::round(p.px(6.0F));
+    }
+
+    const RectF area{x, y, std::max(right - x, 0.0F), b};
+    if (f.address != nullptr) {
+        draw_address_field(f, area);
+    } else {
+        address_rect_ = area;
+        draw_breadcrumbs(f, area);
+    }
+}
+
+void BrowserView::draw_address_field(const BrowserFrame& f, const RectF& area) {
+    const Painter& p = f.painter;
+    Renderer& r = p.renderer();
+    const Palette& pal = f.palette;
+    const RectF box = snap(RectF{area.x - p.px(4.0F), area.y, area.w + p.px(4.0F), area.h});
+    address_rect_ = box;
+    const float rad = std::round(p.px(radius::md - 1.0F));
+    r.fill_rounded_rect(box, rad, pal.surface);
+    r.stroke_rounded_rect(box, rad, std::max(1.0F, std::round(p.px(1.5F))),
+                          f.address_error ? pal.danger : pal.focus_ring);
+    TextFieldStyle st;
+    st.text = &type::crumb;
+    st.caret_height_dp = 16.0F;
+    const float pad = std::round(p.px(10.0F));
+    (void)draw_text_field(p, pal, *f.address,
+                          RectF{box.x + pad, box.y, box.w - (2.0F * pad), box.h}, {},
+                          address_scroll_, st);
 }
 
 void BrowserView::draw_breadcrumbs(const BrowserFrame& f, const RectF& area) {
@@ -226,6 +288,18 @@ void BrowserView::draw_breadcrumbs(const BrowserFrame& f, const RectF& area) {
             in.path = parts[s.part].path;
             f.intents.push_back(in);
         }
+        // Middle-click: that folder in a new background tab (docs/keymap.md, Phase 4 mouse).
+        if (s.part != static_cast<std::size_t>(-1) && inside && ptr.middle_pressed) {
+            middle_crumb_ = s.part;
+        }
+        if (s.part != static_cast<std::size_t>(-1) && inside && ptr.middle_released &&
+            middle_crumb_ == s.part) {
+            Intent in;
+            in.kind = Intent::Kind::OpenPath;
+            in.path = parts[s.part].path;
+            in.additive = true;
+            f.intents.push_back(in);
+        }
         if (pressed || hover) {
             r.fill_rounded_rect(hit, p.px(radius::sm + 1.0F),
                                 pressed ? pal.control_pressed : pal.control_hover);
@@ -240,6 +314,15 @@ void BrowserView::draw_breadcrumbs(const BrowserFrame& f, const RectF& area) {
                          std::max(1.0F, p.px(1.2F)), pal.text_muted);
             x += sep;
         }
+    }
+    // Phase 4: a click on the empty part of the bar edits the path (nav.focus_address_bar).
+    const RectF empty{x, mid - (0.5F * h), std::max(area.right() - x, 0.0F), h};
+    const bool in_empty = empty.w > 0.0F && contains(empty, ptr.x, ptr.y);
+    if (in_empty && ptr.pressed && active_ == WidgetId::None) {
+        active_ = WidgetId::AddressField;
+    }
+    if (active_ == WidgetId::AddressField && ptr.released && in_empty) {
+        f.queue.enqueue(CommandId::FocusAddressBar);
     }
 }
 

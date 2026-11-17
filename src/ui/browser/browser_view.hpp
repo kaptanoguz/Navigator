@@ -30,6 +30,7 @@
 #include "render/renderer.hpp"
 #include "shell/painter.hpp"
 #include "theme/theme.hpp"
+#include "widgets/text_edit.hpp"
 #include "widgets/text_fit.hpp"
 #include "widgets/ui_context.hpp"
 
@@ -58,6 +59,11 @@ struct BrowserFrame {
     double dt_ms = 16.0;        // since the previous frame
     Timestamp now{};            // for "Today"/"Yesterday"
     const Path* home = nullptr; // breadcrumb "Home" root (may be null)
+    // Phase 4: the address bar of this tab is in edit mode (nav.focus_address_bar) and shows
+    // this field instead of the breadcrumbs; error: the field's frame turns red.
+    const TextEdit* address = nullptr;
+    bool address_error = false;
+    bool bookmarked = false; // the star button is filled
 };
 
 // Performance overlay (F12) at the bottom-right of the window.
@@ -83,6 +89,10 @@ public:
     void set_hover_override(std::size_t row) noexcept { hover_override_ = row; }
 
     void clear_caches() noexcept { fitter_.clear(); }
+
+    // Phase 4: the address field's rectangle (px) from the last draw in edit mode, or the
+    // breadcrumb area otherwise (the dropdown hangs below it).
+    [[nodiscard]] const RectF& address_rect() const noexcept { return address_rect_; }
 
 private:
     struct Layout {
@@ -124,6 +134,7 @@ private:
     void draw_top_bar(const BrowserFrame& f, const Layout& l);
     bool tool_button(const BrowserFrame& f, const RectF& r, WidgetId id, bool enabled, int glyph);
     void draw_breadcrumbs(const BrowserFrame& f, const RectF& area);
+    void draw_address_field(const BrowserFrame& f, const RectF& area);
     void draw_notice(const BrowserFrame& f, const Layout& l);
     void draw_header(const BrowserFrame& f, const Layout& l);
     void draw_rows(const BrowserFrame& f, const Layout& l);
@@ -161,6 +172,9 @@ private:
     std::size_t hover_override_ = kNoRow;
 
     TextFitter fitter_;
+    RectF address_rect_;
+    std::size_t middle_crumb_ = static_cast<std::size_t>(-1);
+    float address_scroll_ = 0.0F;
 };
 
 } // namespace navigator::ui

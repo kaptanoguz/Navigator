@@ -12,6 +12,14 @@
 //      sync the tabs' persisted state and schedule the debounced session save.
 // Workers (listing, watch) wake the loop with an SDL user event.
 //
+// Phase 4 (docs/architecture.md "Phase 4"): the sidebar (left of the pane tree; one per window)
+// is drawn from rows rebuilt every frame from the PlacesModel; its volume and probe workers and
+// the GoTo / address bar path worker deliver results at frame start (with the listings).
+// Keyboard focus is the active pane, the sidebar, or a text field (popup query, GoTo, address
+// bar, bookmark rename); fields take their editing keys before the keymap (apply_field_key),
+// the sidebar and the address bar take the resolved list.* commands (docs/keymap.md "Focus
+// scoping"). Bookmarks and recents follow the session's restore / save flags and headless rule.
+//
 // Session (docs/architecture.md, "Persistence"): loaded once before the window is created
 // (geometry: size + maximized; position on X11 only), saved 2 s after the last persisted change
 // by a background writer, and synchronously when the loop ends (quit, window close, max_frames).
@@ -33,6 +41,11 @@
 //                                          dragpreview:PANE:TAB:TO_PANE:left|right|top|bottom|centre
 //                                          dump:FILE (panes and tabs, one line each)
 //                                          (PANE/TAB: 0-based indices in pane/tab order)
+//                                          Phase 4: key:CHORD (parse_key_chord, e.g. key:Tab,
+//                                          key:Ctrl+A) through the same path as a key press;
+//                                          sbhover:ROW / sbfocus[:ROW] (sidebar rows);
+//                                          sbmenu:ROW (row context menu)
+//   NAVIGATOR_DEBUG_VOLUMES=<dir>          fake volume table for the sidebar (debug_volumes.hpp)
 //   NAVIGATOR_DEBUG_BENCH_SCROLL=1         scroll benchmark: logs frame times to stdout and quits
 // User-facing: NAVIGATOR_NO_ANIMATIONS=1 forces AppConfig::animations off.
 #include <algorithm>
@@ -42,6 +55,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -52,6 +66,8 @@
 
 #include <navigator/i18n.hpp>
 #include <navigator/layout.hpp>
+#include <navigator/path_input.hpp>
+#include <navigator/places.hpp>
 #include <navigator/platform.hpp>
 #include <navigator/ui.hpp>
 #include <navigator/watch.hpp>
@@ -60,14 +76,21 @@
 #include "browser/browser_view.hpp"
 #include "i18n/catalog.hpp"
 #include "input/sdl_input.hpp"
+#include "path/copy_path.hpp"
+#include "path/path_worker.hpp"
 #include "render/backend_name.hpp"
 #include "render/renderer.hpp"
 #include "render/sdl_handles.hpp"
+#include "shell/debug_volumes.hpp"
 #include "shell/painter.hpp"
 #include "shell/ui_settings.hpp"
+#include "sidebar/places_model.hpp"
+#include "sidebar/sidebar_model.hpp"
+#include "sidebar/sidebar_view.hpp"
 #include "text/font_cache.hpp"
 #include "text/text_renderer.hpp"
 #include "theme/theme.hpp"
+#include "widgets/text_edit.hpp"
 #include "widgets/ui_context.hpp"
 #include "workspace/session_writer.hpp"
 #include "workspace/workspace.hpp"
@@ -200,9 +223,25 @@ struct App::Impl {
     Keymap keymap;
 
     std::unique_ptr<platform::IAppLauncher> launcher; // outlives the workspace
+    std::unique_ptr<ui::PathWorker> path_worker;      // GoTo / address bar jobs
     std::unique_ptr<ui::SessionWriter> writer;        // outlives nothing it reads (copies)
     std::unique_ptr<ui::Workspace> workspace;
     ui::WorkspaceView view;
+    // Phase 4: sidebar data (stores, volume / probe workers, persistence) and view.
+    std::unique_ptr<ui::PlacesModel> places;
+    ui::SidebarView sidebar;
+    std::vector<ui::SidebarRow> sidebar_rows;
+    std::uint64_t rows_serial = 0; // inputs of sidebar_rows (rebuilt when one changes)
+    layout::SidebarState rows_state;
+    Path rows_folder;
+    Language rows_language = Language::English;
+    ui::RectF sidebar_rect;
+    bool sidebar_icon_only = false;
+    bool sidebar_focus = false; // keyboard focus is in the sidebar
+    std::size_t sidebar_row = static_cast<std::size_t>(-1);
+    std::vector<ui::PathOutcome> outcomes;
+    places::BookmarkId focus_bookmark; // move keyboard focus to this bookmark's row
+    bool focus_on_show = false;        // sidebar.focus showed the sidebar: focus it next frame
     ui::SaveScheduler save;
     std::uint64_t seen_persist = 0;
     Path config_root;
@@ -251,6 +290,22 @@ struct App::Impl {
 
     Result<void> init(const AppConfig& config);
     void handle_event(const SDL_Event& event);
+    void handle_key(const KeyChord& chord, bool repeat);
+    [[nodiscard]] ui::TextEdit* text_field() noexcept;
+    void field_edited();
+    bool route_sidebar(const Command& command);
+    void open_sidebar_row(std::size_t row, bool new_tab);
+    void sidebar_menu(std::size_t row, float x, float y);
+    void commit_rename();
+    void focus_sidebar(bool on);
+    void layout_sidebar(float width_px, float height_px);
+    void apply_outcomes();
+    void bookmark_command(const Command& command);
+    [[nodiscard]] places::BookmarkId target_bookmark(std::uint64_t arg) const;
+    [[nodiscard]] std::vector<ui::GotoSource> goto_sources() const;
+    void copy_path(std::uint64_t arg);
+    void set_clipboard(const std::string& value) const;
+    void toast(std::string message, bool error = false);
     void update_geometry();
     void apply_window_geometry(const layout::WindowGeometry& g, bool restore) const;
     void persist_tick(double t_ms);
@@ -438,6 +493,7 @@ Result<void> App::Impl::init(const AppConfig& config) {
         e.type = wake_type;
         SDL_PushEvent(&e); // thread-safe
     };
+    const std::function<void()> wake_fn = wo.model.wake;
     wo.home = home;
     wo.row_dp = ui::density_metrics(density).row_height;
     wo.config_root = config_root;
@@ -454,6 +510,41 @@ Result<void> App::Impl::init(const AppConfig& config) {
     }
     (void)workspace->sync();
     seen_persist = workspace->persist_serial();
+
+    // Phase 4: GoTo / address bar worker, places (bookmarks, recents, volumes).
+    path_worker = std::make_unique<ui::PathWorker>(wake_fn);
+    view.attach_paths(path_worker.get());
+    ui::PlacesModel::Options po;
+    po.home = home;
+    if (!home.empty()) {
+        // The XDG user-dirs file (small; read once like the session).
+        Path xdg_config = home / ".config";
+        if (auto c = platform::user_dir(platform::UserDir::Config); c) {
+            xdg_config = *c;
+        }
+        if (Result<platform::UserDirs> d = platform::read_user_dirs(home, xdg_config); d) {
+            po.user_dirs = std::move(*d);
+        } else {
+            SDL_Log("Navigator: user dirs not read: %s", d.error().message.c_str());
+        }
+    }
+    po.config_root = config_root;
+    po.restore = restore;
+    po.persist = persist;
+    po.volume_worker = true;
+    po.volume_query.home_dir = home;
+    if (const char* dv = env("NAVIGATOR_DEBUG_VOLUMES")) {
+        if (Result<VolumeQuery> q = ui::debug_volume_query(Path(dv), home); q) {
+            po.volume_query = std::move(*q);
+        } else {
+            SDL_Log("Navigator: %s", q.error().message.c_str());
+        }
+    }
+    po.wake = wake_fn;
+    po.log = [](const std::string& msg) { SDL_Log("Navigator: %s", msg.c_str()); };
+    places = std::make_unique<ui::PlacesModel>(std::move(po));
+    places->load();
+    places->set_sidebar_visible(workspace->sidebar().visible);
     return ok();
 }
 
@@ -510,6 +601,9 @@ void App::Impl::update_geometry() {
 }
 
 void App::Impl::persist_tick(double t_ms) {
+    if (places) {
+        places->tick(t_ms);
+    }
     if (workspace->persist_serial() != seen_persist) {
         seen_persist = workspace->persist_serial();
         save.mark(t_ms);
@@ -523,6 +617,9 @@ void App::Impl::persist_tick(double t_ms) {
 }
 
 void App::Impl::final_save() {
+    if (places) {
+        places->final_save();
+    }
     if (!writer) {
         return;
     }
@@ -537,11 +634,13 @@ bool App::Impl::counting() const noexcept {
     if (script.empty() && screenshot_path.empty()) {
         return true;
     }
-    return script_step >= script.size() && workspace->settled();
+    return script_step >= script.size() && workspace->settled() && !view.paths_busy() &&
+           (!places || (places->volumes_ready() && !places->probe_pending()));
 }
 
 bool App::Impl::continuous() const noexcept {
-    return max_frames > 0 || show_fps || fade_start_ms >= 0.0 || view.animating() || bench;
+    return max_frames > 0 || show_fps || fade_start_ms >= 0.0 || view.animating() || bench ||
+           sidebar.animating();
 }
 
 float App::Impl::fade_progress(double t_ms) const noexcept {
@@ -569,35 +668,17 @@ void App::Impl::handle_event(const SDL_Event& event) {
             }
             break;
         }
-        // A popup's text field edits with Backspace (text editing, not a command); Delete in
-        // the layout picker deletes the highlighted layout (popup-local, docs/keymap.md
-        // "Popups").
-        if (view.wants_text_input() && chord.mods == Modifiers::None) {
-            if (chord.key == Key::Backspace) {
-                view.backspace();
-                break;
-            }
-            if (chord.key == Key::Delete && !event.key.repeat && view.delete_key(intents)) {
-                break;
-            }
-        }
-        if (const auto cmd = resolve_command(keymap, registry, chord); cmd) {
-            // Auto-repeat moves the cursor; it never re-fires toggles or navigation.
-            if (!event.key.repeat || is_cursor_command(cmd->id)) {
-                queue.enqueue(*cmd);
-            }
-        } else if (!event.key.repeat && !view.popup_open() &&
-                   chord == KeyChord{Key::F10, Modifiers::Shift}) {
-            // Last-resort fallback until a registered command exists: the platform
-            // convention for a context menu (Shift+F10) on the active tab.
-            view.request_tab_menu();
-        }
+        handle_key(chord, event.key.repeat);
         break;
     }
     case SDL_EVENT_KEY_UP: pointer.mods = ui::translate_modifiers(event.key.mod); break;
     case SDL_EVENT_TEXT_INPUT:
         if (event.text.text != nullptr) {
-            view.text_input(event.text.text);
+            if (sidebar.renaming() && !view.popup_open()) {
+                (void)sidebar.rename_edit()->insert(event.text.text);
+            } else {
+                view.text_input(event.text.text);
+            }
         }
         break;
     case SDL_EVENT_MOUSE_MOTION:
@@ -668,10 +749,473 @@ void App::Impl::handle_event(const SDL_Event& event) {
     }
 }
 
+void App::Impl::handle_key(const KeyChord& chord, bool repeat) {
+    // Delete in the layout picker deletes the highlighted layout (popup-local, docs/keymap.md
+    // "Popups"), before its filter field sees the key.
+    if (chord == KeyChord{Key::Delete, Modifiers::None} && !repeat && view.delete_key(intents)) {
+        return;
+    }
+    // Focus scoping step 1: a focused text field takes its editing keys first.
+    if (ui::TextEdit* field = text_field(); field != nullptr) {
+        const ui::FieldKeyResult r = ui::apply_field_key(*field, chord, [] {
+            std::string out;
+            if (char* t = SDL_GetClipboardText(); t != nullptr) {
+                out = t;
+                SDL_free(t);
+            }
+            return out;
+        });
+        if (r.handled) {
+            dirty = true;
+            if (r.clipboard) {
+                set_clipboard(*r.clipboard);
+            }
+            if (r.tab) {
+                if (!sidebar.renaming()) {
+                    (void)view.field_tab(now_ms());
+                }
+            } else if (r.changed) {
+                field_edited();
+            }
+            return;
+        }
+    }
+    if (const auto cmd = resolve_command(keymap, registry, chord); cmd) {
+        // Auto-repeat moves the cursor; it never re-fires toggles or navigation.
+        if (!repeat || is_cursor_command(cmd->id)) {
+            queue.enqueue(*cmd);
+        }
+    } else if (!repeat && !view.popup_open() && chord == KeyChord{Key::F10, Modifiers::Shift}) {
+        // Last-resort fallback until a registered command exists: the platform convention for
+        // a context menu (Shift+F10) on the active tab.
+        view.request_tab_menu();
+    }
+}
+
+ui::TextEdit* App::Impl::text_field() noexcept {
+    if (sidebar.renaming() && !view.popup_open()) {
+        return sidebar.rename_edit();
+    }
+    return view.active_field();
+}
+
+void App::Impl::field_edited() {
+    if (sidebar.renaming() && !view.popup_open()) {
+        return;
+    }
+    view.field_changed(now_ms());
+}
+
+void App::Impl::set_clipboard(const std::string& value) const {
+    if (!SDL_SetClipboardText(value.c_str())) {
+        SDL_Log("Navigator: clipboard unavailable: %s", SDL_GetError());
+    }
+}
+
+void App::Impl::toast(std::string message, bool error) {
+    view.show_toast(std::move(message), error, now_ms());
+}
+
+void App::Impl::focus_sidebar(bool on) {
+    if (on) {
+        if (!workspace->sidebar().visible) {
+            return;
+        }
+        view.close_address_bar();
+        if (sidebar_rows.empty()) {
+            focus_on_show = true; // no rows before the first frame: focus once they exist
+            return;
+        }
+        if (sidebar_row >= sidebar_rows.size() || !sidebar_rows[sidebar_row].focusable()) {
+            sidebar_row = ui::sidebar_initial_focus(sidebar_rows);
+        }
+        sidebar.reveal(sidebar_row);
+    } else {
+        sidebar.end_rename();
+    }
+    sidebar_focus = on;
+}
+
+bool App::Impl::route_sidebar(const Command& command) {
+    constexpr auto npos = static_cast<std::size_t>(-1);
+    const auto step = [this](std::size_t from, std::ptrdiff_t delta) {
+        const std::size_t next = ui::sidebar_focus_step(sidebar_rows, from, delta);
+        if (next != npos) {
+            sidebar_row = next;
+            sidebar.reveal(next);
+        }
+    };
+    switch (command.id) {
+    case CommandId::CursorUp: step(sidebar_row, -1); return true;
+    case CommandId::CursorDown: step(sidebar_row, 1); return true;
+    case CommandId::CursorPageUp: step(sidebar_row, -8); return true;
+    case CommandId::CursorPageDown: step(sidebar_row, 8); return true;
+    case CommandId::CursorHome: step(npos, 1); return true;
+    case CommandId::CursorEnd: step(npos, -1); return true;
+    case CommandId::Activate:
+        if (sidebar_row < sidebar_rows.size()) {
+            const ui::SidebarRow row = sidebar_rows[sidebar_row];
+            open_sidebar_row(sidebar_row, false);
+            if (row.item() && row.online()) {
+                focus_sidebar(false); // the place opened: keep working in the pane
+            }
+        }
+        return true;
+    case CommandId::OpenInNewTab:
+        if (sidebar_row < sidebar_rows.size()) {
+            open_sidebar_row(sidebar_row, true);
+        }
+        return true;
+    case CommandId::ClearSelection: focus_sidebar(false); return true;
+    case CommandId::SelectAll: return true; // nothing to select in the sidebar
+    default: return false;
+    }
+}
+
+void App::Impl::open_sidebar_row(std::size_t row, bool new_tab) {
+    if (row >= sidebar_rows.size()) {
+        return;
+    }
+    const ui::SidebarRow& r = sidebar_rows[row];
+    if (r.kind == ui::SidebarRowKind::Header) {
+        layout::SidebarState st = workspace->sidebar();
+        st.set_collapsed(r.section, !st.is_collapsed(r.section));
+        workspace->set_sidebar(st);
+        return;
+    }
+    if (!r.item()) {
+        return;
+    }
+    if (r.status == places::LocationStatus::Offline) {
+        toast(ui::substitute(tr("sidebar.offline_notice"), "name", r.label), true);
+        return;
+    }
+    if (r.status == places::LocationStatus::Missing) {
+        toast(ui::substitute(tr("sidebar.missing_notice"), "name", r.label), true);
+        return;
+    }
+    view.close_address_bar();
+    if (new_tab) {
+        (void)workspace->open_tab(r.path, false);
+    } else {
+        workspace->navigate_active(r.path);
+    }
+}
+
+void App::Impl::sidebar_menu(std::size_t row, float x, float y) {
+    if (row >= sidebar_rows.size()) {
+        return;
+    }
+    const ui::SidebarRow& r = sidebar_rows[row];
+    using Entry = ui::WorkspaceView::MenuEntry;
+    std::vector<Entry> entries;
+    const auto cmd_entry = [&](std::string_view key, CommandId id, std::uint64_t arg,
+                               std::string_view hint, bool enabled, bool sep) {
+        Entry e;
+        e.label = std::string(tr(key));
+        e.command = Command{id, arg};
+        e.hint_command = std::string(hint);
+        e.enabled = enabled;
+        e.separator_before = sep;
+        entries.push_back(std::move(e));
+    };
+    if (r.item()) {
+        const bool online = r.online();
+        const auto open_entry = [&](std::string_view key, bool new_tab, std::string_view hint) {
+            Entry e;
+            e.label = std::string(tr(key));
+            ui::Intent in;
+            in.kind = ui::Intent::Kind::OpenPath;
+            in.path = r.path;
+            in.additive = new_tab;
+            e.intent = in;
+            e.enabled = online;
+            e.hint_command = std::string(hint);
+            entries.push_back(std::move(e));
+        };
+        open_entry("menu.open", false, "");
+        open_entry("menu.open_in_new_tab", true, "list.open_in_new_tab");
+        Entry copy;
+        copy.label = std::string(tr("menu.copy_path"));
+        ui::Intent in;
+        in.kind = ui::Intent::Kind::CopyText;
+        in.text = ui::copy_path_text(std::vector<Path>{r.path});
+        copy.intent = in;
+        entries.push_back(std::move(copy));
+    }
+    if (r.kind == ui::SidebarRowKind::Bookmark) {
+        const std::size_t at = ui::sidebar_bookmark_index(sidebar_rows, row);
+        const std::uint64_t id = r.bookmark.value;
+        cmd_entry("menu.rename", CommandId::RenameBookmark, id, "bookmarks.rename", true, true);
+        cmd_entry("menu.move_up", CommandId::MoveBookmarkUp, id, "bookmarks.move_up", at > 0,
+                  false);
+        cmd_entry("menu.move_down", CommandId::MoveBookmarkDown, id, "bookmarks.move_down",
+                  at + 1 < places->bookmarks().size(), false);
+        cmd_entry("menu.remove_bookmark", CommandId::ToggleBookmark, id, "", true, true);
+    }
+    if (r.section == layout::SidebarSection::Recents &&
+        (r.kind == ui::SidebarRowKind::Recent || r.kind == ui::SidebarRowKind::Header)) {
+        cmd_entry("menu.clear_recents", CommandId::ClearRecents, 0, "recents.clear",
+                  !places->recents().empty(), r.item());
+        cmd_entry(places->recents().options().enabled ? "menu.stop_tracking"
+                                                      : "menu.resume_tracking",
+                  CommandId::ToggleRecentsTracking, 0, "recents.toggle_tracking", true, false);
+    }
+    if (r.kind == ui::SidebarRowKind::Header && r.section == layout::SidebarSection::Bookmarks) {
+        cmd_entry("menu.bookmark_folder", CommandId::ToggleBookmark, 0, "bookmarks.toggle", true,
+                  false);
+    }
+    if (!entries.empty()) {
+        view.open_menu(keymap, std::move(entries), x, y);
+    }
+}
+
+places::BookmarkId App::Impl::target_bookmark(std::uint64_t arg) const {
+    if (arg != 0) {
+        if (arg > 0xFFFFFFFFULL) {
+            return {};
+        }
+        const places::BookmarkId id{static_cast<std::uint32_t>(arg)};
+        return places->bookmarks().find(id) != nullptr ? id : places::BookmarkId{};
+    }
+    if (sidebar_focus && sidebar_row < sidebar_rows.size() &&
+        sidebar_rows[sidebar_row].kind == ui::SidebarRowKind::Bookmark) {
+        return sidebar_rows[sidebar_row].bookmark;
+    }
+    return {};
+}
+
+void App::Impl::bookmark_command(const Command& command) {
+    const auto now =
+        std::chrono::time_point_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now());
+    switch (command.id) {
+    case CommandId::ToggleBookmark: {
+        if (command.arg != 0) {
+            const places::BookmarkId id = target_bookmark(command.arg);
+            if (const places::Bookmark* b = places->bookmarks().find(id); b != nullptr) {
+                const std::string name = b->name.empty() ? places::default_label(b->path) : b->name;
+                if (places->remove_bookmark(id)) {
+                    toast(ui::substitute(tr("bookmarks.removed"), "name", name));
+                }
+            }
+            return;
+        }
+        const ui::BrowserModel& m = workspace->active_model();
+        if (!m.loaded() || m.current_dir().empty()) {
+            return;
+        }
+        const std::string name = places::default_label(m.current_dir());
+        switch (places->toggle_bookmark(m.current_dir(), now)) {
+        case ui::PlacesModel::Toggled::Added:
+            toast(ui::substitute(tr("bookmarks.added"), "name", name));
+            break;
+        case ui::PlacesModel::Toggled::Removed:
+            toast(ui::substitute(tr("bookmarks.removed"), "name", name));
+            break;
+        case ui::PlacesModel::Toggled::Failed:
+            toast(ui::substitute(tr("bookmarks.add_failed"), "name", name), true);
+            break;
+        }
+        return;
+    }
+    case CommandId::RenameBookmark: {
+        const places::BookmarkId id = target_bookmark(command.arg);
+        const places::Bookmark* b = places->bookmarks().find(id);
+        if (b == nullptr) {
+            return;
+        }
+        layout::SidebarState st = workspace->sidebar();
+        st.visible = true;
+        st.set_collapsed(layout::SidebarSection::Bookmarks, false);
+        workspace->set_sidebar(st);
+        places->set_sidebar_visible(true);
+        sidebar.begin_rename(id, b->name.empty() ? places::default_label(b->path) : b->name);
+        sidebar_focus = true;
+        focus_bookmark = id;
+        return;
+    }
+    case CommandId::MoveBookmarkUp:
+    case CommandId::MoveBookmarkDown: {
+        const places::BookmarkId id = target_bookmark(command.arg);
+        if (id.valid() &&
+            places->move_bookmark(id, command.id == CommandId::MoveBookmarkUp ? -1 : 1) &&
+            sidebar_focus) {
+            focus_bookmark = id; // keep keyboard focus on the moved row
+        }
+        return;
+    }
+    default: return;
+    }
+}
+
+void App::Impl::commit_rename() {
+    const places::BookmarkId id = sidebar.rename_target();
+    ui::TextEdit* edit = sidebar.rename_edit();
+    if (edit != nullptr && id.valid()) {
+        if (Result<void> r = places->rename_bookmark(id, edit->text()); !r) {
+            toast(std::string(tr("bookmarks.rename_failed")), true);
+        }
+    }
+    sidebar.end_rename();
+}
+
+std::vector<ui::GotoSource> App::Impl::goto_sources() const {
+    std::vector<ui::GotoSource> out;
+    std::size_t recents = 0;
+    for (const places::RecentEntry& e : places->recents().entries()) {
+        if (recents++ >= 20) {
+            break;
+        }
+        ui::GotoSource g;
+        g.kind = ui::GotoSource::Kind::Recent;
+        g.status = places->status(e.path, e.volume, &g.path);
+        g.label = places::default_label(e.path);
+        out.push_back(std::move(g));
+    }
+    for (const places::Bookmark& b : places->bookmarks().list()) {
+        ui::GotoSource g;
+        g.kind = ui::GotoSource::Kind::Bookmark;
+        g.status = places->status(b.path, b.volume, &g.path);
+        g.label = b.name.empty() ? places::default_label(b.path) : b.name;
+        out.push_back(std::move(g));
+    }
+    for (const places::Place& pl : places->places()) {
+        if (places->missing(pl.path)) {
+            continue;
+        }
+        ui::GotoSource g;
+        g.kind = ui::GotoSource::Kind::Place;
+        g.place = pl.kind;
+        g.path = pl.path;
+        g.label = std::string(tr(places::label_key(pl.kind)));
+        out.push_back(std::move(g));
+    }
+    return out;
+}
+
+void App::Impl::copy_path(std::uint64_t arg) {
+    const ui::BrowserModel& m = workspace->active_model();
+    const std::vector<Path> paths =
+        ui::copy_path_targets(m, (arg & CopyPathArg::CurrentFolder) != 0U);
+    if (paths.empty()) {
+        return;
+    }
+    const std::string copied = ui::copy_path_text(paths);
+    set_clipboard(copied);
+    if (paths.size() == 1) {
+        toast(ui::substitute(tr("copy.copied_one"), "path", copied));
+    } else {
+        toast(ui::tr_count("copy.copied", paths.size()));
+    }
+}
+
+void App::Impl::apply_outcomes() {
+    std::vector<ui::PathOutcome> batch;
+    batch.swap(outcomes);
+    for (const ui::PathOutcome& o : batch) {
+        dirty = true;
+        switch (o.kind) {
+        case ui::PathOutcome::Kind::Navigate:
+        case ui::PathOutcome::Kind::RevealFile:
+            if (o.new_tab) {
+                (void)workspace->open_tab(o.path, false);
+            } else {
+                workspace->navigate_active(o.path, o.cursor_name);
+            }
+            break;
+        case ui::PathOutcome::Kind::OpenFile: {
+            const Result<void> opened =
+                launcher ? platform::open_with_default(o.path, *launcher)
+                         : Result<void>(fail(ErrorCode::Unsupported, "no launcher"));
+            if (!opened) {
+                toast(ui::substitute(tr("notice.open_file_failed"), "name",
+                                     places::default_label(o.path)),
+                      true);
+            }
+            break;
+        }
+        }
+    }
+}
+
+void App::Impl::layout_sidebar(float width_px, float height_px) {
+    const layout::SidebarState& st = workspace->sidebar();
+    sidebar_icon_only = ui::sidebar_icon_only(width_px / scale);
+    if (!st.visible) {
+        sidebar_rect = ui::RectF{};
+        sidebar_rows.clear();
+        sidebar_focus = false;
+        rows_serial = 0;
+        return;
+    }
+    float w_dp = sidebar_icon_only
+                     ? ui::SidebarView::kIconOnlyWidth
+                     : static_cast<float>(std::clamp(st.width, layout::kSidebarMinWidth,
+                                                     layout::kSidebarMaxWidth));
+    // Never squeeze the panes below one minimum pane width.
+    w_dp = std::min(w_dp, std::max((width_px / scale) - ui::WorkspaceView::kMinPaneWidth,
+                                   ui::SidebarView::kIconOnlyWidth));
+    sidebar_rect = ui::RectF{0.0F, 0.0F, std::round(w_dp * scale), height_px};
+    const ui::BrowserModel* m = workspace->model(workspace->active_tab());
+    const Path folder = m != nullptr && m->loaded() ? m->current_dir() : Path();
+    // Rows change only with the places data, the sidebar state, the folder or the language.
+    if (places->serial() != rows_serial || !(st == rows_state) || folder != rows_folder ||
+        language() != rows_language || sidebar_rows.empty()) {
+        sidebar_rows = ui::build_sidebar_rows(*places, st, folder);
+        rows_serial = places->serial();
+        rows_state = st;
+        rows_folder = folder;
+        rows_language = language();
+    }
+    if (focus_on_show) {
+        focus_on_show = false;
+        if (sidebar_row >= sidebar_rows.size() || !sidebar_rows[sidebar_row].focusable()) {
+            sidebar_row = ui::sidebar_initial_focus(sidebar_rows);
+        }
+        sidebar_focus = true;
+        sidebar.reveal(sidebar_row);
+    }
+    if (focus_bookmark.valid()) {
+        if (const std::size_t r = ui::sidebar_row_of(sidebar_rows, focus_bookmark);
+            r < sidebar_rows.size()) {
+            sidebar_row = r;
+            sidebar.reveal(r);
+        }
+        focus_bookmark = places::BookmarkId{};
+    }
+    if (sidebar_focus && sidebar_row >= sidebar_rows.size()) {
+        sidebar_row = ui::sidebar_initial_focus(sidebar_rows);
+    } else if (sidebar_focus && !sidebar_rows[sidebar_row].focusable()) {
+        sidebar_row = ui::sidebar_focus_step(sidebar_rows,
+                                             std::min(sidebar_row, sidebar_rows.size() - 1), -1);
+        if (sidebar_row >= sidebar_rows.size()) {
+            sidebar_row = ui::sidebar_initial_focus(sidebar_rows);
+        }
+    }
+}
+
 void App::Impl::execute(const Command& command) {
     dirty = true;
     // An open popup takes the keyboard (docs/keymap.md, "Popups").
     if (view.popup_open() && view.route_command(command, queue, intents)) {
+        return;
+    }
+    // The bookmark rename field: Enter commits, Escape cancels.
+    if (sidebar.renaming()) {
+        if (command.id == CommandId::Activate) {
+            commit_rename();
+            return;
+        }
+        if (command.id == CommandId::ClearSelection) {
+            sidebar.end_rename();
+            return;
+        }
+    }
+    // Focus scoping step 2 (docs/keymap.md): the address bar and the sidebar take list.*.
+    if (view.route_address(command)) {
+        return;
+    }
+    if (sidebar_focus && route_sidebar(command)) {
         return;
     }
     if (command.id == CommandId::ClearSelection && view.dragging()) {
@@ -696,7 +1240,81 @@ void App::Impl::execute(const Command& command) {
     case CommandId::SaveLayout: view.open_save_layout(*workspace); return;
     case CommandId::LoadLayout: view.open_layout_picker(*workspace, false); return;
     case CommandId::DeleteLayout: view.open_layout_picker(*workspace, true); return;
-    default: (void)workspace->execute(command); return;
+    // Phase 4.
+    case CommandId::ToggleSidebar: {
+        layout::SidebarState st = workspace->sidebar();
+        st.visible = !st.visible;
+        workspace->set_sidebar(st);
+        places->set_sidebar_visible(st.visible);
+        if (!st.visible) {
+            focus_sidebar(false);
+        }
+        return;
+    }
+    case CommandId::ToggleViewLock: return; // stub (docs/keymap.md)
+    case CommandId::FocusAddressBar:
+        focus_sidebar(false);
+        view.open_address_bar(*workspace, home, now_ms());
+        return;
+    case CommandId::GoTo:
+        focus_sidebar(false);
+        view.close_address_bar();
+        view.open_goto(*workspace, home, goto_sources(), now_ms());
+        return;
+    case CommandId::FocusSidebar:
+        if (!workspace->sidebar().visible) {
+            layout::SidebarState st = workspace->sidebar();
+            st.visible = true;
+            workspace->set_sidebar(st);
+            places->set_sidebar_visible(true);
+            focus_on_show = true; // its rows exist from the next frame
+            return;
+        }
+        focus_sidebar(true);
+        return;
+    case CommandId::ToggleBookmark:
+    case CommandId::RenameBookmark:
+    case CommandId::MoveBookmarkUp:
+    case CommandId::MoveBookmarkDown: bookmark_command(command); return;
+    case CommandId::ClearRecents: places->clear_recents(now_ms()); return;
+    case CommandId::ToggleRecentsTracking:
+        toast(std::string(tr(places->toggle_tracking(now_ms()) ? "recents.tracking_on"
+                                                               : "recents.tracking_off")));
+        return;
+    case CommandId::CopyPath: copy_path(command.arg); return;
+    case CommandId::FocusNextPane:
+    case CommandId::FocusPreviousPane: {
+        if (!workspace->sidebar().visible) {
+            sidebar_focus = false;
+            (void)workspace->execute(command);
+            return;
+        }
+        const std::vector<layout::PaneId> order = workspace->layout().pane_order();
+        std::size_t at = 0;
+        for (std::size_t i = 0; i < order.size(); ++i) {
+            if (order[i] == workspace->active_pane()) {
+                at = i;
+            }
+        }
+        const ui::FocusStop stop = ui::cycle_focus(order.size(), true, sidebar_focus, at,
+                                                   command.id == CommandId::FocusNextPane ? 1 : -1);
+        if (stop.sidebar) {
+            focus_sidebar(true);
+        } else {
+            focus_sidebar(false);
+            if (stop.pane < order.size()) {
+                workspace->activate_pane(order[stop.pane]);
+            }
+        }
+        return;
+    }
+    default:
+        if (command.id == CommandId::NavigateBack || command.id == CommandId::NavigateForward ||
+            command.id == CommandId::NavigateUp) {
+            view.close_address_bar();
+        }
+        (void)workspace->execute(command);
+        return;
     }
 }
 
@@ -798,6 +1416,60 @@ void App::Impl::apply_intents() {
         case Kind::SaveLayout:
         case Kind::LoadLayout:
         case Kind::DeleteLayout: layout_intent(in); break;
+        case Kind::SidebarOpen: open_sidebar_row(in.row, in.additive); break;
+        case Kind::SidebarToggleSection: {
+            layout::SidebarState st = workspace->sidebar();
+            const auto sec = static_cast<layout::SidebarSection>(
+                std::min<std::size_t>(in.index, layout::kSidebarSectionCount - 1));
+            st.set_collapsed(sec, !st.is_collapsed(sec));
+            workspace->set_sidebar(st);
+            break;
+        }
+        case Kind::SidebarResize: {
+            layout::SidebarState st = workspace->sidebar();
+            st.width = std::round(in.position);
+            workspace->set_sidebar(st);
+            break;
+        }
+        case Kind::SidebarMenu: sidebar_menu(in.row, in.x, in.y); break;
+        case Kind::SidebarFocusRow:
+            sidebar_row = in.row;
+            focus_sidebar(true);
+            break;
+        case Kind::RenameBookmark:
+            (void)places->rename_bookmark(places::BookmarkId{static_cast<std::uint32_t>(in.index)},
+                                          in.text);
+            break;
+        case Kind::MoveBookmark:
+            (void)places->move_bookmark_to(places::BookmarkId{static_cast<std::uint32_t>(in.index)},
+                                           in.row);
+            break;
+        case Kind::BookmarkTab: {
+            const ui::BrowserModel* tm = workspace->model(layout::TabId{in.tab});
+            if (tm != nullptr && tm->loaded()) {
+                const auto now = std::chrono::time_point_cast<std::chrono::nanoseconds>(
+                    std::chrono::system_clock::now());
+                const std::string name = places::default_label(tm->current_dir());
+                if (places->add_bookmark(tm->current_dir(), now, in.row)) {
+                    toast(ui::substitute(tr("bookmarks.added"), "name", name));
+                } else if (places->bookmarks().contains(tm->current_dir())) {
+                    toast(ui::substitute(tr("bookmarks.exists"), "name", name));
+                }
+            }
+            break;
+        }
+        case Kind::OpenPath:
+            view.close_address_bar();
+            if (in.additive) {
+                (void)workspace->open_tab(in.path, false);
+            } else {
+                workspace->navigate_active(in.path);
+            }
+            break;
+        case Kind::CopyText:
+            set_clipboard(in.text);
+            toast(ui::substitute(tr("copy.copied_one"), "path", in.text));
+            break;
         }
     }
 }
@@ -835,7 +1507,8 @@ void App::Impl::dump(const std::string& file) const {
 }
 
 void App::Impl::run_script_step() {
-    if (script_step >= script.size() || !workspace->settled()) {
+    if (script_step >= script.size() || !workspace->settled() || view.paths_busy() ||
+        !outcomes.empty() || !queue.empty()) {
         return;
     }
     const std::vector<std::string> parts = split(script[script_step], ':');
@@ -884,7 +1557,11 @@ void App::Impl::run_script_step() {
     } else if (op == "blur") {
         focused = false;
     } else if (op == "type") {
-        view.text_input(raw.substr(5));
+        if (sidebar.renaming() && !view.popup_open()) {
+            (void)sidebar.rename_edit()->insert(raw.substr(5));
+        } else {
+            view.text_input(raw.substr(5));
+        }
     } else if (op == "focus") {
         workspace->activate_pane(pane_at_index(num(1)));
     } else if (op == "tab") {
@@ -903,6 +1580,23 @@ void App::Impl::run_script_step() {
         view.debug_drag(tab_at(num(1), num(2)), pane_at_index(num(1)), t);
     } else if (op == "dump") {
         dump(raw.substr(5));
+    } else if (op == "key") {
+        if (Result<KeyChord> chord = parse_key_chord(raw.substr(4)); chord) {
+            handle_key(*chord, false);
+        } else {
+            SDL_Log("Navigator: script: bad chord '%s'", raw.substr(4).c_str());
+        }
+    } else if (op == "sbhover") {
+        sidebar.set_hover_override(num(1));
+    } else if (op == "sbfocus") {
+        if (parts.size() > 1) {
+            sidebar_row = num(1);
+        }
+        focus_sidebar(true);
+    } else if (op == "sbmenu") {
+        if (const std::optional<ui::RectF> r = sidebar.row_rect(num(1)); r) {
+            sidebar_menu(num(1), r->x + (0.6F * r->w), r->center_y());
+        }
     }
 }
 
@@ -916,6 +1610,7 @@ void App::Impl::update_scale() {
         fonts->clear();
         atlas->clear();
         view.clear_caches();
+        sidebar.clear_caches();
     }
 }
 
@@ -957,7 +1652,47 @@ void App::Impl::draw_frame(double t_ms, double dt_ms) {
         .fps = shown_fps,
         .frame_ms = shown_ms,
         .render_driver = driver_name,
+        .content = {},
+        .bookmarks = &places->bookmarks(),
+        .sidebar_visible = false,
+        .draw_sidebar = {},
+        .draw_sidebar_overlay = {},
     };
+    // Phase 4: the sidebar takes the left of the window; the panes get the rest.
+    layout_sidebar(static_cast<float>(w), static_cast<float>(h));
+    const bool sidebar_shown = sidebar_rect.w > 0.0F;
+    frame.content = ui::RectF{sidebar_rect.w, 0.0F, static_cast<float>(w) - sidebar_rect.w,
+                              static_cast<float>(h)};
+    // The theme switch lives in the full sidebar's top bar; icon-only leaves it in the strip.
+    frame.sidebar_visible = sidebar_shown && !sidebar_icon_only;
+    ui::PointerInput masked;
+    masked.x = -1.0e6F;
+    masked.y = -1.0e6F;
+    masked.released = pointer.released;
+    masked.mods = pointer.mods;
+    const bool popup = view.popup_open();
+    const ui::SidebarFrame sf{
+        .painter = painter,
+        .palette = pal,
+        .theme = theme,
+        .rows = sidebar_rows,
+        .keymap = keymap,
+        .pointer = popup ? masked : pointer,
+        .queue = queue,
+        .intents = intents,
+        .rect = sidebar_rect,
+        .icon_only = sidebar_icon_only,
+        .focused = sidebar_focus && focused,
+        .focus_row = sidebar_row,
+        .window_focused = focused,
+        .density = density,
+        .dragged_tab = view.dragged_tab(),
+        .popup_open = popup,
+    };
+    if (sidebar_shown) {
+        frame.draw_sidebar = [this, &sf] { sidebar.draw(sf); };
+        frame.draw_sidebar_overlay = [this, &sf] { sidebar.draw_overlay(sf); };
+    }
     view.update(frame);
     view.draw(frame);
 }
@@ -1070,14 +1805,32 @@ int App::run() {
         SDL_Event event;
         if (!first && !s.continuous() && !s.dirty) {
             Sint32 wait_ms = kIdleWaitMs;
-            if (const std::optional<double> due = s.save.remaining(now_ms()); due.has_value()) {
-                wait_ms = std::clamp(static_cast<Sint32>(std::ceil(*due)) + 1, 1, kIdleWaitMs);
+            for (const std::optional<double> due :
+                 {s.save.remaining(now_ms()), s.places->save_remaining(now_ms())}) {
+                if (due.has_value()) {
+                    wait_ms = std::min(wait_ms, std::clamp(static_cast<Sint32>(std::ceil(*due)) + 1,
+                                                           1, kIdleWaitMs));
+                }
             }
             if (SDL_WaitEventTimeout(&event, wait_ms)) {
                 s.handle_event(event);
             }
         }
         if (s.workspace->frame_start()) {
+            s.dirty = true;
+        }
+        if (s.places->frame_start()) {
+            s.dirty = true;
+        }
+        if (std::vector<Path> visits = s.workspace->take_visits(); !visits.empty()) {
+            const auto now = std::chrono::time_point_cast<std::chrono::nanoseconds>(
+                std::chrono::system_clock::now());
+            for (const Path& v : visits) {
+                s.places->record_visit(v, now, now_ms());
+            }
+            s.dirty = true;
+        }
+        if (s.view.poll_paths(now_ms(), s.outcomes)) {
             s.dirty = true;
         }
         while (SDL_PollEvent(&event)) {
@@ -1107,7 +1860,13 @@ int App::run() {
 
         // 4. Frame end: pointer intents, then queued commands (FIFO; commands they enqueue run
         //    next frame).
+        // A press outside the sidebar moves keyboard focus back to the panes.
+        if (s.pointer.pressed && s.sidebar_focus &&
+            !contains(s.sidebar_rect, s.pointer.x, s.pointer.y) && !s.view.popup_open()) {
+            s.focus_sidebar(false);
+        }
         s.apply_intents();
+        s.apply_outcomes();
         for (const layout::TabId tab : s.workspace->visible_tabs()) {
             if (ui::BrowserModel* m = s.workspace->model(tab); m != nullptr) {
                 if (const ui::BrowserView* v = s.view.find_view(tab); v != nullptr) {
@@ -1120,9 +1879,10 @@ int App::run() {
         s.view.prune(*s.workspace);
         (void)s.workspace->sync();
         s.persist_tick(now_ms());
-        s.cursors.show(s.view.cursor());
-        if (s.view.wants_text_input() != s.text_input_on) {
-            s.text_input_on = s.view.wants_text_input();
+        s.cursors.show(s.sidebar.resize_cursor() ? ui::PointerCursor::ResizeHorizontal
+                                                 : s.view.cursor());
+        if ((s.view.wants_text_input() || s.sidebar.renaming()) != s.text_input_on) {
+            s.text_input_on = s.view.wants_text_input() || s.sidebar.renaming();
             if (s.text_input_on) {
                 SDL_StartTextInput(s.window.get());
             } else {

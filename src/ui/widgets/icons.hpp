@@ -45,6 +45,30 @@ void draw_search_glyph(Renderer& r, float cx, float cy, float radius, float thic
 void draw_layout_glyph(Renderer& r, float x, float y, float size, float thickness,
                        const Color& color);
 
+// Phase 4: monochrome line icons (sidebar rows, address bar buttons, GoTo rows), drawn on a
+// 16-unit grid in a `size` x `size` box at (x, y) with strokes of `t` px. `background` paints
+// cut-outs (lock body over its shackle); `filled` draws the solid variant (Star: bookmarked).
+enum class LineIcon : std::uint8_t {
+    Folder,
+    Clock,
+    Home,
+    Desktop,
+    Documents,
+    Downloads,
+    Music,
+    Pictures,
+    Videos,
+    Drive,
+    Removable,
+    Network,
+    Star,
+    Lock,
+    Sidebar,
+    Unplugged, // offline volume (bookmark / recent badge)
+};
+void draw_line_icon(Renderer& r, LineIcon icon, float x, float y, float size, float t,
+                    const Color& color, const Color& background, bool filled = false);
+
 // A cross ("x") of half-width `size`.
 void draw_cross(Renderer& r, float cx, float cy, float size, float thickness, const Color& color);
 
