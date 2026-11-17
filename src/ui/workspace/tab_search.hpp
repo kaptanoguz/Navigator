@@ -24,6 +24,11 @@ namespace navigator::ui {
 
 // Tab label: the folder's display name; "/" -> tr("path.root").
 [[nodiscard]] std::string tab_title(const Path& dir);
+// Labels for the tabs of one strip: tab_title(), except that tabs whose titles collide (but
+// whose folders differ) get the nearest parent folder name that tells them apart, as
+// "parent › name" ("Projects › src" vs "Website › src"). Identical folders keep the plain title.
+[[nodiscard]] std::vector<std::string> disambiguated_titles(const std::vector<Path>& dirs);
+
 // Folder path for display, with the home folder shown as "~" (raw bytes made displayable).
 [[nodiscard]] std::string tab_detail(const Path& dir, const Path* home);
 

@@ -96,10 +96,12 @@ struct Palette {
 [[nodiscard]] Palette mix(const Palette& a, const Palette& b, float t) noexcept;
 [[nodiscard]] Theme toggled(Theme theme) noexcept;
 
-// Phase 3: the palette of an inactive pane. Text, glyphs and the list surface move a small step
-// toward the window background so the active pane reads first; every text tier keeps WCAG AA
-// (>= 4.5:1) on the dimmed surfaces (tests/ui/theme_test.cpp).
-[[nodiscard]] Palette dimmed(const Palette& p) noexcept;
+// Phase 3: the palette of an inactive pane, per theme. The list surface sinks to (dark) or just
+// below (light) the window background, so active and inactive surfaces differ by a visible
+// lightness step in both themes; text and glyphs step toward the next tier. Every text tier
+// keeps WCAG AA (>= 4.5:1) on the dimmed surfaces (tests/ui/theme_test.cpp). Not the only
+// active-pane cue: the active pane also gets an accent marker (never colour alone).
+[[nodiscard]] Palette dimmed(const Palette& p, Theme theme) noexcept;
 
 // Spacing scale (dp), 4-based.
 namespace space {
@@ -140,6 +142,7 @@ inline constexpr TextStyle row_numeric{13.0F, FontWeight::Regular, 0.0F, true};
 inline constexpr TextStyle column_header{12.0F, FontWeight::Medium, 0.01F, false};
 inline constexpr TextStyle crumb{13.0F, FontWeight::Regular, 0.0F, false};
 inline constexpr TextStyle crumb_current{13.0F, FontWeight::SemiBold, 0.0F, false};
+inline constexpr TextStyle crumb_quiet{13.0F, FontWeight::Medium, 0.0F, false}; // inactive pane
 inline constexpr TextStyle status{12.0F, FontWeight::Regular, 0.01F, true};
 inline constexpr TextStyle notice_title{13.0F, FontWeight::Medium, 0.0F, false};
 inline constexpr TextStyle empty_title{15.0F, FontWeight::Medium, 0.0F, false};

@@ -107,6 +107,11 @@ public:
     // command except app.quit, view.toggle_theme and view.toggle_fps_overlay).
     bool route_command(const Command& command, CommandQueue& queue, std::vector<Intent>& out);
     void text_input(std::string_view utf8);
+    // Delete in the layout picker: asks, then deletes the highlighted layout (two steps, like
+    // its delete button). Returns false when the open popup is not the picker.
+    bool delete_key(std::vector<Intent>& out);
+    // Menu / Shift+F10: opens the tab context menu of the active tab on the next frame.
+    void request_tab_menu() noexcept { menu_request_ = true; }
     void backspace();
     // A named-layout action finished: the picker drops a deleted name.
     void layout_deleted(std::string_view name);
@@ -262,6 +267,7 @@ private:
     std::optional<Toast> toast_;
     TextFitter fitter_;
     bool fading_ = false;
+    bool menu_request_ = false;
 };
 
 } // namespace navigator::ui

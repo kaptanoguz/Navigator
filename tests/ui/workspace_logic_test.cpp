@@ -151,6 +151,16 @@ TEST_CASE("Tabs shrink the widest first, then overflow and scroll", "[workspace]
     CHECK(scroll_to_show(l, 0, 200.0F, l.scroll) == 0.0F);
     CHECK(scroll_to_show(l, 2, 200.0F, 0.0F) == 70.0F);
     CHECK(scroll_to_show(l, 1, 200.0F, 0.0F) == 0.0F); // already visible
+    // The active tab keeps a readable width when the strip overflows.
+    in.active = 1;
+    in.scroll = 0.0F;
+    l = layout_tab_strip(in);
+    CHECK(l.overflow);
+    CHECK(l.w == std::vector<float>{90.0F, 110.0F, 90.0F}); // 55% of 200, below its natural width
+    in.available = 300.0F;
+    in.natural = {100.0F, 200.0F, 200.0F, 200.0F};
+    l = layout_tab_strip(in);
+    CHECK(l.w == std::vector<float>{90.0F, 165.0F, 90.0F, 90.0F});
 }
 
 TEST_CASE("Insertion index counts tab centres left of the pointer", "[workspace][strip]") {
@@ -364,4 +374,21 @@ TEST_CASE("Session saves are debounced 2 s after the last change", "[workspace][
     CHECK(s.remaining(9000.0).value_or(-1.0) == 0.0);
     s.taken();
     CHECK_FALSE(s.pending());
+}
+
+TEST_CASE("Colliding tab names get their distinguishing parent", "[workspace][strip]") {
+    const std::string sep = " \xE2\x80\xBA ";
+    const std::vector<std::string> t =
+        disambiguated_titles({Path("/w/Projects/src"), Path("/w/Website/src"), Path("/w/docs"),
+                              Path("/a/x/lib"), Path("/b/x/lib")});
+    CHECK(t[0] == "Projects" + sep + "src");
+    CHECK(t[1] == "Website" + sep + "src");
+    CHECK(t[2] == "docs");
+    // Same parent name: the next ancestor decides.
+    CHECK(t[3] == "a" + sep + "lib");
+    CHECK(t[4] == "b" + sep + "lib");
+    // The same folder twice stays plain.
+    const std::vector<std::string> same = disambiguated_titles({Path("/p/q"), Path("/p/q/")});
+    CHECK(same == std::vector<std::string>{"q", "q"});
+    CHECK(disambiguated_titles({}).empty());
 }

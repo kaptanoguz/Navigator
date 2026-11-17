@@ -34,11 +34,11 @@ Color over(const Color& base, const Color& overlay) {
                  (base.b * (1.0F - a)) + (overlay.b * a), 1.0F};
 }
 
-Palette pane_palette(const Palette& base, float dim) {
+Palette pane_palette(const Palette& base, Theme theme, float dim) {
     if (dim <= 0.001F) {
         return base;
     }
-    return mix(base, dimmed(base), dim);
+    return mix(base, dimmed(base, theme), dim);
 }
 
 std::string_view edge_label_key(const DropTarget& t) {
@@ -229,7 +229,14 @@ void WorkspaceView::layout_strips(const ShellFrame& f) {
         const float left = s.rect.x + margin;
         const float plus_w = button + std::round(p.px(4.0F));
 
-        // Natural widths.
+        // Natural widths; colliding names get their distinguishing parent folder.
+        std::vector<Path> dirs;
+        dirs.reserve(node->tabs.size());
+        for (const layout::Tab& t : node->tabs) {
+            const BrowserModel* m = ws.model(t.id);
+            dirs.push_back(m != nullptr && m->loaded() ? m->current_dir() : t.state.path);
+        }
+        const std::vector<std::string> titles = disambiguated_titles(dirs);
         std::vector<float> natural;
         natural.reserve(node->tabs.size());
         for (std::size_t i = 0; i < node->tabs.size(); ++i) {
@@ -237,8 +244,7 @@ void WorkspaceView::layout_strips(const ShellFrame& f) {
             TabSlot slot;
             slot.id = t.id;
             slot.active = i == node->active_tab;
-            const BrowserModel* m = ws.model(t.id);
-            slot.title = tab_title(m != nullptr && m->loaded() ? m->current_dir() : t.state.path);
+            slot.title = titles[i];
             const ShapedText label =
                 p.shape(slot.active ? type::tab_active : type::tab, slot.title);
             natural.push_back(p.px(kTabPadLeft + kTabIcon + kTabIconGap + kTabCloseGap + kTabClose +
@@ -253,6 +259,7 @@ void WorkspaceView::layout_strips(const ShellFrame& f) {
         in.gap = gap;
         in.available = std::max(right - left - plus_w, 0.0F);
         in.scroll = st.scroll;
+        in.active = node->active_tab;
         s.layout = layout_tab_strip(in);
         if (s.layout.overflow) {
             in.available = std::max(right - left - plus_w - button - std::round(p.px(4.0F)), 0.0F);
@@ -337,7 +344,7 @@ void WorkspaceView::update(const ShellFrame& f) {
         if (m == nullptr) {
             continue;
         }
-        const Palette pal = pane_palette(f.palette, s.dim);
+        const Palette pal = pane_palette(f.palette, f.theme, s.dim);
         BrowserFrame bf{
             .painter = f.painter,
             .palette = pal,
@@ -352,6 +359,8 @@ void WorkspaceView::update(const ShellFrame& f) {
             .bounds = s.body,
             .tab = tab.value,
             .focused = f.focused && s.active_pane,
+            .pane_active = s.active_pane,
+            .marked = s.active_pane && f.workspace.layout().pane_count() > 1,
             .animations = f.animations,
             .density = f.density,
             .dt_ms = f.dt_ms,
@@ -391,7 +400,7 @@ void WorkspaceView::draw(const ShellFrame& f) {
         if (node == nullptr) {
             continue;
         }
-        const Palette pal = pane_palette(f.palette, s.dim);
+        const Palette pal = pane_palette(f.palette, f.theme, s.dim);
         if (node->active_tab < node->tabs.size()) {
             const layout::TabId tab = node->tabs[node->active_tab].id;
             if (const BrowserModel* m = ws.model(tab); m != nullptr) {
@@ -409,6 +418,8 @@ void WorkspaceView::draw(const ShellFrame& f) {
                     .bounds = s.body,
                     .tab = tab.value,
                     .focused = f.focused && s.active_pane,
+                    .pane_active = s.active_pane,
+                    .marked = s.active_pane && f.workspace.layout().pane_count() > 1,
                     .animations = f.animations,
                     .density = f.density,
                     .dt_ms = f.dt_ms,
@@ -455,6 +466,23 @@ void WorkspaceView::draw(const ShellFrame& f) {
     handle_drag(f);
     draw_drag_overlay(f);
     draw_toast(f);
+    if (menu_request_) {
+        menu_request_ = false;
+        if (!popup_open() && !drag_.dragging()) {
+            if (const Strip* s = strip_of(ws.active_pane()); s != nullptr) {
+                for (const TabSlot& t : s->slots) {
+                    if (t.active) {
+                        const RectF v = intersect(t.rect, s->tabs);
+                        open_tab_menu(f, t.id, std::max(v.x, s->tabs.x),
+                                      t.rect.bottom() + p.px(4.0F));
+                        popup_.pointer_moved = false; // keyboard: the pointer does not steer
+                        popup_.last_px = ptr.x;
+                        popup_.last_py = ptr.y;
+                    }
+                }
+            }
+        }
+    }
     if (f.show_fps) {
         draw_fps_overlay(p, f.palette, f.width, f.height, f.density, f.fps, f.frame_ms,
                          f.render_driver);
@@ -562,13 +590,16 @@ void WorkspaceView::draw_tab(const ShellFrame& f, const Strip& s, const TabSlot&
     }
     const float close = std::round(p.px(kTabClose));
     const float close_x = rect.right() - std::round(p.px(kTabPadRight)) - close;
-    const float label_room = close_x - std::round(p.px(kTabCloseGap)) - x;
+    // The close slot is only reserved while the button shows (hover / active tab).
+    const bool shows_close = (hover || t.active) && !floating;
+    const float label_room = shows_close ? close_x - std::round(p.px(kTabCloseGap)) - x
+                                         : rect.right() - std::round(p.px(kTabPadLeft)) - x;
     const ShapedText label =
         fitter_.fit(p, t.active ? type::tab_active : type::tab, t.title, label_room, Elide::Middle);
     const Color ink = (t.active || hover || floating) ? pal.text_primary : pal.text_secondary;
     p.draw(label, x, std::round(mid + (0.5F * label.cap_height())), faded(ink, alpha));
 
-    if ((hover || t.active) && !floating) {
+    if (shows_close) {
         const RectF cr = snap(RectF{close_x, mid - (0.5F * close), close, close});
         const PointerInput& ptr = f.pointer;
         const bool over = hover && contains(cr, ptr.x, ptr.y) && !drag_.dragging();
@@ -644,8 +675,11 @@ void WorkspaceView::draw_strip(const ShellFrame& f, Strip& s, const Palette& pal
         // Hairline separators between quiet neighbours.
         if (i + 1 < s.slots.size()) {
             const TabSlot& n = s.slots[i + 1];
+            // No separator next to a tab the overflow clips (it would float in the fade).
+            const bool clipped =
+                t.rect.x < s.tabs.x - 0.5F || n.rect.right() > s.tabs.right() + 0.5F;
             const bool quiet =
-                !t.active && !n.active && hovered != i && hovered != i + 1 && !lifted;
+                !t.active && !n.active && hovered != i && hovered != i + 1 && !lifted && !clipped;
             if (quiet) {
                 const float sx =
                     std::round(t.rect.right() + (0.5F * p.px(kTabGap)) - (0.5F * hair));
@@ -676,6 +710,15 @@ void WorkspaceView::draw_strip(const ShellFrame& f, Strip& s, const Palette& pal
         }
     }
     r.set_clip(std::nullopt);
+
+    // Active pane of a split layout: a full-width accent underline under its strip (design
+    // review B1: a pane-level marker that is not a tint).
+    if (s.active_pane && f.workspace.layout().pane_count() > 1) {
+        const float t = std::max(2.0F, std::round(p.px(2.0F)));
+        const float m = std::round(p.px(density_metrics(f.density).panel_margin));
+        r.fill_rounded_rect(RectF{s.rect.x + m, s.rect.bottom() - t, s.rect.w - (2.0F * m), t},
+                            0.5F * t, pal.accent);
+    }
 
     // "+" (middle-click: new tab on the home folder).
     bool middle = false;
@@ -900,6 +943,10 @@ void WorkspaceView::draw_drag_overlay(const ShellFrame& f) {
             gx = pv.center_x() - (0.25F * grab_w_);
             gy = pv.center_y() + p.px(30.0F);
         }
+        // Keep the floating tab inside the window.
+        const float edge = p.px(4.0F);
+        gx = std::clamp(gx, edge, std::max(edge, f.width - grab_w_ - edge));
+        gy = std::clamp(gy, edge, std::max(edge, f.height - h - edge));
         ghost.rect = RectF{std::round(gx), std::round(gy), grab_w_, h};
         draw_tab(f, ghost_strip, ghost, pal, false, 0.96F, true);
     }

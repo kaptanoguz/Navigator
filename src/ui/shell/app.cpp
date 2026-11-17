@@ -562,19 +562,35 @@ void App::Impl::handle_event(const SDL_Event& event) {
         const KeyChord chord =
             ui::translate_chord(event.key.key, event.key.scancode, event.key.mod);
         if (chord.key == Key::Unknown) {
+            // The Menu key has no Key value; it opens the active tab's context menu.
+            if ((event.key.key == SDLK_APPLICATION || event.key.key == SDLK_MENU) &&
+                !event.key.repeat && !view.popup_open()) {
+                view.request_tab_menu();
+            }
             break;
         }
-        // A popup's text field edits with Backspace (text editing, not a command).
-        if (view.wants_text_input() && chord.key == Key::Backspace &&
-            chord.mods == Modifiers::None) {
-            view.backspace();
-            break;
+        // A popup's text field edits with Backspace (text editing, not a command); Delete in
+        // the layout picker deletes the highlighted layout (popup-local, docs/keymap.md
+        // "Popups").
+        if (view.wants_text_input() && chord.mods == Modifiers::None) {
+            if (chord.key == Key::Backspace) {
+                view.backspace();
+                break;
+            }
+            if (chord.key == Key::Delete && !event.key.repeat && view.delete_key(intents)) {
+                break;
+            }
         }
         if (const auto cmd = resolve_command(keymap, registry, chord); cmd) {
             // Auto-repeat moves the cursor; it never re-fires toggles or navigation.
             if (!event.key.repeat || is_cursor_command(cmd->id)) {
                 queue.enqueue(*cmd);
             }
+        } else if (!event.key.repeat && !view.popup_open() &&
+                   chord == KeyChord{Key::F10, Modifiers::Shift}) {
+            // Last-resort fallback until a registered command exists: the platform
+            // convention for a context menu (Shift+F10) on the active tab.
+            view.request_tab_menu();
         }
         break;
     }

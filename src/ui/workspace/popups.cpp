@@ -298,7 +298,9 @@ void WorkspaceView::confirm_popup(CommandQueue& queue, std::vector<Intent>& out)
         }
         const std::string name = popup_.names[popup_.names_filtered[popup_.highlight]];
         Intent in;
-        if (popup_.delete_mode) {
+        // A pending delete confirmation (delete mode, the row's x button or Delete) is what
+        // Enter confirms, in either mode.
+        if (popup_.delete_mode || popup_.confirm == name) {
             if (popup_.confirm != name) {
                 popup_.confirm = name;
                 return;
@@ -333,6 +335,25 @@ void WorkspaceView::confirm_popup(CommandQueue& queue, std::vector<Intent>& out)
         return;
     }
     }
+}
+
+bool WorkspaceView::delete_key(std::vector<Intent>& out) {
+    if (popup_.kind != PopupKind::PickLayout) {
+        return false;
+    }
+    if (popup_.highlight < popup_.names_filtered.size()) {
+        const std::string name = popup_.names[popup_.names_filtered[popup_.highlight]];
+        if (popup_.confirm == name) {
+            Intent in;
+            in.kind = Intent::Kind::DeleteLayout;
+            in.text = name;
+            out.push_back(std::move(in));
+            popup_.confirm.clear();
+        } else {
+            popup_.confirm = name; // same two-step confirmation as the delete button
+        }
+    }
+    return true;
 }
 
 void WorkspaceView::text_input(std::string_view utf8) {
@@ -574,6 +595,9 @@ void WorkspaceView::draw_search_tabs(const ShellFrame& f) {
     const float field_h = std::round(p.px(kFieldHeight));
     const float foot_h = std::round(p.px(kFooterHeight));
     const float pad = std::round(p.px(6.0F));
+    // Pane positions for the mini maps, in a 1000 x 1000 unit square.
+    const PaneGeometry minimap = compute_pane_geometry(
+        f.workspace.layout(), RectF{0.0F, 0.0F, 1000.0F, 1000.0F}, 0.0F, 0.0F);
     // Visible list height: up to kMaxRows item rows.
     float list_h = 0.0F;
     std::size_t shown_items = 0;
@@ -675,19 +699,33 @@ void WorkspaceView::draw_search_tabs(const ShellFrame& f) {
             draw_folder_glyph(r, pal, x, std::round(mid - (0.5F * icon)), icon,
                               closed ? 0.6F : 1.0F);
             x += icon + std::round(p.px(10.0F));
-            // Right: pane chip or "Closed".
-            std::string chip = closed ? std::string(tr("search_tabs.closed_chip"))
-                                      : substitute(tr("search_tabs.pane_chip"), "n",
-                                                   format_count(item.pane_number));
-            const ShapedText ct = p.shape(type::caption, chip);
-            const float chip_h = std::round(p.px(20.0F));
-            const float chip_w = std::round(ct.width() + p.px(14.0F));
-            const RectF cr = snap(
-                RectF{rr.right() - p.px(10.0F) - chip_w, mid - (0.5F * chip_h), chip_w, chip_h});
-            r.stroke_rounded_rect(cr, 0.5F * chip_h, std::max(1.0F, std::round(p.px(1.0F))),
-                                  pal.keycap_border);
-            p.draw(ct, cr.x + std::round(p.px(7.0F)), std::round(mid + (0.5F * ct.cap_height())),
-                   pal.text_secondary);
+            // Right: where the tab's pane sits (a mini map of the layout), or "Closed".
+            RectF cr;
+            if (closed) {
+                const ShapedText ct = p.shape(type::caption, tr("search_tabs.closed_chip"));
+                const float chip_h = std::round(p.px(20.0F));
+                const float chip_w = std::round(ct.width() + p.px(14.0F));
+                cr = snap(RectF{rr.right() - p.px(10.0F) - chip_w, mid - (0.5F * chip_h), chip_w,
+                                chip_h});
+                r.stroke_rounded_rect(cr, 0.5F * chip_h, std::max(1.0F, std::round(p.px(1.0F))),
+                                      pal.keycap_border);
+                p.draw(ct, cr.x + std::round(p.px(7.0F)),
+                       std::round(mid + (0.5F * ct.cap_height())), pal.text_secondary);
+            } else {
+                const float mw = std::round(p.px(26.0F));
+                const float mh = std::round(p.px(17.0F));
+                cr = snap(RectF{rr.right() - p.px(12.0F) - mw, mid - (0.5F * mh), mw, mh});
+                const float gap = std::max(1.0F, std::round(p.px(1.5F)));
+                for (const PaneRect& pr : minimap.panes) {
+                    const RectF cell = snap(RectF{cr.x + (pr.rect.x / 1000.0F * cr.w) + gap,
+                                                  cr.y + (pr.rect.y / 1000.0F * cr.h) + gap,
+                                                  (pr.rect.w / 1000.0F * cr.w) - (2.0F * gap),
+                                                  (pr.rect.h / 1000.0F * cr.h) - (2.0F * gap)});
+                    const bool here = pr.pane == item.pane;
+                    r.fill_rounded_rect(cell, p.px(1.5F),
+                                        here ? pal.accent : faded(pal.keycap_border, 0.55F));
+                }
+            }
             float right = cr.x - std::round(p.px(10.0F));
             if (item.active) {
                 const ShapedText cur = p.shape(type::caption, tr("search_tabs.current"));
@@ -733,7 +771,9 @@ void WorkspaceView::draw_save_layout(const ShellFrame& f) {
     const float field_h = std::round(p.px(38.0F));
     const float msg_h = std::round(p.px(28.0F));
     const float btn_h = std::round(p.px(32.0F));
-    const float total = pad + title_h + std::round(p.px(12.0F)) + field_h + msg_h + btn_h + pad;
+    const float foot_h = std::round(p.px(kFooterHeight));
+    const float total =
+        pad + title_h + std::round(p.px(12.0F)) + field_h + msg_h + btn_h + pad + foot_h;
     const float top = std::round(std::max(p.px(56.0F), f.height * 0.18F));
     const RectF card = draw_card(f, kPromptWidth, total, top);
     if (ptr.pressed && !contains(card, ptr.x, ptr.y) && !popup_.just_opened) {
@@ -784,6 +824,9 @@ void WorkspaceView::draw_save_layout(const ShellFrame& f) {
         close_popup();
         return;
     }
+    draw_footer_hints(f, RectF{card.x, card.bottom() - foot_h, card.w, foot_h},
+                      {{"Enter", std::string(tr(replace ? "layout.replace" : "layout.save"))},
+                       {"Esc", std::string(tr("layout.cancel"))}});
     if (popup_button(f, save_r, tr(replace ? "layout.replace" : "layout.save"), true, replace, 1)) {
         confirm_popup(f.queue, f.intents);
     }
@@ -931,8 +974,11 @@ void WorkspaceView::draw_layout_picker(const ShellFrame& f) {
     }
     std::vector<std::pair<std::string, std::string>> hints{
         {"\xE2\x86\x91 \xE2\x86\x93", std::string(tr("hint.move"))},
-        {"Enter", std::string(tr(popup_.delete_mode ? "hint.delete" : "hint.load"))},
-        {"Esc", std::string(tr("hint.close"))}};
+        {"Enter", std::string(tr(popup_.delete_mode ? "hint.delete" : "hint.load"))}};
+    if (!popup_.delete_mode) {
+        hints.emplace_back("Del", std::string(tr("hint.delete")));
+    }
+    hints.emplace_back("Esc", std::string(tr("hint.close")));
     draw_footer_hints(f, RectF{card.x, card.bottom() - foot_h, card.w, foot_h}, hints);
 }
 

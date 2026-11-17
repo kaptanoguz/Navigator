@@ -21,17 +21,15 @@ Color over(const Color& base, const Color& overlay) {
                  (base.b * (1.0F - a)) + (overlay.b * a), 1.0F};
 }
 
-constexpr float kWheelRows = 3.0F;     // rows per wheel notch
-constexpr float kDragThreshold = 4.0F; // dp before a press becomes a band
-constexpr float kColumnGap = 20.0F;    // dp
-constexpr float kSizeWidth = 84.0F;
-constexpr float kTypeWidth = 160.0F;
-constexpr float kDateWidth = 150.0F;
-constexpr float kTextPad = 10.0F;          // row highlight edge -> content
-constexpr float kGlyphGap = 10.0F;         // glyph -> name text
-constexpr float kListPad = 4.0F;           // above the first row
-constexpr float kMinNameWithType = 260.0F; // name text room (dp) to keep the Type column
-constexpr float kMinNameWithDate = 160.0F; // ... and the Modified column
+constexpr float kWheelRows = 3.0F;         // rows per wheel notch
+constexpr float kDragThreshold = 4.0F;     // dp before a press becomes a band
+constexpr float kColumnGap = kColumnGapDp; // dp (format.hpp, shared with plan_columns)
+constexpr float kSizeWidth = kSizeWidthDp;
+constexpr float kTypeWidth = kTypeWidthDp;
+constexpr float kDateWidth = kDateWidthDp;
+constexpr float kTextPad = 10.0F;  // row highlight edge -> content
+constexpr float kGlyphGap = 10.0F; // glyph -> name text
+constexpr float kListPad = 4.0F;   // above the first row
 
 } // namespace
 
@@ -69,25 +67,18 @@ BrowserView::Layout BrowserView::compute_layout(const BrowserFrame& f) const {
     l.name_x = left;
     l.text_x = std::round(left + p.px(metrics::icon_size + kGlyphGap));
 
-    // Columns degrade gracefully on narrow windows: Type goes first, then Modified, so the
-    // name keeps a readable width. Size always stays.
-    const auto name_room = [&](bool type, bool date) {
-        float used = p.px(kSizeWidth) + gap;
-        if (type) {
-            used += p.px(kTypeWidth) + gap;
-        }
-        if (date) {
-            used += p.px(kDateWidth) + gap;
-        }
-        return (right - used) - l.text_x;
-    };
-    l.show_date = name_room(false, true) >= p.px(kMinNameWithDate);
-    l.show_type = l.show_date && name_room(true, true) >= p.px(kMinNameWithType);
+    // Columns degrade gracefully in narrow panes (plan_columns): Type goes first, then
+    // Modified shortens, then Size goes; Modified is the last to go. Name always stays.
+    const ColumnPlan plan = plan_columns((right - l.text_x) / p.scale());
+    l.show_size = plan.size;
+    l.show_type = plan.type;
+    l.show_date = plan.date;
+    l.short_date = plan.short_date;
 
     float edge = right;
     if (l.show_date) {
         l.date_r = edge;
-        l.date_x = std::round(edge - p.px(kDateWidth));
+        l.date_x = std::round(edge - p.px(l.short_date ? kShortDateWidthDp : kDateWidth));
         edge = l.date_x - gap;
     } else {
         l.date_x = l.date_r = edge;
@@ -99,9 +90,14 @@ BrowserView::Layout BrowserView::compute_layout(const BrowserFrame& f) const {
     } else {
         l.type_x = l.type_r = edge;
     }
-    l.size_r = edge;
-    l.size_x = std::round(l.size_r - p.px(kSizeWidth));
-    l.name_r = std::max(l.size_x - gap, l.text_x + p.px(40.0F));
+    if (l.show_size) {
+        l.size_r = edge;
+        l.size_x = std::round(l.size_r - p.px(kSizeWidth));
+        edge = l.size_x - gap;
+    } else {
+        l.size_x = l.size_r = edge + gap;
+    }
+    l.name_r = std::max(edge, l.text_x + p.px(40.0F));
     return l;
 }
 
@@ -257,7 +253,12 @@ void BrowserView::draw(const BrowserFrame& f) {
     }
     draw_scrollbar(f, l);
     r.set_clip(std::nullopt);
-    r.stroke_rounded_rect(l.panel, rad, hair, f.palette.border);
+    if (f.marked) {
+        // Active pane in a split layout: an accent frame, not just a tint (design review B1).
+        r.stroke_rounded_rect(l.panel, rad, hair, f.palette.accent.with_alpha(0.62F));
+    } else {
+        r.stroke_rounded_rect(l.panel, rad, hair, f.palette.border);
+    }
 
     draw_status(f, l);
     if (f.pointer.released) {
@@ -286,8 +287,10 @@ void BrowserView::draw_header(const BrowserFrame& f, const Layout& l) {
     const float gap = std::round(p.px(kColumnGap));
     std::vector<Column> cols{
         {"column.name", fs::SortKey::Name, l.name_x, l.name_r, false},
-        {"column.size", fs::SortKey::Size, l.size_x, l.size_r, true},
     };
+    if (l.show_size) {
+        cols.push_back({"column.size", fs::SortKey::Size, l.size_x, l.size_r, true});
+    }
     if (l.show_type) {
         cols.push_back({"column.type", fs::SortKey::Extension, l.type_x, l.type_r, false});
     }
@@ -587,7 +590,7 @@ void BrowserView::draw_rows(const BrowserFrame& f, const Layout& l) {
             e.hidden && !m.is_selected(i) ? pal.text_secondary : pal.text_primary;
         p.draw(name_text, l.text_x, baseline, name_ink);
 
-        if (!dir && !e.metadata_error) {
+        if (l.show_size && !dir && !e.metadata_error) {
             // Numbers right-aligned in one slot, units left-aligned in the next, so "980 B"
             // and "88.1 kB" line up on the digits.
             const SizeParts parts = format_size_parts(e.size);
@@ -602,7 +605,9 @@ void BrowserView::draw_rows(const BrowserFrame& f, const Layout& l) {
                 fitter_.fit(p, type::row, type_label(e), l.type_r - l.type_x, Elide::End);
             p.draw(kind, l.type_x, baseline, pal.text_secondary);
         }
-        const std::string date = l.show_date ? format_date(e.mtime, f.now) : std::string();
+        const std::string date = !l.show_date   ? std::string()
+                                 : l.short_date ? format_date_short(e.mtime, f.now)
+                                                : format_date(e.mtime, f.now);
         if (!date.empty()) {
             const ShapedText when =
                 fitter_.fit(p, type::row_numeric, date, l.date_r - l.date_x, Elide::End);

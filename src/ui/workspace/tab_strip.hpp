@@ -6,8 +6,9 @@
 //   2. when they do not fit, the widest tabs shrink first, all to one common cap ("water
 //      filling"), never below min_width, so short names keep their full label as long as
 //      possible;
-//   3. when even min_width tabs do not fit, the strip overflows: tabs keep min_width and the
-//      strip scrolls horizontally (the view shows a chevron menu with every tab and fades the
+//   3. when even min_width tabs do not fit, the strip overflows: tabs keep min_width (the
+//      active tab keeps up to 55% of the strip so its name stays readable) and the strip
+//      scrolls horizontally (the view shows a chevron menu with every tab and fades the
 //      clipped edges). `scroll` is clamped to [0, content - available].
 // Positions are relative to the strip's left edge, before scrolling.
 // Thread-safety: pure functions on values.
@@ -25,6 +26,9 @@ struct TabStripInput {
     float max_width = 0.0F;
     float gap = 0.0F;    // px between tabs
     float scroll = 0.0F; // requested scroll offset (px)
+    // Overflow only: this tab (the active one) keeps up to 55% of `available` so its label stays
+    // readable in a narrow pane. Out of range: none.
+    std::size_t active = static_cast<std::size_t>(-1);
 };
 
 struct TabStripLayout {

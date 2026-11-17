@@ -180,11 +180,20 @@ Palette mix(const Palette& a, const Palette& b, float t) noexcept {
     };
 }
 
-Palette dimmed(const Palette& p) noexcept {
+Palette dimmed(const Palette& p, Theme theme) noexcept {
     Palette d = p;
-    d.surface = mix(p.surface, p.background, 0.45F);
-    d.text_primary = mix(p.text_primary, p.text_secondary, 0.30F);
-    d.text_secondary = mix(p.text_secondary, p.text_muted, 0.30F);
+    if (theme == Theme::Light) {
+        // White cards would barely move toward #F5F6F8 (about 1.03:1): go a step below it.
+        d.surface = mix(p.background, rgb(0xDCE0E7), 0.30F);
+        d.surface_raised = mix(p.surface_raised, p.background, 0.6F);
+        d.text_primary = mix(p.text_primary, p.text_secondary, 0.40F);
+        d.text_secondary = mix(p.text_secondary, p.text_muted, 0.25F);
+    } else {
+        d.surface = mix(p.background, rgb(0x08090C), 0.25F);
+        d.surface_raised = mix(p.surface_raised, p.background, 0.5F);
+        d.text_primary = mix(p.text_primary, p.text_secondary, 0.40F);
+        d.text_secondary = mix(p.text_secondary, p.text_muted, 0.30F);
+    }
     d.icon_folder_back = mix(p.icon_folder_back, p.background, 0.22F);
     d.icon_folder_front = mix(p.icon_folder_front, p.background, 0.22F);
     d.icon_page_border = mix(p.icon_page_border, p.background, 0.15F);

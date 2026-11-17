@@ -293,3 +293,41 @@ TEST_CASE("Every command, type, error and key name is translated in both languag
         }
     }
 }
+
+TEST_CASE("Narrow-pane dates drop the time or the day (Phase 3)", "[format]") {
+    const UtcGuard utc;
+    const Timestamp now = at(2026, 11, 16, 15, 0);
+    {
+        const LanguageGuard en(Language::English);
+        CHECK(format_date_short(at(2026, 11, 16, 9, 5), now) == "09:05");
+        CHECK(format_date_short(at(2026, 11, 15, 9, 5), now) == "Nov 15");
+        CHECK(format_date_short(at(2024, 2, 3, 14, 30), now) == "Feb 3, 2024");
+        CHECK(format_date_short(Timestamp{}, now).empty());
+    }
+    {
+        const LanguageGuard tr_(Language::Turkish);
+        CHECK(format_date_short(at(2026, 8, 30, 14, 30), now) == "30 Ağu");
+        CHECK(format_date_short(at(2024, 8, 30, 14, 30), now) == "30 Ağu 2024");
+    }
+}
+
+TEST_CASE("Columns degrade in review order as panes narrow (Phase 3)", "[format]") {
+    // Wide: everything. Type goes first, then Modified shortens, then Size goes, then Modified.
+    CHECK(plan_columns(1200.0F) == ColumnPlan{true, true, true, false});
+    CHECK(plan_columns(654.0F) == ColumnPlan{true, true, true, false});
+    CHECK(plan_columns(600.0F) == ColumnPlan{true, false, true, false});
+    CHECK(plan_columns(450.0F) == ColumnPlan{true, false, true, false});
+    CHECK(plan_columns(380.0F) == ColumnPlan{true, false, true, true});
+    // A ~380px pane leaves about 300dp of name room: Name + short Modified.
+    CHECK(plan_columns(300.0F) == ColumnPlan{false, false, true, true});
+    CHECK(plan_columns(150.0F) == ColumnPlan{});
+    // Monotonic: narrowing never brings a column back.
+    ColumnPlan prev = plan_columns(2000.0F);
+    for (float w = 2000.0F; w >= 0.0F; w -= 5.0F) {
+        const ColumnPlan c = plan_columns(w);
+        CHECK((!c.type || prev.type));
+        CHECK((!c.size || prev.size));
+        CHECK((!c.date || prev.date));
+        prev = c;
+    }
+}

@@ -54,6 +54,77 @@ std::string tab_title(const Path& dir) {
     return display_name(name.string());
 }
 
+std::vector<std::string> disambiguated_titles(const std::vector<Path>& dirs) {
+    std::vector<std::string> out;
+    out.reserve(dirs.size());
+    for (const Path& d : dirs) {
+        out.push_back(tab_title(d));
+    }
+    // Ancestor `depth` levels up (1 = parent), normalized without a trailing separator.
+    const auto ancestor_name = [](Path p, int depth) -> std::string {
+        if (!p.has_filename()) {
+            p = p.parent_path();
+        }
+        for (int i = 0; i < depth; ++i) {
+            if (p == p.root_path() || !p.has_parent_path()) {
+                return {};
+            }
+            p = p.parent_path();
+        }
+        return p == p.root_path() ? std::string() : display_name(p.filename().string());
+    };
+    std::vector<bool> done(dirs.size(), false);
+    for (std::size_t i = 0; i < dirs.size(); ++i) {
+        if (done[i]) {
+            continue;
+        }
+        // The group of distinct folders sharing this title.
+        std::vector<std::size_t> group;
+        for (std::size_t j = i; j < dirs.size(); ++j) {
+            if (!done[j] && out[j] == out[i]) {
+                group.push_back(j);
+            }
+        }
+        for (const std::size_t j : group) {
+            done[j] = true;
+        }
+        bool distinct_dirs = false;
+        for (const std::size_t j : group) {
+            distinct_dirs =
+                distinct_dirs || dirs[j].lexically_normal() != dirs[i].lexically_normal();
+        }
+        if (group.size() < 2 || !distinct_dirs) {
+            continue;
+        }
+        const std::string title = out[i];
+        for (int depth = 1; depth <= 8; ++depth) {
+            std::vector<std::string> keys;
+            keys.reserve(group.size());
+            for (const std::size_t j : group) {
+                keys.push_back(ancestor_name(dirs[j], depth));
+            }
+            // Distinct enough when the folders that differ also differ in this ancestor.
+            bool ok = true;
+            for (std::size_t a = 0; a < group.size() && ok; ++a) {
+                for (std::size_t b = a + 1; b < group.size() && ok; ++b) {
+                    const bool same_dir =
+                        dirs[group[a]].lexically_normal() == dirs[group[b]].lexically_normal();
+                    ok = same_dir || keys[a] != keys[b];
+                }
+            }
+            if (ok) {
+                for (std::size_t k = 0; k < group.size(); ++k) {
+                    if (!keys[k].empty()) {
+                        out[group[k]] = keys[k] + " \xE2\x80\xBA " + title; // ›
+                    }
+                }
+                break;
+            }
+        }
+    }
+    return out;
+}
+
 std::string tab_detail(const Path& dir, const Path* home) {
     const std::string s = dir.string();
     if (home != nullptr && !home->empty() && *home != home->root_path()) {

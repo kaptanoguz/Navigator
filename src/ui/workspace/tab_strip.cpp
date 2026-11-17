@@ -33,8 +33,13 @@ TabStripLayout layout_tab_strip(const TabStripInput& in) {
     if (total > room) {
         const float floor_total = min_w * static_cast<float>(n);
         if (floor_total >= room) {
+            const float active_want = in.active < n ? want[in.active] : min_w;
             std::fill(want.begin(), want.end(), min_w);
             out.overflow = floor_total > room + 0.5F;
+            if (out.overflow && in.active < n) {
+                want[in.active] =
+                    std::max(min_w, std::min(active_want, std::floor(in.available * 0.55F)));
+            }
         } else {
             // Common cap c with sum(min(want_i, c)) == room: walk the sorted widths.
             std::vector<float> sorted = want;

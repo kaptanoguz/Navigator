@@ -169,7 +169,8 @@ void BrowserView::draw_breadcrumbs(const BrowserFrame& f, const RectF& area) {
     std::vector<Seg> segs;
     for (std::size_t i = 0; i < parts.size(); ++i) {
         const bool current = i + 1 == parts.size();
-        ShapedText t = p.shape(current ? type::crumb_current : type::crumb, parts[i].label);
+        const TextStyle& current_style = f.pane_active ? type::crumb_current : type::crumb_quiet;
+        ShapedText t = p.shape(current ? current_style : type::crumb, parts[i].label);
         segs.push_back(Seg{t, i, t.width() + (2.0F * pad)});
     }
     const auto total = [&] {
@@ -199,7 +200,8 @@ void BrowserView::draw_breadcrumbs(const BrowserFrame& f, const RectF& area) {
         Seg& last = segs.back();
         const float others = total() - last.w;
         const float room = std::max(area.w - others - (2.0F * pad), p.px(24.0F));
-        last.text = fitter_.fit(p, type::crumb_current, parts[last.part].label, room, Elide::End);
+        last.text = fitter_.fit(p, f.pane_active ? type::crumb_current : type::crumb_quiet,
+                                parts[last.part].label, room, Elide::End);
         last.w = last.text.width() + (2.0F * pad);
     }
 
@@ -229,8 +231,8 @@ void BrowserView::draw_breadcrumbs(const BrowserFrame& f, const RectF& area) {
                                 pressed ? pal.control_pressed : pal.control_hover);
         }
         const float baseline = std::round(mid + (0.5F * s.text.cap_height()));
-        const Color ink =
-            current ? pal.text_primary : (hover ? pal.text_primary : pal.text_secondary);
+        const Color ink = current ? (f.pane_active ? pal.text_primary : pal.text_secondary)
+                                  : (hover ? pal.text_primary : pal.text_secondary);
         p.draw(s.text, x + pad, baseline, ink);
         x += s.w;
         if (!current) {

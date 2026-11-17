@@ -49,6 +49,10 @@ struct BrowserFrame {
     RectF bounds;          // px, the area this view draws in (below the pane's tab strip)
     std::uint32_t tab = 0; // layout::TabId value: every recorded Intent carries it
     bool focused = true;   // window has keyboard focus AND this is the active pane
+    // Phase 3: false in an inactive pane (quieter breadcrumb). marked: draw the active-pane
+    // accent frame around the list (only with more than one pane).
+    bool pane_active = true;
+    bool marked = false;
     bool animations = true;
     Density density = Density::Compact;
     double dt_ms = 16.0;        // since the previous frame
@@ -100,8 +104,10 @@ private:
         float type_r = 0.0F;
         float date_x = 0.0F;
         float date_r = 0.0F;
+        bool show_size = true;
         bool show_type = true;
         bool show_date = true;
+        bool short_date = false;
     };
     struct Crumb {
         std::string label;
