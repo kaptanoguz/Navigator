@@ -75,6 +75,18 @@ namespace detail {
     return bad;
 }
 
+// True when every byte of `s` belongs to a valid, shortest-form UTF-8 sequence.
+[[nodiscard]] constexpr bool is_valid_utf8(std::string_view s) noexcept {
+    for (std::size_t i = 0; i < s.size();) {
+        const Decoded d = decode_utf8(s, i);
+        if (d.escaped) {
+            return false;
+        }
+        i += d.length;
+    }
+    return true;
+}
+
 // Appends the UTF-8 encoding of a Unicode scalar value (not a surrogate, <= U+10FFFF).
 inline void append_utf8(std::string& out, char32_t cp) {
     if (cp < 0x80) {
