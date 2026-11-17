@@ -2,7 +2,8 @@
 //
 // Purpose: the headless tab / split-pane model (Phase 3): strong ids, per-tab persisted state,
 //          the layout tree with its invariants and edit operations, the recently-closed-tabs
-//          ring, the Session (window geometry + layout + closed tabs + Phase 4 sidebar state),
+//          ring, the Session (window geometry + layout + closed tabs + Phase 4 sidebar state;
+//          Phase 5 adds the per-tab type filter),
 //          JSON (de)serialization and the on-disk session / named-layout files. No SDL, no
 //          renderer, no JSON library types: the ui draws and drives this model; src/core
 //          implements it.
@@ -38,6 +39,7 @@
 #include <vector>
 
 #include <navigator/fs.hpp>
+#include <navigator/search.hpp>
 #include <navigator/types.hpp>
 
 namespace navigator::layout {
@@ -93,6 +95,14 @@ struct TabState {
     // First visible row, in rows (fractional allowed), so the value survives density and font
     // changes. nullopt: scroll so that the cursor row is visible.
     std::optional<double> scroll_rows;
+    // Phase 5: hidden types of the types popup (search.hpp). A view setting like show_hidden:
+    // kept across navigation, copied by tab.new / tab.duplicate, saved in the session and in
+    // named layouts (docs/features.md "Type visibility filters saved in session and layout").
+    // Only plain data is used here; src/core calls nothing from src/search (the loader
+    // normalizes with the TypeFilter rules itself, using fs::fold_name).
+    // The filter TEXT, the match mode and the flattened view are runtime-only (not persisted):
+    // a restored tab never opens filtered.
+    search::TypeFilter type_filter;
 
     friend bool operator==(const TabState&, const TabState&) = default;
 };
@@ -457,12 +467,16 @@ struct Session {
 // <tab>    = { "path": <bytes>, "show_hidden": false, "cursor": <bytes>, "scroll": 12.5,
 //              "sort": { "key": "name" | "size" | "modified" | "extension" | "count",
 //                        "descending": false, "folders_first": true, "natural": true,
-//                        "case_insensitive": true } }
+//                        "case_insensitive": true },
+//              "hidden_types": { "folders": true, "no_extension": true,
+//                                "extensions": [ <bytes>, ... ] } }        Phase 5
 // <bytes>  = a JSON string when the raw bytes are valid UTF-8, otherwise
 //            { "hex": "<lowercase hex of the raw bytes>" }  (paths need not be UTF-8)
 // "x"/"y" are written only when has_position; "cursor" only when non-empty; "scroll" only when
-// set. Ids are never written. Output is UTF-8, 2-space indented, keys in the order shown, and
-// deterministic: equal sessions serialize to identical text.
+// set; "hidden_types" only when type_filter.active(), and inside it "folders" / "no_extension"
+// only when true and "extensions" only when non-empty (sorted, as stored). Ids are never written.
+// Output is UTF-8, 2-space indented, keys in the order shown, and deterministic: equal sessions
+// serialize to identical text.
 //
 // Loading is lenient and never crashes (features.md: unknown fields ignored):
 //   - The text must be a JSON object, else InvalidArgument. Everything below is repair, not
@@ -479,6 +493,11 @@ struct Session {
 //     that is neither form (or bad hex) counts as missing.
 //   - "closed_tabs": invalid entries (empty / relative path) are dropped; only the newest
 //     kDefaultClosedTabCapacity are kept; pane is invalid, index 0.
+//   - "hidden_types" (Phase 5, additive, version stays 1): missing or not an object -> no
+//     hidden type. "folders" / "no_extension" not a bool -> false. "extensions": <bytes>
+//     items; others are ignored; then normalized as search::normalize(TypeFilter) specifies
+//     (folded with fs::fold_name, empty or '/'- or NUL-containing items dropped, sorted by
+//     bytes, unique). Older Navigator versions ignore the field.
 //   - "sidebar" (Phase 4): missing (older files) or not an object -> SidebarState{}. "width"
 //     not a finite number -> kSidebarDefaultWidth, else clamped to [kSidebarMinWidth,
 //     kSidebarMaxWidth]; "visible" not a bool -> true; "collapsed": strings "bookmarks",

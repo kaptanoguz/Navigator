@@ -58,6 +58,16 @@ struct AppConfig {
     // (places.hpp): restore_session = false starts with empty bookmarks and recents,
     // save_session = false never writes them.
     bool save_session = true;
+
+    // Phase 5: name index (index.hpp, docs/architecture.md "Phase 5").
+    // Navigator cache root holding index/<id>.idx; copied by App::create. Empty:
+    // platform::user_dir(UserDir::Cache) / "navigator" (~/.cache/navigator; honours
+    // $XDG_CACHE_HOME). Tests point it at a temporary directory.
+    std::string_view cache_dir;
+    // Build, load and watch name indexes of the default volumes (search::should_index_by_default)
+    // in the background. false (`--no-index`; headless smoke tests): no index thread, no index
+    // file is read or written, and the flattened view always walks the disk.
+    bool enable_index = true;
 };
 
 struct FrameStats {

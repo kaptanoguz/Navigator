@@ -102,7 +102,7 @@ Navigator's own defaults. `docs/features.md` attributes only `Ctrl+T`, `Ctrl+W` 
 File Pilot; every other chord below is Navigator's choice, following browser and Linux file
 manager conventions (GNOME Files, Nemo and Dolphin use `F3` for a split view; GNOME uses `F6` to
 cycle panes). Chords reserved for later phases by `docs/features.md` stay free: `Ctrl+E`
-(flatten, Phase 5), `Ctrl+B` (sidebar, bound in Phase 4), `Ctrl+Shift+P` (palette, Phase 8), `Ctrl+,`
+(flatten, bound in Phase 5), `Ctrl+B` (sidebar, bound in Phase 4), `Ctrl+Shift+P` (palette, Phase 8), `Ctrl+,`
 (settings), `Ctrl+Space` (cursor selection, Phase 8), `Ctrl+Shift+N` (new folder, Phase 7).
 `Ctrl+Alt+arrows` are avoided because GNOME and Cinnamon switch workspaces with them. Chords on
 punctuation keys (such as `Ctrl+\`) are avoided because Turkish layouts put those legends
@@ -271,6 +271,80 @@ The keymap stays global (one `Keymap`, no contexts). The ui scopes keys around i
 | Click on the empty part of the breadcrumb bar | `nav.focus_address_bar` |
 | Bookmark (star) button in the address bar | `bookmarks.toggle` (filled when the folder is bookmarked) |
 | Lock icon in the address bar | `view.toggle_view_lock` (stub; drawn disabled) |
+
+## Phase 5 defaults (filter, flatten, types, index)
+
+`docs/features.md` attributes only `Ctrl+E` (flatten the hierarchy) to File Pilot; every other
+chord below is Navigator's choice. `Ctrl+F` for the folder filter follows GNOME Files and
+browsers ("find"). `Ctrl+Shift+E` widens `Ctrl+E` to the whole volume; `Ctrl+Shift+F` opens
+the types popup ("filter by type"), so Phase 10 content search must pick another chord. Older
+IBus versions used `Ctrl+Shift+E` for emoji input; current ones use `Ctrl+.` and `Ctrl+;`, and
+a user who still has the old binding loses only this chord (palette and title-bar button
+remain). Still free: `Ctrl+P` (quick-open), `Ctrl+C` (Phase 7), `Ctrl+Shift+P`, `Ctrl+,`,
+`Ctrl+Space`, `Ctrl+N`, `Ctrl+Shift+N`. None of these chords was bound before. Chords on
+punctuation keys remain avoided (Turkish layouts, see Phase 3).
+
+`load_default_keymap()` binds the Phase 0, 2, 3 and 4 tables, then this table, in this order.
+
+| Chord | Command name | CommandId | arg | Notes |
+|-------|--------------|-----------|-----|-------|
+| `Ctrl+F` | `list.filter` | `FocusFilter` (1300) | 0 | Focus the pane's filter field, text selected. Typing in the list also starts the filter (below) |
+| `Ctrl+E` | `search.flatten` | `ToggleFlatten` (1302) | 0 | File Pilot behaviour per `features.md`: flatten the folder's subtree; again: leave |
+| `Ctrl+Shift+E` | `search.flatten_volume` | `FlattenVolume` (1303) | 0 | Flatten the whole volume (drive) of the folder; index-backed when ready |
+| `Ctrl+Shift+F` | `search.types` | `ToggleTypesPopup` (1304) | 0 | Types popup: per-type visibility, toggle all |
+| (unbound) | `list.clear_filter` | `ClearFilter` (1301) | 0 | Clear button on the filter chip; `Escape` cascade |
+| (unbound) | `search.toggle_fuzzy` | `ToggleFuzzy` (1305) | 0 | Mode button in the filter field |
+| (unbound) | `search.cancel` | `CancelSearch` (1306) | 0 | Progress bar button; `Escape` cascade |
+| (unbound) | `search.rebuild_index` | `RebuildIndex` (1307) | 0 | Palette; status-bar index menu |
+
+### Type to filter (Phase 5)
+
+While a pane's list has keyboard focus (no text field, sidebar or popup focused), SDL text
+input that no chord consumed (no `Ctrl`, `Alt` or `Super` held) focuses that pane's filter
+field and inserts the text, as `list.filter` would, without selecting the previous text: the
+new character replaces it. A leading `Space` is not captured (reserved for the Inspector,
+Phase 6). Plain-letter key sequences (Phase 8) must coexist with this rule; the Phase 8 design
+revisits it. This is Navigator's choice, not attributed to File Pilot.
+
+### Focus scoping (Phase 5)
+
+`docs/features.md` says most commands still fire while the folder filter has focus, so the
+filter field consumes fewer keys than the Phase 4 text fields:
+
+| Keys | While the filter field has focus |
+|------|----------------------------------|
+| Text input, `Left`, `Right`, `Home`, `End` (also with `Shift` / `Ctrl`), `Delete`, `Ctrl+Backspace`, `Ctrl+V`, `Ctrl+Z` | Edit the filter text; the list refilters on every edit |
+| `Backspace` | Delete a character; on an empty field it does nothing (never `nav.up`) |
+| `Ctrl+C`, `Ctrl+X` | Copy / cut the field's text while it has a text selection; otherwise they go through the keymap |
+| `Escape` | 1. cancel a running flatten walk, 2. else clear the text, 3. else return focus to the list |
+| `Tab` | Return focus to the list (the filter stays applied) |
+| `Up`, `Down`, `PageUp`, `PageDown` (also with `Shift`) | Through the keymap to the active pane: move the list cursor among the shown rows |
+| `Enter`, `KeypadEnter`, `Ctrl+Enter` | Through the keymap: `list.activate` / `list.open_in_new_tab` on the cursor row |
+| `Ctrl+A` | Through the keymap: select all shown rows (unlike the Phase 4 fields) |
+| Every other chord (`Ctrl+E`, `Ctrl+W`, `F6`, `Ctrl+Q`, ...) | Through the keymap as usual |
+
+The filter stays applied after the field loses focus; while the field has focus the list cursor
+is drawn as inactive (design review B1).
+
+`Escape` with the list focused (`list.clear_selection`) undoes one step per press, innermost
+first: 1. dismiss a visible notice, 2. cancel a running flatten walk or index query (rows found
+so far stay), 3. clear a non-empty selection, 4. leave the flattened view, 5. clear the filter
+text. The types filter is never cleared by `Escape` (it is a persisted view setting).
+
+Navigation (`nav.*`, `list.activate` on a folder, sidebar, GoTo) clears the filter text and
+leaves the flattened view; `nav.refresh` (`F5`) re-runs a flatten walk.
+
+### Mouse (Phase 5)
+
+| Gesture | Effect |
+|---------|--------|
+| Click in the filter field | Focus it (`list.filter`) |
+| Click on the filter chip's clear button | `list.clear_filter` |
+| Click on the flatten button in the title bar | `search.flatten` |
+| Click on the types button | `search.types` |
+| Click in the types popup | Toggle that type; "All" row: toggle all |
+| Click on the progress bar's stop button | `search.cancel` |
+| Click on a column header in the flattened view | Sort by that column instead of relevance (until the query changes) |
 
 ## Later phases
 
