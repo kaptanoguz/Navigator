@@ -661,9 +661,10 @@ std::map<std::string, Check> effect_checks() {
         CHECK(s.l().pane_count() == 1);
         CHECK(std::holds_alternative<layout::PaneNode>(s.l().root().node));
         CHECK(s.m().current_dir() == s.t.path());
-        REQUIRE(s.ws->closed_tabs().size() == 2); // both tabs of the closed pane, in tab order
-        CHECK(s.ws->closed_tabs().entries()[0].state.path == s.t / "alpha");
-        CHECK(s.ws->closed_tabs().entries()[1].state.path == s.t / "beta");
+        // Both tabs of the closed pane, pushed right to left so reopening restores tab order.
+        REQUIRE(s.ws->closed_tabs().size() == 2);
+        CHECK(s.ws->closed_tabs().entries()[0].state.path == s.t / "beta");
+        CHECK(s.ws->closed_tabs().entries()[1].state.path == s.t / "alpha");
         CHECK(s.lazy_ok());
     };
     return checks;
@@ -771,8 +772,9 @@ TEST_CASE("Unbound Phase 3 commands through the workspace", "[keymap][e2e][works
     s.settle();
     CHECK(s.tab_dirs(0) == std::vector<Path>{s.t / "beta"});
     REQUIRE(s.ws->closed_tabs().size() == 2);
-    CHECK(s.ws->closed_tabs().entries()[0].state.path == s.t.path());
-    CHECK(s.ws->closed_tabs().entries()[1].state.path == s.t / "alpha");
+    // Pushed right to left (BUG-P3-2) so reopening restores the original order.
+    CHECK(s.ws->closed_tabs().entries()[0].state.path == s.t / "alpha");
+    CHECK(s.ws->closed_tabs().entries()[1].state.path == s.t.path());
     CHECK(s.lazy_ok());
     // Tab commands with a stale id do nothing.
     CHECK(s.exec(Command{CommandId::CloseTab, 0xFFFFFFF0U}));

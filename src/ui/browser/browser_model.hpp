@@ -266,6 +266,9 @@ private:
     std::unique_ptr<ListingWorker> lister_;
     bool suspended_ = false;
     std::optional<Deferred> deferred_; // navigation requested while suspended
+    // restore()'s scroll as given (persisted form), for tab_state() before the first listing.
+    Path restored_dir_;
+    std::optional<double> restored_rows_;
 
     std::uint64_t generation_ = 0;
     std::optional<Pending> pending_;

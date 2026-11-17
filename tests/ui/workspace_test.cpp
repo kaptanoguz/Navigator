@@ -396,3 +396,65 @@ TEST_CASE("Session writer: background save, flush, synchronous save", "[workspac
     } // the destructor finishes the queued write
     CHECK(layout::load_session(file)->layout.tab_count() == ws.layout().tab_count());
 }
+
+TEST_CASE("Tabs closed together reopen in their old order (close_left, pane.close)",
+          "[workspace]") {
+    TempDir t;
+    populate(t);
+    Workspace ws(options(t));
+    ws.start(std::nullopt, t.path() / "a");
+    settle(ws);
+    for (const char* d : {"b", "c", "d"}) {
+        (void)ws.execute(Command{CommandId::NewTab, 0});
+        ws.active_model().navigate_to(t.path() / d);
+        settle(ws);
+    }
+    (void)ws.sync();
+    REQUIRE(pane_paths(ws, 0) == std::vector<std::string>{"a", "b", "c", "d"});
+
+    // close_left on d, then reopen three times: a b c d.
+    (void)ws.execute(Command{CommandId::CloseLeftTabs, 0});
+    CHECK(pane_paths(ws, 0) == std::vector<std::string>{"d"});
+    for (int i = 0; i < 3; ++i) {
+        (void)ws.execute(Command{CommandId::ReopenClosedTab, 0});
+    }
+    CHECK(pane_paths(ws, 0) == std::vector<std::string>{"a", "b", "c", "d"});
+
+    // pane.close: the pane is gone, so its tabs come back after the active tab, in order.
+    (void)ws.execute(Command{CommandId::SplitRight, 0}); // new pane on "c" (last reopened)
+    settle(ws);
+    (void)ws.execute(Command{CommandId::NewTab, 0});
+    ws.active_model().navigate_to(t.path() / "a" / "sub");
+    settle(ws);
+    (void)ws.sync();
+    REQUIRE(pane_paths(ws, 1) == std::vector<std::string>{"c", "sub"});
+    (void)ws.execute(Command{CommandId::ClosePane, 0});
+    REQUIRE(ws.layout().pane_count() == 1);
+    const TabId first = ws.layout().find_pane(ws.active_pane())->tabs[0].id;
+    ws.activate_tab(first); // reopen after "a"
+    (void)ws.execute(Command{CommandId::ReopenClosedTab, 0});
+    (void)ws.execute(Command{CommandId::ReopenClosedTab, 0});
+    CHECK(pane_paths(ws, 0) == std::vector<std::string>{"a", "c", "sub", "b", "c", "d"});
+}
+
+TEST_CASE("A never-activated tab keeps its saved scroll, including 0", "[workspace][session]") {
+    TempDir t;
+    populate(t);
+    layout::Session s;
+    TabState top = state(t.path() / "a");
+    top.scroll_rows = 0.0;
+    top.cursor_name = "sub";
+    s.layout = layout::Layout(state(t.path() / "b"));
+    (void)s.layout.add_tab(s.layout.active_pane(), top, 1, false);
+    TabState none = state(t.path() / "c");
+    (void)s.layout.add_tab(s.layout.active_pane(), none, 2, false);
+    Workspace ws(options(t));
+    ws.start(std::move(s), Path());
+    settle(ws);
+    (void)ws.sync();
+    const layout::PaneNode* p = ws.layout().find_pane(ws.active_pane());
+    REQUIRE(p->tabs.size() == 3);
+    CHECK(p->tabs[1].state.scroll_rows == std::optional<double>(0.0));
+    CHECK(p->tabs[1].state.cursor_name == "sub");
+    CHECK_FALSE(p->tabs[2].state.scroll_rows.has_value());
+}

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <ranges>
 #include <set>
 #include <system_error>
 #include <utility>
@@ -317,8 +318,9 @@ bool Workspace::execute(const Command& command) {
             if (!closed || !loc || closed->empty()) {
                 return false;
             }
-            for (std::size_t i = 0; i < closed->size(); ++i) {
-                push_closed(std::move((*closed)[i]), loc->pane, i);
+            // Right to left: reopen (newest first) then rebuilds the bar in its old order.
+            for (std::size_t i = closed->size(); i > 0; --i) {
+                push_closed(std::move((*closed)[i - 1]), loc->pane, i - 1);
             }
             return true;
         });
@@ -394,8 +396,10 @@ bool Workspace::execute(const Command& command) {
             if (!closed) {
                 return false;
             }
-            for (std::size_t i = 0; i < closed->size(); ++i) {
-                push_closed(std::move((*closed)[i]), pane, i);
+            // Right to left: the pane is gone, so each reopen lands after the tab reopened
+            // before it, and the first tab comes back first.
+            for (std::size_t i = closed->size(); i > 0; --i) {
+                push_closed(std::move((*closed)[i - 1]), pane, i - 1);
             }
             return true;
         });
@@ -543,14 +547,16 @@ Result<void> Workspace::load_layout(std::string_view name) {
         return fail(loaded.error().code, loaded.error().message);
     }
     (void)sync();
-    // The replaced tabs go to the closed-tabs list (their pane ids die with the layout).
-    for (const PaneId pane : session_.layout.pane_order()) {
+    // The replaced tabs go to the closed-tabs list (their pane ids die with the layout), last
+    // first, so repeated reopens bring them back in reading order.
+    const std::vector<PaneId> order = session_.layout.pane_order();
+    for (const PaneId pane : std::views::reverse(order)) {
         const layout::PaneNode* p = session_.layout.find_pane(pane);
         if (p == nullptr) {
             continue;
         }
-        for (std::size_t i = 0; i < p->tabs.size(); ++i) {
-            session_.closed_tabs.push(layout::ClosedTab{p->tabs[i].state, PaneId{}, i});
+        for (std::size_t i = p->tabs.size(); i > 0; --i) {
+            session_.closed_tabs.push(layout::ClosedTab{p->tabs[i - 1].state, PaneId{}, i - 1});
         }
     }
     session_.layout = std::move(*loaded);

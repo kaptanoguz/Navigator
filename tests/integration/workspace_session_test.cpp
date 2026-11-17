@@ -446,7 +446,7 @@ TEST_CASE("Workspace JSON and core JSON are interchangeable", "[workspace][sessi
 // A tab that was restored from the session but never activated keeps an unloaded model; its
 // TabState must survive a second save unchanged (save -> load -> save is a fixed point).
 TEST_CASE("Save, restore, save again without activating background tabs is a fixed point",
-          "[workspace][session][!mayfail]") {
+          "[workspace][session]") {
     TempDir t;
     populate(t);
     const Path cfg = t / "cfg";
@@ -917,8 +917,7 @@ TEST_CASE("Tabs closed one by one reopen in their old order", "[workspace][close
 // tab.close_left (tab context menu) closes A, B, C left of D; reopening three times should give
 // A B C D back. BUG-P3-2: Workspace pushes them left to right with their indices in the old bar,
 // so the newest (C, index 2) is reopened first into [D] and the bar ends up A D B C.
-TEST_CASE("Tabs closed together by close_left reopen in their old order",
-          "[workspace][closed][!mayfail]") {
+TEST_CASE("Tabs closed together by close_left reopen in their old order", "[workspace][closed]") {
     TempDir t;
     populate(t);
     Workspace ws(options(t, Path()));

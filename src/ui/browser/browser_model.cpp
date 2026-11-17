@@ -89,6 +89,8 @@ void BrowserModel::restore(const layout::TabState& state, float row_dp) {
     Location target;
     target.dir = normalize(state.path);
     target.cursor_name = state.cursor_name;
+    restored_dir_ = target.dir;
+    restored_rows_ = state.scroll_rows;
     if (state.scroll_rows.has_value()) {
         target.scroll = static_cast<float>(*state.scroll_rows) * row_dp;
     }
@@ -115,6 +117,8 @@ void BrowserModel::copy_from(const BrowserModel& other) {
     listed_sort_ = other.listed_sort_;
     listed_hidden_ = other.listed_hidden_;
     page_rows_ = other.page_rows_;
+    restored_dir_ = other.restored_dir_;
+    restored_rows_ = other.restored_rows_;
     if (other.pending_ && (!other.loaded_ || (other.pending_->kind != NavKind::Refresh &&
                                               other.pending_->kind != NavKind::Relist))) {
         Deferred d{other.pending_->kind, other.pending_->target};
@@ -150,7 +154,11 @@ layout::TabState BrowserModel::tab_state(float row_dp) const {
     if (unloaded != nullptr) {
         s.path = unloaded->dir;
         s.cursor_name = unloaded->cursor_name;
-        if (unloaded->scroll > 0.0F && row_dp > 0.0F) {
+        // Never listed: hand back exactly what restore() was given (nullopt stays nullopt,
+        // 0 stays 0), so save -> load -> save is a fixed point.
+        if (restored_rows_ && unloaded->dir == restored_dir_) {
+            s.scroll_rows = restored_rows_;
+        } else if (unloaded->scroll > 0.0F && row_dp > 0.0F) {
             s.scroll_rows = static_cast<double>(unloaded->scroll / row_dp);
         }
         return s;
