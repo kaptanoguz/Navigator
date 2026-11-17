@@ -161,12 +161,13 @@ std::string unquote(const std::string& cell) {
 }
 
 // The chord tables of docs/keymap.md ("Phase 0 defaults", "Phase 2 defaults", "Phase 3
-// defaults"), in document order. `rows` skips the rows that are not chords ("window close",
+// defaults", "Phase 4 defaults"), in document order. `rows` skips the rows that are not chords
+// ("window close",
 // "(unbound)"); `unbound` lists the command names of the "(unbound)" rows.
 struct KeymapDoc {
     std::vector<DocRow> rows;
     std::vector<std::string> unbound;
-    std::size_t phase_rows[4] = {0, 0, 0, 0}; // chord rows per phase (index 1 unused)
+    std::size_t phase_rows[5] = {0, 0, 0, 0, 0}; // chord rows per phase (index 1 unused)
 };
 
 KeymapDoc read_keymap_doc() {
@@ -174,7 +175,7 @@ KeymapDoc read_keymap_doc() {
     REQUIRE(in.good());
     KeymapDoc doc;
     std::string line;
-    int section = 0; // 0: elsewhere, otherwise the phase of the table being read (0, 2, 3)
+    int section = 0; // the phase of the table being read (0, 2, 3, 4); valid while in_table
     bool in_table = false;
     while (std::getline(in, line)) {
         if (line.starts_with("## ")) {
@@ -185,6 +186,8 @@ KeymapDoc read_keymap_doc() {
                 section = 2;
             } else if (line.starts_with("## Phase 3 defaults")) {
                 section = 3;
+            } else if (line.starts_with("## Phase 4 defaults")) {
+                section = 4;
             } else {
                 in_table = false;
             }
@@ -460,7 +463,8 @@ TEST_CASE("load_default_keymap binds exactly the docs/keymap.md tables, in order
     CHECK(parsed.phase_rows[0] == 3);  // Phase 0 chords
     CHECK(parsed.phase_rows[2] == 25); // Phase 2 chords
     CHECK(parsed.phase_rows[3] == 21); // Phase 3 chords
-    REQUIRE(doc.size() == 3 + 25 + 21);
+    CHECK(parsed.phase_rows[4] == 5);  // Phase 4 chords
+    REQUIRE(doc.size() == 3 + 25 + 21 + 5);
 
     Keymap keymap;
     REQUIRE(navigator::load_default_keymap(keymap));
@@ -490,8 +494,11 @@ TEST_CASE("every default binding resolves to a registered built-in", "[keymap][d
         bound.insert(info->id);
     }
     // Every registered command has a default chord, except the documented "(unbound)" rows.
-    const std::set<CommandId> unbound{CommandId::FocusAddressBar, CommandId::CloseLeftTabs,
-                                      CommandId::DeleteLayout, CommandId::NewWindow};
+    const std::set<CommandId> unbound{
+        CommandId::CloseLeftTabs,    CommandId::DeleteLayout,   CommandId::NewWindow,
+        CommandId::FocusSidebar,     CommandId::RenameBookmark, CommandId::MoveBookmarkUp,
+        CommandId::MoveBookmarkDown, CommandId::ClearRecents,   CommandId::ToggleRecentsTracking,
+        CommandId::ToggleViewLock};
     for (const CommandInfo& info : registry.all()) {
         INFO("command " << info.name);
         CHECK(bound.contains(info.id) == !unbound.contains(info.id));
@@ -510,8 +517,10 @@ TEST_CASE("docs/keymap.md (unbound) rows are exactly the unbound built-ins", "[k
 
     std::set<std::string> documented(doc.unbound.begin(), doc.unbound.end());
     CHECK(documented.size() == doc.unbound.size()); // no duplicate (unbound) rows
-    CHECK(documented == std::set<std::string>{"nav.focus_address_bar", "tab.close_left",
-                                              "layout.delete", "window.new"});
+    CHECK(documented == std::set<std::string>{
+                            "tab.close_left", "layout.delete", "window.new", "sidebar.focus",
+                            "bookmarks.rename", "bookmarks.move_up", "bookmarks.move_down",
+                            "recents.clear", "recents.toggle_tracking", "view.toggle_view_lock"});
     std::set<std::string> actual;
     for (const CommandInfo& info : registry.all()) {
         if (keymap.chords_for(info.name).empty()) {
@@ -529,10 +538,11 @@ TEST_CASE("default chords are unique and leave reserved chords free", "[keymap][
         INFO("chord " << to_string(b.chord));
         CHECK(seen.insert(to_string(b.chord)).second);
     }
-    // Reserved for later phases or avoided (docs/keymap.md, "Phase 3 defaults").
-    for (const char* text :
-         {"Ctrl+E", "Ctrl+B", "Ctrl+Shift+P", "Ctrl+Comma", "Ctrl+Space", "Ctrl+Shift+N", "Ctrl+N",
-          "Ctrl+Alt+Left", "Ctrl+Alt+Right", "Ctrl+Alt+Up", "Ctrl+Alt+Down", "Ctrl+Backslash"}) {
+    // Reserved for later phases or avoided (docs/keymap.md, "Phase 3 defaults" and "Phase 4
+    // defaults"): Ctrl+P stays free for quick-open / search, Ctrl+C for copying files (Phase 7).
+    for (const char* text : {"Ctrl+E", "Ctrl+P", "Ctrl+C", "Ctrl+Shift+P", "Ctrl+Comma",
+                             "Ctrl+Space", "Ctrl+Shift+N", "Ctrl+N", "Ctrl+Alt+Left",
+                             "Ctrl+Alt+Right", "Ctrl+Alt+Up", "Ctrl+Alt+Down", "Ctrl+Backslash"}) {
         INFO("reserved chord " << text);
         CHECK(keymap.resolve(chord(text)) == nullptr);
     }
@@ -572,6 +582,14 @@ TEST_CASE("default primary chords", "[keymap][defaults]") {
     CHECK(primary("pane.close") == "Ctrl+Shift+W");
     CHECK(primary("layout.save") == "Ctrl+Shift+S");
     CHECK(primary("layout.load") == "Ctrl+Shift+O");
+    // Phase 4
+    CHECK(primary("view.toggle_sidebar") == "Ctrl+B");
+    CHECK(primary("nav.focus_address_bar") == "Ctrl+L");
+    CHECK(primary("nav.goto") == "Ctrl+G");
+    CHECK(primary("bookmarks.toggle") == "Ctrl+D");
+    CHECK(primary("edit.copy_path") == "Ctrl+Shift+C");
+    // Ctrl+L (address bar) and Ctrl+Shift+L (theme) are distinct chords.
+    CHECK(primary("view.toggle_theme") == "Ctrl+Shift+L");
 }
 
 TEST_CASE("default keymap loads once; a second load fails and changes nothing",
@@ -587,8 +605,8 @@ TEST_CASE("default keymap loads once; a second load fails and changes nothing",
 
 TEST_CASE("default keymap is all-or-nothing on a pre-bound chord", "[keymap][defaults]") {
     Keymap keymap;
-    // Ctrl+Shift+O is the last default row, so a partial load would have bound everything else.
-    const KeyChord shift_end{Key::O, kCtrl | kShift};
+    // Ctrl+Shift+C is the last default row, so a partial load would have bound everything else.
+    const KeyChord shift_end{Key::C, kCtrl | kShift};
     REQUIRE(keymap.bind(shift_end, "user.custom", 42));
     REQUIRE(keymap.bind(KeyChord{Key::F9, kNone}, "user.other"));
 
@@ -745,6 +763,39 @@ TEST_CASE("a Phase 3 key sequence becomes the expected command list",
         {CommandId::MoveTabRight, 0},
         {CommandId::OpenInNewTab, 0},
         {CommandId::PreviousTab, 0},
+    };
+    CHECK(ran == expected);
+    CHECK(queue.empty());
+}
+
+TEST_CASE("a Phase 4 key sequence becomes the expected command list",
+          "[keymap][resolve][sequence]") {
+    const CommandRegistry registry = builtin_registry();
+    Keymap keymap;
+    REQUIRE(navigator::load_default_keymap(keymap));
+
+    // Ctrl+P, Ctrl+C and Ctrl+E stay unbound and are dropped; Ctrl+Shift+L is still the theme.
+    const char* presses[] = {"Ctrl+B",       "Ctrl+L", "Ctrl+P",       "Ctrl+G", "Ctrl+D", "Ctrl+C",
+                             "Ctrl+Shift+C", "F6",     "Ctrl+Shift+L", "Ctrl+E", "Ctrl+B"};
+    CommandQueue queue;
+    for (const char* text : presses) {
+        if (const std::optional<Command> c =
+                navigator::resolve_command(keymap, registry, chord(text))) {
+            queue.enqueue(*c);
+        }
+    }
+    std::vector<Command> ran;
+    queue.drain([&](const Command& c) { ran.push_back(c); });
+
+    const std::vector<Command> expected{
+        {CommandId::ToggleSidebar, 0},
+        {CommandId::FocusAddressBar, 0},
+        {CommandId::GoTo, 0},
+        {CommandId::ToggleBookmark, 0},
+        {CommandId::CopyPath, navigator::CopyPathArg::None},
+        {CommandId::FocusNextPane, 0},
+        {CommandId::ToggleTheme, 0},
+        {CommandId::ToggleSidebar, 0},
     };
     CHECK(ran == expected);
     CHECK(queue.empty());

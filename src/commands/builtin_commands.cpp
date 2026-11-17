@@ -24,11 +24,14 @@ constexpr std::array kBuiltins{
     Builtin{CommandId::ToggleFpsOverlay, "view.toggle_fps_overlay", "cmd.view.toggle_fps_overlay"},
     Builtin{CommandId::ToggleTheme, "view.toggle_theme", "cmd.view.toggle_theme"},
     Builtin{CommandId::ToggleHidden, "view.toggle_hidden", "cmd.view.toggle_hidden"},
+    Builtin{CommandId::ToggleSidebar, "view.toggle_sidebar", "cmd.view.toggle_sidebar"},
+    Builtin{CommandId::ToggleViewLock, "view.toggle_view_lock", "cmd.view.toggle_view_lock"},
     Builtin{CommandId::NavigateBack, "nav.back", "cmd.nav.back"},
     Builtin{CommandId::NavigateForward, "nav.forward", "cmd.nav.forward"},
     Builtin{CommandId::NavigateUp, "nav.up", "cmd.nav.up"},
     Builtin{CommandId::Refresh, "nav.refresh", "cmd.nav.refresh"},
     Builtin{CommandId::FocusAddressBar, "nav.focus_address_bar", "cmd.nav.focus_address_bar"},
+    Builtin{CommandId::GoTo, "nav.goto", "cmd.nav.goto"},
     Builtin{CommandId::Activate, "list.activate", "cmd.list.activate"},
     Builtin{CommandId::SelectAll, "list.select_all", "cmd.list.select_all"},
     Builtin{CommandId::ClearSelection, "list.clear_selection", "cmd.list.clear_selection"},
@@ -58,6 +61,15 @@ constexpr std::array kBuiltins{
     Builtin{CommandId::LoadLayout, "layout.load", "cmd.layout.load"},
     Builtin{CommandId::DeleteLayout, "layout.delete", "cmd.layout.delete"},
     Builtin{CommandId::NewWindow, "window.new", "cmd.window.new"},
+    Builtin{CommandId::FocusSidebar, "sidebar.focus", "cmd.sidebar.focus"},
+    Builtin{CommandId::ToggleBookmark, "bookmarks.toggle", "cmd.bookmarks.toggle"},
+    Builtin{CommandId::RenameBookmark, "bookmarks.rename", "cmd.bookmarks.rename"},
+    Builtin{CommandId::MoveBookmarkUp, "bookmarks.move_up", "cmd.bookmarks.move_up"},
+    Builtin{CommandId::MoveBookmarkDown, "bookmarks.move_down", "cmd.bookmarks.move_down"},
+    Builtin{CommandId::ClearRecents, "recents.clear", "cmd.recents.clear"},
+    Builtin{CommandId::ToggleRecentsTracking, "recents.toggle_tracking",
+            "cmd.recents.toggle_tracking"},
+    Builtin{CommandId::CopyPath, "edit.copy_path", "cmd.edit.copy_path"},
 };
 
 } // namespace
@@ -69,11 +81,14 @@ std::string_view to_string(CommandId id) noexcept {
     case CommandId::ToggleFpsOverlay: return "view.toggle_fps_overlay";
     case CommandId::ToggleTheme: return "view.toggle_theme";
     case CommandId::ToggleHidden: return "view.toggle_hidden";
+    case CommandId::ToggleSidebar: return "view.toggle_sidebar";
+    case CommandId::ToggleViewLock: return "view.toggle_view_lock";
     case CommandId::NavigateBack: return "nav.back";
     case CommandId::NavigateForward: return "nav.forward";
     case CommandId::NavigateUp: return "nav.up";
     case CommandId::Refresh: return "nav.refresh";
     case CommandId::FocusAddressBar: return "nav.focus_address_bar";
+    case CommandId::GoTo: return "nav.goto";
     case CommandId::Activate: return "list.activate";
     case CommandId::SelectAll: return "list.select_all";
     case CommandId::ClearSelection: return "list.clear_selection";
@@ -103,6 +118,14 @@ std::string_view to_string(CommandId id) noexcept {
     case CommandId::LoadLayout: return "layout.load";
     case CommandId::DeleteLayout: return "layout.delete";
     case CommandId::NewWindow: return "window.new";
+    case CommandId::FocusSidebar: return "sidebar.focus";
+    case CommandId::ToggleBookmark: return "bookmarks.toggle";
+    case CommandId::RenameBookmark: return "bookmarks.rename";
+    case CommandId::MoveBookmarkUp: return "bookmarks.move_up";
+    case CommandId::MoveBookmarkDown: return "bookmarks.move_down";
+    case CommandId::ClearRecents: return "recents.clear";
+    case CommandId::ToggleRecentsTracking: return "recents.toggle_tracking";
+    case CommandId::CopyPath: return "edit.copy_path";
     }
     return "unknown";
 }
