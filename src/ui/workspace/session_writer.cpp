@@ -74,4 +74,60 @@ void SessionWriter::run(const std::stop_token& stop) {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// JobWriter
+// ---------------------------------------------------------------------------------------------
+
+JobWriter::JobWriter() : thread_([this](const std::stop_token& stop) { run(stop); }) {}
+
+JobWriter::~JobWriter() {
+    (void)flush();
+    thread_.request_stop();
+    cv_.notify_all();
+}
+
+void JobWriter::submit(Job job) {
+    {
+        const std::scoped_lock lock(mutex_);
+        mailbox_ = std::move(job);
+    }
+    cv_.notify_one();
+}
+
+bool JobWriter::flush(std::chrono::milliseconds timeout) {
+    std::unique_lock lock(mutex_);
+    return idle_cv_.wait_for(lock, timeout, [this] { return !mailbox_ && !writing_; });
+}
+
+std::uint64_t JobWriter::writes() const {
+    const std::scoped_lock lock(mutex_);
+    return writes_;
+}
+
+void JobWriter::run(const std::stop_token& stop) {
+    while (true) {
+        Job job;
+        {
+            std::unique_lock lock(mutex_);
+            if (!cv_.wait(lock, stop, [this] { return static_cast<bool>(mailbox_); })) {
+                return;
+            }
+            job.swap(mailbox_);
+            writing_ = static_cast<bool>(job);
+        }
+        if (!job) {
+            continue;
+        }
+        const Result<void> r = job();
+        {
+            const std::scoped_lock lock(mutex_);
+            writing_ = false;
+            if (r) {
+                ++writes_;
+            }
+        }
+        idle_cv_.notify_all();
+    }
+}
+
 } // namespace navigator::ui

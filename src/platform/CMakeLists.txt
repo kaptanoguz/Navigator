@@ -11,6 +11,7 @@ add_library(navigator_platform STATIC
     mime.cpp
     mountinfo.cpp
     proc_mount_source.cpp
+    user_dirs.cpp
     volume_monitor.cpp
     volumes.cpp
 )

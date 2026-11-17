@@ -7,6 +7,7 @@
 // too deep, not an object) become empty panes, which Layout::from_tree() drops together with
 // their size, so children and sizes stay aligned.
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -20,38 +21,24 @@
 #include <variant>
 #include <vector>
 
-#include <nlohmann/json.hpp>
-
 #include <navigator/layout.hpp>
 
-#include "utf8.hpp"
+#include "json_util.hpp"
 
 namespace navigator::layout {
 namespace {
 
-using OutJson = nlohmann::ordered_json;
-using InJson = nlohmann::json;
+using core::json::as_bool;
+using core::json::as_bytes;
+using core::json::as_integer;
+using core::json::bytes_to_json;
+using core::json::dump;
+using core::json::InJson;
+using core::json::member;
+using core::json::OutJson;
+using core::json::parse_object;
 
 // ---- writing -------------------------------------------------------------------------------
-
-constexpr char kHexDigits[] = "0123456789abcdef";
-
-OutJson bytes_to_json(std::string_view raw) {
-    if (core::is_valid_utf8(raw)) {
-        // Not braced: {x} would select nlohmann's initializer-list (array) constructor.
-        return OutJson(std::string(raw)); // NOLINT(modernize-return-braced-init-list)
-    }
-    std::string hex;
-    hex.reserve(raw.size() * 2);
-    for (const char c : raw) {
-        const auto b = static_cast<unsigned char>(c);
-        hex.push_back(kHexDigits[b >> 4U]);
-        hex.push_back(kHexDigits[b & 0x0FU]);
-    }
-    OutJson out = OutJson::object();
-    out["hex"] = std::move(hex);
-    return out;
-}
 
 const char* sort_key_name(fs::SortKey key) noexcept {
     switch (key) {
@@ -123,38 +110,7 @@ OutJson layout_to_value(const Layout& layout) {
     return out;
 }
 
-std::string dump(const OutJson& doc) {
-    std::string text = doc.dump(2, ' ', false, OutJson::error_handler_t::strict);
-    text.push_back('\n');
-    return text;
-}
-
 // ---- reading -------------------------------------------------------------------------------
-
-const InJson* member(const InJson& object, const char* key) {
-    if (!object.is_object()) {
-        return nullptr;
-    }
-    const auto it = object.find(key);
-    return it == object.end() ? nullptr : &*it;
-}
-
-// Integer value, saturated to the int64 range. Floats (even 1.0) are not integers.
-std::optional<std::int64_t> as_integer(const InJson* value) {
-    if (value == nullptr || !value->is_number_integer()) {
-        return std::nullopt;
-    }
-    if (value->is_number_unsigned()) {
-        const auto u = value->get<std::uint64_t>();
-        constexpr auto kMax = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
-        return u > kMax ? std::numeric_limits<std::int64_t>::max() : static_cast<std::int64_t>(u);
-    }
-    return value->get<std::int64_t>();
-}
-
-bool as_bool(const InJson* value, bool fallback) {
-    return value != nullptr && value->is_boolean() ? value->get<bool>() : fallback;
-}
 
 std::size_t as_index(const InJson* value) {
     const std::optional<std::int64_t> v = as_integer(value);
@@ -162,47 +118,6 @@ std::size_t as_index(const InJson* value) {
         return 0;
     }
     return static_cast<std::size_t>(*v);
-}
-
-int hex_value(char c) noexcept {
-    if (c >= '0' && c <= '9') {
-        return c - '0';
-    }
-    if (c >= 'a' && c <= 'f') {
-        return c - 'a' + 10;
-    }
-    if (c >= 'A' && c <= 'F') {
-        return c - 'A' + 10;
-    }
-    return -1;
-}
-
-std::optional<std::string> as_bytes(const InJson* value) {
-    if (value == nullptr) {
-        return std::nullopt;
-    }
-    if (value->is_string()) {
-        return value->get<std::string>();
-    }
-    const InJson* hex = member(*value, "hex");
-    if (hex == nullptr || !hex->is_string()) {
-        return std::nullopt;
-    }
-    const auto& digits = hex->get_ref<const std::string&>();
-    if (digits.size() % 2 != 0) {
-        return std::nullopt;
-    }
-    std::string raw;
-    raw.reserve(digits.size() / 2);
-    for (std::size_t i = 0; i < digits.size(); i += 2) {
-        const int hi = hex_value(digits[i]);
-        const int lo = hex_value(digits[i + 1]);
-        if (hi < 0 || lo < 0) {
-            return std::nullopt;
-        }
-        raw.push_back(static_cast<char>((hi << 4) | lo));
-    }
-    return raw;
 }
 
 fs::SortKey sort_key_from(const InJson* value) {
@@ -348,15 +263,62 @@ WindowGeometry window_from(const InJson* value) {
     return window;
 }
 
-Result<InJson> parse_object(std::string_view text) {
-    InJson doc = InJson::parse(text.begin(), text.end(), nullptr, false);
-    if (doc.is_discarded()) {
-        return fail(ErrorCode::InvalidArgument, "not valid JSON");
+// ---- sidebar (Phase 4) ---------------------------------------------------------------------
+
+constexpr std::array<const char*, kSidebarSectionCount> kSectionNames = {"bookmarks", "recents",
+                                                                         "places", "storage"};
+
+double clamp_width(double width) noexcept {
+    if (!std::isfinite(width)) {
+        return kSidebarDefaultWidth;
     }
-    if (!doc.is_object()) {
-        return fail(ErrorCode::InvalidArgument, "top-level JSON value is not an object");
+    return std::clamp(width, kSidebarMinWidth, kSidebarMaxWidth);
+}
+
+OutJson sidebar_to_json(const SidebarState& sidebar) {
+    OutJson out = OutJson::object();
+    out["visible"] = sidebar.visible;
+    // The loader clamps; write what it would read back so save -> load -> save is stable.
+    const double width = clamp_width(sidebar.width);
+    if (width == std::floor(width)) {
+        out["width"] = static_cast<std::int64_t>(width); // integral: no ".0"
+    } else {
+        out["width"] = width;
     }
-    return doc;
+    OutJson collapsed = OutJson::array();
+    for (std::size_t i = 0; i < kSidebarSectionCount; ++i) {
+        if (sidebar.collapsed[i]) {
+            collapsed.push_back(kSectionNames[i]);
+        }
+    }
+    out["collapsed"] = std::move(collapsed);
+    return out;
+}
+
+SidebarState sidebar_from(const InJson* value) {
+    SidebarState sidebar;
+    if (value == nullptr || !value->is_object()) {
+        return sidebar;
+    }
+    sidebar.visible = as_bool(member(*value, "visible"), true);
+    if (const InJson* width = member(*value, "width"); width != nullptr && width->is_number()) {
+        sidebar.width = clamp_width(width->get<double>());
+    }
+    if (const InJson* collapsed = member(*value, "collapsed");
+        collapsed != nullptr && collapsed->is_array()) {
+        for (const InJson& item : *collapsed) {
+            if (!item.is_string()) {
+                continue;
+            }
+            const auto& name = item.get_ref<const std::string&>();
+            for (std::size_t i = 0; i < kSidebarSectionCount; ++i) {
+                if (name == kSectionNames[i]) {
+                    sidebar.collapsed[i] = true;
+                }
+            }
+        }
+    }
+    return sidebar;
 }
 
 } // namespace
@@ -380,6 +342,7 @@ Result<std::string> to_json(const Session& session) {
             closed.push_back(tab_to_json(tab.state));
         }
         doc["closed_tabs"] = std::move(closed);
+        doc["sidebar"] = sidebar_to_json(session.sidebar);
         return dump(doc);
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::OutOfMemory, "out of memory while serializing the session");
@@ -418,6 +381,7 @@ Result<Session> session_from_json(std::string_view text) {
                 session.closed_tabs.push(ClosedTab{std::move(kept[i]), PaneId{}, 0});
             }
         }
+        session.sidebar = sidebar_from(member(*doc, "sidebar"));
         return session;
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::OutOfMemory, "out of memory while reading the session");

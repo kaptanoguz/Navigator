@@ -7,7 +7,10 @@ add_executable(navigator_core_tests
     layout_test.cpp
     listing_test.cpp
     names_test.cpp
+    path_input_test.cpp
     perf_test.cpp
+    places_json_test.cpp
+    places_test.cpp
     sort_test.cpp
 )
 target_link_libraries(navigator_core_tests

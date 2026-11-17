@@ -1,4 +1,5 @@
-// open_with_default(), mime_type(), user_dir() and the later-phase stubs of
+// open_with_default(), mime_type(), user_dir() (the XDG user dirs via read_user_dirs in
+// user_dirs.cpp) and the later-phase stubs of
 // <navigator/platform.hpp>. No GIO: openers are external programs started through IAppLauncher.
 #include <cerrno>
 #include <cstdlib>
@@ -6,6 +7,7 @@
 #include <mutex>
 #include <new>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <pwd.h>
@@ -89,6 +91,36 @@ Result<Path> base_dir(const char* env_name, const char* fallback) {
     return *home / fallback;
 }
 
+// One XDG user directory: read_user_dirs(Home, Config), NotFound when the field is empty, Home
+// itself when the file sets it to $HOME ("disabled").
+Result<Path> xdg_user_dir(Path UserDirs::*field, const char* key) {
+    auto home = home_dir();
+    if (!home) {
+        return home;
+    }
+    auto config = base_dir("XDG_CONFIG_HOME", ".config");
+    if (!config) {
+        return config;
+    }
+    auto dirs = read_user_dirs(*home, *config);
+    if (!dirs) {
+        return Unexpected<Error>(dirs.error());
+    }
+    Path& value = (*dirs).*field;
+    if (value.empty()) {
+        return fail(ErrorCode::NotFound,
+                    std::string("user_dir: ") + key + " is not set in user-dirs.dirs");
+    }
+    std::string home_text = home->lexically_normal().native(); // as parse_user_dirs normalizes
+    while (home_text.size() > 1 && home_text.back() == '/') {
+        home_text.pop_back();
+    }
+    if (value.native() == home_text) {
+        return home; // disabled: the caller sees Home exactly as user_dir(Home) returns it
+    }
+    return std::move(value);
+}
+
 } // namespace
 
 Result<void> open_with_default(const Path& path, IAppLauncher& launcher) {
@@ -163,14 +195,14 @@ Result<Path> user_dir(UserDir which) {
         case UserDir::Home: return home_dir();
         case UserDir::Config: return base_dir("XDG_CONFIG_HOME", ".config");
         case UserDir::Cache: return base_dir("XDG_CACHE_HOME", ".cache");
-        case UserDir::Desktop:
-        case UserDir::Documents:
-        case UserDir::Downloads:
-        case UserDir::Music:
-        case UserDir::Pictures:
-        case UserDir::Videos: break;
+        case UserDir::Desktop: return xdg_user_dir(&UserDirs::desktop, "XDG_DESKTOP_DIR");
+        case UserDir::Documents: return xdg_user_dir(&UserDirs::documents, "XDG_DOCUMENTS_DIR");
+        case UserDir::Downloads: return xdg_user_dir(&UserDirs::downloads, "XDG_DOWNLOAD_DIR");
+        case UserDir::Music: return xdg_user_dir(&UserDirs::music, "XDG_MUSIC_DIR");
+        case UserDir::Pictures: return xdg_user_dir(&UserDirs::pictures, "XDG_PICTURES_DIR");
+        case UserDir::Videos: return xdg_user_dir(&UserDirs::videos, "XDG_VIDEOS_DIR");
         }
-        return fail(ErrorCode::Unsupported, "user_dir: XDG user directories arrive in Phase 4");
+        return fail(ErrorCode::InvalidArgument, "user_dir: unknown UserDir value");
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::OutOfMemory, "user_dir: out of memory");
     }

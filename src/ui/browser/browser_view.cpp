@@ -264,6 +264,9 @@ void BrowserView::draw(const BrowserFrame& f) {
     if (f.pointer.released) {
         active_ = WidgetId::None;
     }
+    if (f.pointer.middle_released) {
+        middle_crumb_ = static_cast<std::size_t>(-1);
+    }
     for (std::size_t i = first_intent; i < f.intents.size(); ++i) {
         f.intents[i].tab = f.tab;
     }

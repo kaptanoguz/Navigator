@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -26,12 +27,15 @@
 
 #include <navigator/commands.hpp>
 #include <navigator/layout.hpp>
+#include <navigator/places.hpp>
 #include <navigator/types.hpp>
 #include <navigator/ui.hpp>
 
 #include "browser/browser_view.hpp"
+#include "path/path_entry.hpp"
 #include "shell/painter.hpp"
 #include "theme/theme.hpp"
+#include "widgets/text_edit.hpp"
 #include "widgets/text_fit.hpp"
 #include "widgets/ui_context.hpp"
 #include "workspace/drag_drop.hpp"
@@ -64,6 +68,19 @@ struct ShellFrame {
     double fps = 0.0;
     double frame_ms = 0.0;
     std::string_view render_driver;
+    // Phase 4: the panes' area (the sidebar takes the rest of the window), the bookmark store
+    // (address bar star), and whether the sidebar shows (it then hosts the theme switch).
+    RectF content;
+    const places::BookmarkStore* bookmarks = nullptr;
+    bool sidebar_visible = false;
+    // Design review Phase 4 B1: false while the keyboard belongs elsewhere (sidebar, a popup,
+    // the address bar, a rename field): the active pane then draws its list cursor and
+    // selection like an inactive pane (no ring) but keeps its active-pane marker.
+    bool list_keyboard = true;
+    // Called by draw(): the sidebar right after the background, its overlays (tooltips) after
+    // the panes and before toasts and popups (which cover it with their scrim).
+    std::function<void()> draw_sidebar;
+    std::function<void()> draw_sidebar_overlay;
 };
 
 enum class PointerCursor : std::uint8_t { Default, ResizeHorizontal, ResizeVertical };
@@ -113,6 +130,43 @@ public:
     // Menu / Shift+F10: opens the tab context menu of the active tab on the next frame.
     void request_tab_menu() noexcept { menu_request_ = true; }
     void backspace();
+
+    // ---- Phase 4: text fields, GoTo, address bar, context menus ------------------------------
+    // The focused text field (popup query, GoTo box, address bar), or nullptr. The App edits it
+    // with the editing keys (docs/keymap.md "Focus scoping") and then calls field_changed().
+    [[nodiscard]] TextEdit* active_field() noexcept;
+    void field_changed(double now_ms);
+    // Tab in a field: accept the highlighted completion. False when the field has none.
+    bool field_tab(double now_ms);
+    void attach_paths(PathWorker* worker) noexcept;
+    void open_goto(const Workspace& ws, const Path& home, std::vector<GotoSource> sources,
+                   double now_ms);
+    // nav.focus_address_bar: the active tab's breadcrumbs become a text field (path selected).
+    void open_address_bar(const Workspace& ws, const Path& home, double now_ms);
+    void close_address_bar() noexcept;
+    [[nodiscard]] bool address_open() const noexcept { return address_.is_open(); }
+    // Routes a command while the address bar has focus. True when it consumed it (list.*
+    // field meanings); everything else resolves as usual.
+    bool route_address(const Command& command);
+    // Debounce timers and worker replies of both path fields; finished Enters land in `out`.
+    // True when anything shown changed.
+    bool poll_paths(double now_ms, std::vector<PathOutcome>& out);
+    // A debounce or a worker job of a path field is pending (keep frames coming; scripts wait).
+    [[nodiscard]] bool paths_busy() const noexcept;
+    [[nodiscard]] const PathEntry& goto_entry() const noexcept { return goto_; }
+    [[nodiscard]] const PathEntry& address_entry() const noexcept { return address_; }
+    // Context menu at (x, y): rows run a command or apply an intent.
+    struct MenuEntry {
+        std::string label;
+        std::string hint_command; // command name for the key hint
+        std::optional<Command> command;
+        std::optional<Intent> intent;
+        bool enabled = true;
+        bool separator_before = false;
+    };
+    void open_menu(const Keymap& keymap, std::vector<MenuEntry> entries, float x, float y);
+    // The dragged tab while a tab drag is past its threshold (the sidebar takes drops).
+    [[nodiscard]] layout::TabId dragged_tab() const noexcept;
     // A named-layout action finished: the picker drops a deleted name.
     void layout_deleted(std::string_view name);
 
@@ -138,18 +192,23 @@ private:
         PickLayout,
         TabMenu, // right-click on a tab
         TabList, // overflow chevron of a strip
+        GoTo,    // Phase 4 (nav.goto)
+        Menu,    // Phase 4 generic context menu (sidebar rows)
     };
     struct MenuItem {
         std::string label;
-        std::string hint_command; // command name for the key hint; empty: none
-        Command command;          // TabMenu
-        layout::TabId tab;        // TabList
+        std::string hint_command;     // command name for the key hint; empty: none
+        Command command;              // TabMenu
+        layout::TabId tab;            // TabList
+        std::optional<Intent> intent; // Menu: applied instead of `command` when set
         bool enabled = true;
         bool separator_before = false;
     };
     struct Popup {
         PopupKind kind = PopupKind::None;
-        std::string query;
+        TextEdit field{256}; // query / name (Phase 4: a real text field)
+        float field_scroll = 0.0F;
+        [[nodiscard]] const std::string& query() const noexcept { return field.text(); }
         std::size_t highlight = 0;
         float scroll = 0.0F; // first visible row (rows)
         bool delete_mode = false;
@@ -232,6 +291,8 @@ private:
     void draw_save_layout(const ShellFrame& f);
     void draw_layout_picker(const ShellFrame& f);
     void draw_menu(const ShellFrame& f);
+    void draw_goto(const ShellFrame& f);
+    void draw_address_dropdown(const ShellFrame& f);
     RectF draw_card(const ShellFrame& f, float width, float height, float top);
     float draw_field(const ShellFrame& f, const RectF& box, std::string_view placeholder,
                      bool search_glyph);
@@ -264,10 +325,16 @@ private:
     layout::TabId debug_hover_tab_;
 
     Popup popup_;
+    PathEntry goto_{PathEntryMode::GoTo};
+    PathEntry address_{PathEntryMode::AddressBar};
+    float address_scroll_ = 0.0F;
+    RectF address_dropdown_; // last drawn dropdown card (presses inside keep the edit)
+    std::optional<std::size_t> path_pressed_; // dropdown row under a press
     std::optional<Toast> toast_;
     TextFitter fitter_;
     bool fading_ = false;
     bool menu_request_ = false;
+    double last_now_ms_ = 0.0;
 };
 
 } // namespace navigator::ui

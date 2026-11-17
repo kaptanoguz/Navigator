@@ -1,14 +1,15 @@
 #!/bin/sh
 # Phase 3 headless app (owner: qa): the session survives a restart, on SDL's dummy video driver.
 #   1. run 1 (--config-dir C, PATH alpha): split right, split down, new tab, navigate; dump.
-#      session.json: 3 panes, 4 tabs with the folders visited, mode 0600, no temp files.
+#      session.json: 3 panes, 4 tabs with the folders visited, mode 0600, no temp files;
+#      recents.json (Phase 4) holds the folders navigated to, mode 0600; no bookmarks.json.
 #   2. run 2 (same C, no PATH): restores 3 panes; the dump equals run 1's; session.json has the
 #      same panes and folders.
 #   3. run 3 (same C, PATH epsilon): the session is kept, epsilon opens as a new active tab.
 #   4. a corrupt session.json: exit 0, one pane, the file moved to session.json.bad, a fresh
 #      valid session.json written on exit.
 #   5. --no-session: an existing session is neither restored nor changed; a fresh config dir
-#      gets no session.json.
+#      gets no session.json (nor bookmarks.json / recents.json).
 #   6. a session whose folders were deleted: exit 0, 3 panes still restored.
 # Usage: session_app_smoke.sh <navigator binary> [frames]
 # Everything lives in a mktemp -d directory that is removed on exit. Nothing is activated.
@@ -65,8 +66,22 @@ if run run1 --config-dir "$cfg" --debug-script "$script" "$fx/alpha"; then
         [ "$(paths_in "$s" | wc -l)" -eq 4 ] || say_fail "run1: expected 4 tabs" "$s"
         mode=$(stat -c %a "$s")
         [ "$mode" = 600 ] || say_fail "run1: session.json mode $mode, expected 600"
-        extra=$(ls -A "$cfg" | grep -v '^session.json$')
+        # Phase 4: run 1 navigates, so recents.json is a legitimate neighbour (bookmarks.json
+        # only when a bookmark changed, which this script never does). Anything else (temp
+        # files, .bad) is a leftover.
+        extra=$(ls -A "$cfg" | grep -Ev '^(session|recents)\.json$')
         [ -z "$extra" ] || say_fail "run1: leftover files in the config dir: $extra"
+        [ ! -e "$cfg/bookmarks.json" ] || say_fail "run1: bookmarks.json without a bookmark edit"
+        if [ -e "$cfg/recents.json" ]; then
+            mode=$(stat -c %a "$cfg/recents.json")
+            [ "$mode" = 600 ] || say_fail "run1: recents.json mode $mode, expected 600"
+            for d in beta gamma delta; do
+                grep -q "\"$fx/$d\"" "$cfg/recents.json" ||
+                    say_fail "run1: $d missing from recents.json" "$cfg/recents.json"
+            done
+        else
+            say_fail "run1: navigation wrote no recents.json"
+        fi
         cp "$s" "$root/session1.json"
     fi
     grep -q '^panes 3$' "$root/dump1.txt" || say_fail "run1: dump is not 3 panes" "$root/dump1.txt"
@@ -120,6 +135,9 @@ if run run5 --no-session --config-dir "$cfg" --debug-script "cmd:pane.split_righ
 fi
 if run run5b --no-session --config-dir "$root/cfg-fresh" "$fx"; then
     [ ! -e "$root/cfg-fresh/session.json" ] || say_fail "run5b: --no-session wrote a session"
+    # Phase 4: bookmarks / recents follow the same flags.
+    [ -z "$(ls -A "$root/cfg-fresh" 2>/dev/null)" ] ||
+        say_fail "run5b: --no-session wrote $(ls -A "$root/cfg-fresh")"
 fi
 
 # ---- 6. folders gone ---------------------------------------------------------------------------

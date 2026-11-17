@@ -180,7 +180,12 @@ TEST_CASE("json: golden output", "[layout][json]") {
         "case_insensitive": true
       }
     }
-  ]
+  ],
+  "sidebar": {
+    "visible": true,
+    "width": 220,
+    "collapsed": []
+  }
 }
 )";
     CHECK(*text == golden);
@@ -415,4 +420,49 @@ TEST_CASE("json: named layout documents", "[layout][json]") {
     const Result<lay::Layout> from_session = lay::layout_from_json(*lay::to_json(session));
     REQUIRE(from_session);
     CHECK(from_session->pane_count() == 3);
+}
+
+TEST_CASE("json: sidebar state round-trips and loads leniently", "[layout][json][sidebar]") {
+    lay::Session session;
+    session.sidebar.visible = false;
+    session.sidebar.width = 301.5;
+    session.sidebar.set_collapsed(lay::SidebarSection::Storage, true);
+    session.sidebar.set_collapsed(lay::SidebarSection::Recents, true);
+    const Result<std::string> text = lay::to_json(session);
+    REQUIRE(text);
+    CHECK(text->find(R"("sidebar": {
+    "visible": false,
+    "width": 301.5,
+    "collapsed": [
+      "recents",
+      "storage"
+    ]
+  })") != std::string::npos);
+    const lay::Session back = must_load(*text);
+    CHECK(back.sidebar == session.sidebar);
+    CHECK(*lay::to_json(back) == *text);
+
+    // Older files (no "sidebar") and wrong types give the defaults.
+    CHECK(must_load("{}").sidebar == lay::SidebarState{});
+    CHECK(must_load(R"({"sidebar": [1]})").sidebar == lay::SidebarState{});
+    const lay::Session odd = must_load(
+        R"({"sidebar": {"visible": "no", "width": "wide", "collapsed": ["places", 3, "nope", "PLACES", "places"]}})");
+    CHECK(odd.sidebar.visible);
+    CHECK(odd.sidebar.width == lay::kSidebarDefaultWidth);
+    CHECK(odd.sidebar.is_collapsed(lay::SidebarSection::Places));
+    CHECK_FALSE(odd.sidebar.is_collapsed(lay::SidebarSection::Bookmarks));
+    CHECK(must_load(R"({"sidebar": {"width": 10}})").sidebar.width == lay::kSidebarMinWidth);
+    CHECK(must_load(R"({"sidebar": {"width": 1e9}})").sidebar.width == lay::kSidebarMaxWidth);
+    CHECK(must_load(R"({"sidebar": {"width": 250.25}})").sidebar.width == 250.25);
+    CHECK(must_load(R"({"sidebar": {"collapsed": "places"}})").sidebar == lay::SidebarState{});
+
+    // Values the loader would repair are written repaired (save -> load -> save is stable).
+    lay::Session wild;
+    wild.sidebar.width = std::numeric_limits<double>::infinity();
+    CHECK(lay::to_json(wild)->find(R"("width": 220,)") != std::string::npos);
+    wild.sidebar.width = 5000.0;
+    CHECK(lay::to_json(wild)->find(R"("width": 480,)") != std::string::npos);
+
+    // Named layouts never carry the sidebar.
+    CHECK(lay::layout_to_json(session.layout)->find("sidebar") == std::string::npos);
 }

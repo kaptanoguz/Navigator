@@ -55,6 +55,10 @@ public:
     // Filled anti-aliased circle.
     void fill_circle(float cx, float cy, float radius, const Color& color);
 
+    // Phase 4 icons: a filled polygon that is star-shaped around its vertex centroid (convex
+    // shapes, stars, arrows), with a 1 px anti-aliased fringe. Points in order (either winding).
+    void fill_polygon(const std::vector<SDL_FPoint>& points, const Color& color);
+
     // Restricts drawing to `rect` (rounded outward to whole pixels); nullopt removes the clip.
     void set_clip(const std::optional<RectF>& rect);
     [[nodiscard]] const std::optional<RectF>& clip() const noexcept { return clip_; }

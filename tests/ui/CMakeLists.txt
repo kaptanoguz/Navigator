@@ -7,7 +7,9 @@ add_executable(navigator_ui_tests
     format_test.cpp
     i18n_test.cpp
     lru_cache_test.cpp
+    path_entry_test.cpp
     sdl_input_test.cpp
+    sidebar_test.cpp
     text_fit_test.cpp
     text_shaping_test.cpp
     theme_test.cpp
@@ -35,4 +37,9 @@ if(TARGET navigator)
         COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/session_smoke.sh $<TARGET_FILE:navigator>)
     set_tests_properties(ui.smoke_session_restores_three_panes PROPERTIES
         TIMEOUT 60 LABELS "smoke;app")
+    # Phase 4 acceptance: GoTo jumps to ~/Downloads and / (temporary HOME and --config-dir).
+    add_test(NAME ui.smoke_goto_downloads_and_root
+        COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/goto_smoke.sh $<TARGET_FILE:navigator>)
+    set_tests_properties(ui.smoke_goto_downloads_and_root PROPERTIES
+        TIMEOUT 90 LABELS "smoke;app")
 endif()

@@ -113,7 +113,7 @@ void WorkspaceView::clear_caches() noexcept {
 
 bool WorkspaceView::animating() const noexcept {
     if (fading_ || drag_.state() != TabDrag::State::Idle || splitter_.has_value() ||
-        toast_.has_value()) {
+        toast_.has_value() || paths_busy()) {
         return true;
     }
     return std::any_of(views_.begin(), views_.end(),
@@ -183,8 +183,8 @@ void WorkspaceView::layout_strips(const ShellFrame& f) {
     const Workspace& ws = f.workspace;
     const layout::Layout& lay = ws.layout();
     const DensityMetrics dm = density_metrics(f.density);
-    geom_ = compute_pane_geometry(lay, RectF{0.0F, 0.0F, f.width, f.height}, 0.0F,
-                                  std::round(p.px(kSplitterHit)));
+    const RectF area = f.content.w > 0.0F ? f.content : RectF{0.0F, 0.0F, f.width, f.height};
+    geom_ = compute_pane_geometry(lay, area, 0.0F, std::round(p.px(kSplitterHit)));
     strips_.clear();
     const float strip_h = std::round(p.px(dm.tab_bar_height));
     const float margin = std::round(p.px(dm.panel_margin));
@@ -221,7 +221,7 @@ void WorkspaceView::layout_strips(const ShellFrame& f) {
         const float tab_y = s.rect.y + std::round(p.px(kStripTop));
         float right = s.rect.right() - margin;
         // The window's theme switch lives at the right end of the top-right pane's strip.
-        if (pr.rect.y <= 0.5F && pr.rect.right() >= f.width - 0.5F) {
+        if (!f.sidebar_visible && pr.rect.y <= 0.5F && pr.rect.right() >= area.right() - 0.5F) {
             s.theme =
                 RectF{right - button, tab_y + std::round(0.5F * (tab_h - button)), button, button};
             right = s.theme.x - std::round(p.px(6.0F));
@@ -319,6 +319,12 @@ std::vector<PaneDropArea> WorkspaceView::drop_areas() const {
 
 void WorkspaceView::update(const ShellFrame& f) {
     prune(f.workspace);
+    last_now_ms_ = f.now_ms;
+    // The address bar edits the active tab only; switching tabs or panes ends the edit.
+    if (address_.is_open() && (address_.tab != f.workspace.active_tab().value ||
+                               f.workspace.model(f.workspace.active_tab()) == nullptr)) {
+        close_address_bar();
+    }
     layout_strips(f);
     const PointerInput& ptr = f.pointer;
     shell_capture_ = popup_open() || drag_.state() != TabDrag::State::Idle || splitter_ ||
@@ -331,6 +337,11 @@ void WorkspaceView::update(const ShellFrame& f) {
         !popup_open() && !over_strip && ptr.inside && geom_.splitter_at(ptr.x, ptr.y) != nullptr;
     if (!shell_capture_ && (ptr.pressed || ptr.middle_pressed || ptr.right_pressed) &&
         (over_strip || over_splitter_)) {
+        shell_capture_ = true;
+    }
+    // The address bar's dropdown floats over the list: the list must not see that pointer.
+    if (address_.is_open() && address_dropdown_.w > 0.0F &&
+        contains(address_dropdown_, ptr.x, ptr.y)) {
         shell_capture_ = true;
     }
     const PointerInput vp = view_pointer(f);
@@ -358,7 +369,7 @@ void WorkspaceView::update(const ShellFrame& f) {
             .height = f.height,
             .bounds = s.body,
             .tab = tab.value,
-            .focused = f.focused && s.active_pane,
+            .focused = f.focused && s.active_pane && f.list_keyboard,
             .pane_active = s.active_pane,
             .marked = s.active_pane && f.workspace.layout().pane_count() > 1,
             .animations = f.animations,
@@ -366,6 +377,7 @@ void WorkspaceView::update(const ShellFrame& f) {
             .dt_ms = f.dt_ms,
             .now = f.now,
             .home = f.home,
+            .address = address_.is_open() && address_.tab == tab.value ? &address_.edit() : nullptr,
         };
         view(tab).update(bf);
     }
@@ -377,7 +389,19 @@ void WorkspaceView::draw(const ShellFrame& f) {
     const PointerInput& ptr = f.pointer;
     const Workspace& ws = f.workspace;
     r.clear(f.palette.background);
+    if (f.draw_sidebar) {
+        f.draw_sidebar();
+    }
 
+    // The address bar loses focus (and its edit) on a press outside the field and dropdown.
+    if (address_.is_open() && !popup_open() &&
+        (ptr.pressed || ptr.middle_pressed || ptr.right_pressed)) {
+        const BrowserView* bv = find_view(layout::TabId{address_.tab});
+        const bool in_field = bv != nullptr && contains(bv->address_rect(), ptr.x, ptr.y);
+        if (!in_field && !contains(address_dropdown_, ptr.x, ptr.y)) {
+            close_address_bar();
+        }
+    }
     // A press anywhere in an inactive pane activates it first (docs/keymap.md).
     if (!popup_open() && (ptr.pressed || ptr.middle_pressed || ptr.right_pressed)) {
         const PaneRect* pr = geom_.pane_at(ptr.x, ptr.y);
@@ -417,7 +441,7 @@ void WorkspaceView::draw(const ShellFrame& f) {
                     .height = f.height,
                     .bounds = s.body,
                     .tab = tab.value,
-                    .focused = f.focused && s.active_pane,
+                    .focused = f.focused && s.active_pane && f.list_keyboard,
                     .pane_active = s.active_pane,
                     .marked = s.active_pane && f.workspace.layout().pane_count() > 1,
                     .animations = f.animations,
@@ -425,6 +449,11 @@ void WorkspaceView::draw(const ShellFrame& f) {
                     .dt_ms = f.dt_ms,
                     .now = f.now,
                     .home = f.home,
+                    .address = address_.is_open() && address_.tab == tab.value ? &address_.edit()
+                                                                               : nullptr,
+                    .address_error = !address_.error().empty(),
+                    .bookmarked = f.bookmarks != nullptr && m->loaded() &&
+                                  f.bookmarks->contains(m->current_dir()),
                 };
                 r.set_clip(s.body);
                 view(tab).draw(bf);
@@ -463,8 +492,12 @@ void WorkspaceView::draw(const ShellFrame& f) {
         }
     }
 
+    if (f.draw_sidebar_overlay) {
+        f.draw_sidebar_overlay();
+    }
     handle_drag(f);
     draw_drag_overlay(f);
+    draw_address_dropdown(f);
     draw_toast(f);
     if (menu_request_) {
         menu_request_ = false;

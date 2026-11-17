@@ -7,8 +7,16 @@
 //
 // Activate on a file goes to a recording launcher; nothing is ever spawned. The Workspace has no
 // config root: nothing is written outside the fixture.
+//
+// Phase 4 chords (Ctrl+B, Ctrl+L, Ctrl+G, Ctrl+D, Ctrl+Shift+C) are App-level: the Workspace
+// does not handle them (checked), and the SDL shell (src/ui/shell/app.cpp) dispatches them to
+// Workspace::set_sidebar, the address-bar / GoTo PathEntry, PlacesModel::toggle_bookmark and
+// copy_path_text. Their effect checks drive those same headless pieces the way the shell does;
+// the shell's own key routing is covered end to end by tests/integration/places_app_smoke.sh
+// (key:CHORD script steps on the real binary).
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -33,6 +41,10 @@
 #include "browser/browser_model.hpp"
 #include "browser_support.hpp"
 #include "fixture.hpp"
+#include "path/copy_path.hpp"
+#include "path/path_entry.hpp"
+#include "sidebar/places_model.hpp"
+#include "sidebar/sidebar_model.hpp"
 #include "workspace/workspace.hpp"
 
 using namespace navigator;
@@ -372,6 +384,196 @@ void check_split(Scene& s, const Command& c, layout::SplitAxis axis) {
     CHECK(s.lazy_ok());
 }
 
+// ---- Phase 4 (App-level commands; see the header comment) -----------------------------------
+
+Timestamp wall_now() {
+    return std::chrono::time_point_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now());
+}
+
+// The outcome after a REQUIRE(o.has_value()) (tidy's optional check does not see REQUIRE).
+ui::PathOutcome got(const std::optional<ui::PathOutcome>& o) {
+    return o.value_or(ui::PathOutcome{});
+}
+
+// Lets a PathEntry without a worker run its debounced completion request synchronously.
+void settle_entry(ui::PathEntry& e, double& now_ms) {
+    now_ms += ui::PathEntry::kDebounceMs + 1.0;
+    e.tick(now_ms);
+    (void)e.poll(now_ms);
+}
+
+void check_toggle_sidebar(Scene& s, const Command& c) {
+    check_not_handled(s, c);
+    // The shell's handler: flip SidebarState::visible through the Workspace (persisted).
+    const layout::SidebarState before = s.ws->sidebar();
+    CHECK(before.visible); // default
+    for (int round = 0; round < 2; ++round) {
+        const std::uint64_t serial = s.ws->persist_serial();
+        layout::SidebarState st = s.ws->sidebar();
+        st.visible = !st.visible;
+        s.ws->set_sidebar(st);
+        CHECK(s.ws->sidebar().visible == (round != 0));
+        CHECK(s.ws->persist_serial() > serial);
+        CHECK(s.ws->snapshot().sidebar == s.ws->sidebar());
+        // F6 includes the sidebar only while it is visible.
+        const ui::FocusStop next = ui::cycle_focus(1, s.ws->sidebar().visible, false, 0, 1);
+        CHECK(next.sidebar == s.ws->sidebar().visible);
+    }
+    CHECK(s.ws->sidebar() == before);
+    CHECK(s.l().tab_count() == 1);
+}
+
+void check_focus_address_bar(Scene& s, const Command& c) {
+    check_not_handled(s, c);
+    // The shell's handler: the active pane's breadcrumbs become a field with the folder path,
+    // all selected; no dropdown until edited, nothing highlighted.
+    double now_ms = 1000.0;
+    ui::PathEntry e(ui::PathEntryMode::AddressBar);
+    const std::string folder = s.m().current_dir().string();
+    e.open(folder, true, s.m().current_dir(), s.t.path(), {}, now_ms);
+    CHECK(e.edit().text() == folder);
+    CHECK(e.edit().selected_text() == folder);
+    CHECK(e.items().empty());
+    CHECK(e.highlight() == static_cast<std::size_t>(-1));
+    // Typing replaces the selection; the completion lists alpha; Enter goes there.
+    CHECK(e.edit().insert(folder + "/al"));
+    e.changed(now_ms);
+    settle_entry(e, now_ms);
+    REQUIRE(e.items().size() == 1);
+    CHECK(e.items()[0].path == s.t / "alpha");
+    CHECK(e.accept_completion(now_ms));
+    CHECK(e.edit().text() == folder + "/alpha/");
+    e.submit(false);
+    std::optional<ui::PathOutcome> o = e.take_outcome();
+    REQUIRE(o.has_value());
+    CHECK(got(o).kind == ui::PathOutcome::Kind::Navigate);
+    CHECK(got(o).path == s.t / "alpha");
+    s.ws->navigate_active(got(o).path, got(o).cursor_name);
+    s.settle();
+    CHECK(s.m().current_dir() == s.t / "alpha");
+    CHECK(s.l().tab_count() == 1);
+}
+
+void check_goto(Scene& s, const Command& c) {
+    check_not_handled(s, c);
+    // GoTo sources as the shell builds them from the PlacesModel: recents, bookmarks, places.
+    ui::PlacesModel::Options po;
+    po.home = s.t.path();
+    po.probe_worker = false;
+    ui::PlacesModel places(po);
+    places.record_visit(s.t / "beta", wall_now(), 0.0);
+    REQUIRE(places.add_bookmark(s.t / "alpha", wall_now()));
+    std::vector<ui::GotoSource> sources;
+    for (const places::RecentEntry& r : places.recents().entries()) {
+        ui::GotoSource g;
+        g.kind = ui::GotoSource::Kind::Recent;
+        g.status = places.status(r.path, r.volume, &g.path);
+        g.label = places::default_label(r.path);
+        sources.push_back(std::move(g));
+    }
+    for (const places::Bookmark& b : places.bookmarks().list()) {
+        ui::GotoSource g;
+        g.kind = ui::GotoSource::Kind::Bookmark;
+        g.status = places.status(b.path, b.volume, &g.path);
+        g.label = places::default_label(b.path);
+        sources.push_back(std::move(g));
+    }
+    double now_ms = 1000.0;
+    ui::PathEntry e(ui::PathEntryMode::GoTo);
+    e.open({}, false, s.m().current_dir(), s.t.path(), sources, now_ms);
+    // Empty text: recents first, then bookmarks; the highlight on row 0.
+    REQUIRE(e.items().size() >= 2);
+    CHECK(e.items()[0].kind == ui::PathItem::Kind::Recent);
+    CHECK(e.items()[0].path == s.t / "beta");
+    CHECK(e.items()[1].kind == ui::PathItem::Kind::Bookmark);
+    CHECK(e.items()[1].path == s.t / "alpha");
+    CHECK(e.highlight() == 0);
+    // Enter on the highlighted recent navigates the active tab.
+    e.submit(false);
+    std::optional<ui::PathOutcome> o = e.take_outcome();
+    REQUIRE(o.has_value());
+    CHECK(got(o).path == s.t / "beta");
+    s.ws->navigate_active(got(o).path);
+    s.settle();
+    CHECK(s.m().current_dir() == s.t / "beta");
+    // Typed path: "./../alpha/inner" from beta resolves through the typed row.
+    e.open({}, false, s.m().current_dir(), s.t.path(), sources, now_ms);
+    CHECK(e.edit().insert("../alpha/inner"));
+    e.changed(now_ms);
+    settle_entry(e, now_ms);
+    REQUIRE_FALSE(e.items().empty());
+    CHECK(e.items()[0].kind == ui::PathItem::Kind::Typed);
+    e.submit(true); // Ctrl+Enter: new background tab
+    o = e.take_outcome();
+    REQUIRE(o.has_value());
+    CHECK(got(o).new_tab);
+    CHECK(got(o).path == s.t / "alpha" / "inner");
+    CHECK(s.ws->open_tab(got(o).path, false));
+    s.settle();
+    CHECK(s.l().tab_count() == 2);
+    CHECK(s.m().current_dir() == s.t / "beta"); // background tab: the active one stays
+}
+
+void check_toggle_bookmark(Scene& s, const Command& c) {
+    check_not_handled(s, c);
+    // The shell's handler with arg 0: bookmark the active tab's folder, or remove it.
+    ui::PlacesModel::Options po;
+    po.home = s.t.path();
+    po.probe_worker = false;
+    ui::PlacesModel places(po);
+    s.go(s.t / "alpha");
+    const std::uint64_t serial = places.serial();
+    CHECK(places.toggle_bookmark(s.m().current_dir(), wall_now()) ==
+          ui::PlacesModel::Toggled::Added);
+    CHECK(places.bookmarks().contains(s.t / "alpha"));
+    CHECK(places.bookmarks().size() == 1);
+    CHECK(places.serial() > serial);
+    // The sidebar shows it (and highlights it: the active folder).
+    const std::vector<ui::SidebarRow> rows =
+        ui::build_sidebar_rows(places, s.ws->sidebar(), s.m().current_dir());
+    const std::size_t row = ui::sidebar_row_of(rows, places.bookmarks().list()[0].id);
+    REQUIRE(row < rows.size());
+    CHECK(rows[row].path == s.t / "alpha");
+    CHECK(rows[row].highlighted);
+    // Again: removed. Trailing separator / "." spellings are the same folder.
+    CHECK(places.toggle_bookmark(s.t.path() / "alpha" / ".", wall_now()) ==
+          ui::PlacesModel::Toggled::Removed);
+    CHECK(places.bookmarks().empty());
+    CHECK(s.m().current_dir() == s.t / "alpha"); // the folder itself is untouched
+}
+
+void check_copy_path(Scene& s, const Command& c) {
+    check_not_handled(s, c);
+    BrowserModel& m = s.m();
+    m.clear_selection();
+    // Nothing selected: the current folder, unquoted.
+    CHECK(ui::copy_path_targets(m, false) == std::vector<Path>{s.t.path()});
+    CHECK(ui::copy_path_text(ui::copy_path_targets(m, false)) == s.t.path().string());
+    // A selection in list order; CopyPathArg::CurrentFolder ignores it.
+    m.click_row(m.find("f02"), Modifiers::None);
+    m.click_row(m.find("c.txt"), Modifiers::Ctrl);
+    const std::vector<Path> want{s.t / "c.txt", s.t / "f02"};
+    CHECK(ui::copy_path_targets(m, false) == want);
+    CHECK(ui::copy_path_text(want) == path_input::quote_for_shell((s.t / "c.txt").string()) + " " +
+                                          path_input::quote_for_shell((s.t / "f02").string()));
+    CHECK(ui::copy_path_targets(m, (c.arg | CopyPathArg::CurrentFolder) != 0U) ==
+          std::vector<Path>{s.t.path()});
+    // One selected name with a space: still unquoted (pastes into GoTo).
+    (void)touch(s.t / "a b");
+    s.run(Command{CommandId::Refresh, 0});
+    m.click_row(m.find("a b"), Modifiers::None);
+    CHECK(ui::copy_path_text(ui::copy_path_targets(m, false)) == (s.t / "a b").string());
+    CHECK(selected_set(m) == std::set<std::string>{"a b"}); // the selection is untouched
+}
+
+void add_phase4_checks(std::map<std::string, Check>& checks) {
+    checks["view.toggle_sidebar"] = check_toggle_sidebar;
+    checks["nav.focus_address_bar"] = check_focus_address_bar;
+    checks["nav.goto"] = check_goto;
+    checks["bookmarks.toggle"] = check_toggle_bookmark;
+    checks["edit.copy_path"] = check_copy_path;
+}
+
 std::map<std::string, Check> effect_checks() {
     std::map<std::string, Check> checks;
     checks["app.quit"] = check_not_handled;
@@ -644,6 +846,7 @@ std::map<std::string, Check> effect_checks() {
     };
     checks["pane.focus_next"] = focus_pane;
     checks["pane.focus_previous"] = focus_pane;
+    add_phase4_checks(checks);
     checks["pane.close"] = [](Scene& s, const Command& c) {
         REQUIRE(s.exec(c)); // the only pane: no-op
         s.settle();
@@ -674,12 +877,13 @@ std::map<std::string, Check> effect_checks() {
 
 TEST_CASE("docs/keymap.md and load_default_keymap agree row for row", "[keymap][e2e]") {
     const DocTables doc = read_doc();
-    // Phase 0, Phase 2 and Phase 3 tables.
-    CHECK(doc.per_phase.size() == 3);
+    // Phase 0, Phase 2, Phase 3 and Phase 4 tables.
+    CHECK(doc.per_phase.size() == 4);
     CHECK(doc.per_phase.at(0) == 3);
     CHECK(doc.per_phase.at(2) == 25);
     CHECK(doc.per_phase.at(3) == 21);
-    REQUIRE(doc.bound.size() == 49);
+    CHECK(doc.per_phase.at(4) == 5);
+    REQUIRE(doc.bound.size() == 54);
     Keymap keymap;
     REQUIRE(load_default_keymap(keymap));
     const Span<const KeyBinding> bindings = keymap.bindings();
@@ -703,7 +907,19 @@ TEST_CASE("docs/keymap.md and load_default_keymap agree row for row", "[keymap][
     // "(unbound)" rows are registered commands without a default chord.
     CommandRegistry registry;
     REQUIRE(register_builtin_commands(registry));
-    REQUIRE(doc.unbound.size() == 4);
+    // Phase 3: tab.close_left, layout.delete, window.new. Phase 4: sidebar.focus,
+    // bookmarks.rename / move_up / move_down, recents.clear / toggle_tracking,
+    // view.toggle_view_lock (nav.focus_address_bar became Ctrl+L).
+    std::set<std::string> unbound_names;
+    for (const DocRow& row : doc.unbound) {
+        unbound_names.insert(row.command);
+    }
+    CHECK(unbound_names == std::set<std::string>{"tab.close_left", "layout.delete", "window.new",
+                                                 "sidebar.focus", "bookmarks.rename",
+                                                 "bookmarks.move_up", "bookmarks.move_down",
+                                                 "recents.clear", "recents.toggle_tracking",
+                                                 "view.toggle_view_lock"});
+    REQUIRE(doc.unbound.size() == 10);
     for (const DocRow& row : doc.unbound) {
         INFO("keymap.md line " << row.line << ": " << row.command);
         CHECK(registry.find(row.command) != nullptr);
@@ -747,10 +963,12 @@ TEST_CASE("Every default chord resolves to its command and has its effect on the
     }
 
     // Near misses do not resolve: extra modifiers, chords reserved for later phases (Ctrl+N:
-    // window.new, deferred; Ctrl+E, Ctrl+B, Ctrl+Shift+P, Ctrl+Shift+N) and unbound keys.
+    // window.new, deferred; Ctrl+E, Ctrl+Shift+P, Ctrl+Shift+N, Ctrl+P, Ctrl+C) and unbound
+    // keys, including Phase 4 chords with an extra modifier.
     for (const char* text :
-         {"Ctrl+N", "Ctrl+E", "Ctrl+B", "Ctrl+Shift+P", "Ctrl+Shift+N", "Ctrl+Alt+Left",
-          "Alt+Shift+Left", "Delete", "Ctrl+Shift+F3", "Ctrl+F6", "Ctrl+Alt+T", "Shift+Enter"}) {
+         {"Ctrl+N", "Ctrl+E", "Ctrl+Shift+P", "Ctrl+Shift+N", "Ctrl+P", "Ctrl+C", "Ctrl+Alt+Left",
+          "Alt+Shift+Left", "Delete", "Ctrl+Shift+F3", "Ctrl+F6", "Ctrl+Alt+T", "Shift+Enter",
+          "Ctrl+Shift+B", "Ctrl+Alt+L", "Ctrl+Shift+G", "Alt+D", "Ctrl+Alt+C"}) {
         INFO(text);
         CHECK_FALSE(resolve_command(keymap, registry, chord_of(text)));
     }

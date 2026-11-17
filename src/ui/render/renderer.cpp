@@ -306,6 +306,74 @@ void Renderer::fill_circle(float cx, float cy, float radius, const Color& color)
     fill_rounded_rect(RectF{cx - radius, cy - radius, 2.0F * radius, 2.0F * radius}, radius, color);
 }
 
+void Renderer::fill_polygon(const std::vector<SDL_FPoint>& points, const Color& color) {
+    const std::size_t n = points.size();
+    if (n < 3 || color.a <= 0.0F) {
+        return;
+    }
+    float cx = 0.0F;
+    float cy = 0.0F;
+    for (const SDL_FPoint& p : points) {
+        cx += p.x;
+        cy += p.y;
+    }
+    cx /= static_cast<float>(n);
+    cy /= static_cast<float>(n);
+    // Signed area: flip the normals for clockwise input.
+    float area = 0.0F;
+    for (std::size_t i = 0; i < n; ++i) {
+        const SDL_FPoint& a = points[i];
+        const SDL_FPoint& b = points[(i + 1) % n];
+        area += (a.x * b.y) - (b.x * a.y);
+    }
+    const float sign = area >= 0.0F ? 1.0F : -1.0F;
+    ring_a_.assign(n, SDL_FPoint{});
+    ring_b_.assign(n, SDL_FPoint{});
+    for (std::size_t i = 0; i < n; ++i) {
+        const SDL_FPoint& prev = points[(i + n - 1) % n];
+        const SDL_FPoint& cur = points[i];
+        const SDL_FPoint& next = points[(i + 1) % n];
+        const auto normal = [sign](SDL_FPoint a, SDL_FPoint b) {
+            const float dx = b.x - a.x;
+            const float dy = b.y - a.y;
+            const float len = std::max(std::sqrt((dx * dx) + (dy * dy)), 1.0e-4F);
+            return SDL_FPoint{sign * dy / len, -sign * dx / len};
+        };
+        const SDL_FPoint n0 = normal(prev, cur);
+        const SDL_FPoint n1 = normal(cur, next);
+        float mx = n0.x + n1.x;
+        float my = n0.y + n1.y;
+        const float ml = std::sqrt((mx * mx) + (my * my));
+        if (ml < 1.0e-3F) {
+            mx = n0.x;
+            my = n0.y;
+        } else {
+            // Miter length so both edges move by 0.5 px, capped for sharp tips.
+            const float cosh = std::max(ml * 0.5F, 0.35F);
+            mx = (mx / ml) * (0.5F / cosh);
+            my = (my / ml) * (0.5F / cosh);
+        }
+        ring_a_[i] = SDL_FPoint{cur.x + mx, cur.y + my}; // outer fringe
+        ring_b_[i] = SDL_FPoint{cur.x - mx, cur.y - my}; // solid edge
+    }
+    const SDL_FColor solid = to_sdl(color);
+    const SDL_FColor clear = to_sdl(color.with_alpha(0.0F));
+    vertices_.clear();
+    indices_.clear();
+    band(ring_a_, clear, ring_b_, solid, vertices_, indices_);
+    const auto centre = static_cast<int>(vertices_.size());
+    vertices_.push_back(vertex({cx, cy}, solid));
+    for (std::size_t i = 0; i < n; ++i) {
+        vertices_.push_back(vertex(ring_b_[i], solid));
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+        const int a = centre + 1 + static_cast<int>(i);
+        const int b = centre + 1 + static_cast<int>((i + 1) % n);
+        indices_.insert(indices_.end(), {centre, a, b});
+    }
+    draw_geometry(nullptr, vertices_, indices_);
+}
+
 void Renderer::set_clip(const std::optional<RectF>& rect) {
     clip_ = rect;
     if (!rect) {

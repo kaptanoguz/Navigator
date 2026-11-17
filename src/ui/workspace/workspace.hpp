@@ -24,6 +24,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -102,6 +103,21 @@ public:
     // Search Tabs picks.
     void reopen_closed_at(std::size_t closed_index);
 
+    // ---- Phase 4 (frame end) -----------------------------------------------------------------
+    // Sidebar / GoTo / address bar: navigate the active tab (cursor on `cursor_name` when
+    // given), or open `dir` as a new tab after the active tab of the active pane (activate:
+    // switch to it; otherwise a background tab, as list.open_in_new_tab). New tabs record
+    // their first listing as a visit.
+    void navigate_active(const Path& dir, std::string cursor_name = {});
+    bool open_tab(const Path& dir, bool activate);
+    // Folders newly listed by any tab since the last call (BrowserModel::take_visits), for
+    // the Recents list. Call after frame_start().
+    [[nodiscard]] std::vector<Path> take_visits();
+    // The window's sidebar state (persisted in the session; named layouts never touch it).
+    [[nodiscard]] const layout::SidebarState& sidebar() const noexcept { return session_.sidebar; }
+    // Width is clamped to [kSidebarMinWidth, kSidebarMaxWidth]; a change bumps persist_serial.
+    void set_sidebar(const layout::SidebarState& state);
+
     // Named layouts (synchronous; small files, user-initiated). Errors from layout.hpp;
     // Unsupported without a config root.
     [[nodiscard]] Result<std::vector<std::string>> list_layouts() const;
@@ -134,6 +150,7 @@ private:
     std::uint64_t epoch_ = 1;
     std::uint64_t persist_serial_ = 0;
     Path start_dir_;
+    std::set<std::uint32_t> record_tabs_; // tabs whose first listing counts as a visit
 };
 
 // Absolute, lexically normal, no trailing separator (except "/"); relative paths resolve

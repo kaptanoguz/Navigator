@@ -19,7 +19,14 @@ ui -> fs / watch / volume / mime / search / index / ops / preview / platform   (
 core-fs, platform, search, ops, preview -> types
 platform (mime.hpp) -> fs.hpp (DirEntry / is_directory_like only, header-level; no src/core calls)
 layout.hpp -> fs.hpp (SortOptions), types;  src/core (layout impl) -> nlohmann_json (PRIVATE)
+path_input.hpp -> fs.hpp, types
+places.hpp -> volume.hpp (VolumeInfo/VolumeIdentity, inline helpers), platform.hpp (UserDirs
+              value type only), types;  src/core (places impl) -> nlohmann_json (PRIVATE)
 ```
+
+`src/core` implements `places.hpp` and `path_input.hpp` without calling any `src/platform`
+function: volume lists, user dirs, the environment and `~user` lookups come in as values or
+callbacks.
 
 Nothing below `ui` depends on `ui`. Modules talk only through `include/navigator/*.hpp`; no module includes another module's `src/` headers.
 
@@ -220,6 +227,137 @@ Work split for Phase 3: **contracts** (this diff) -> **core-fs** (`layout.hpp` i
 flags, CMake linking `navigator_core` into ui if not already) -> **qa** (layout ser/de, "restore
 three panes", drag-to-split) -> **design-reviewer** (drop affordances, dimming, tab strip).
 
+## Phase 4: sidebar, GoTo, address bar, bookmarks, recents
+
+### Ownership
+
+| Piece | Where | Role |
+|-------|-------|------|
+| `VolumeIdentity`, `identity_of`, `volume_matches`, `used_fraction` | `volume.hpp` (header-only, inline) | contracts |
+| `UserDirs`, `parse_user_dirs`, `read_user_dirs`, `user_home`; `user_dir` for Desktop..Videos | `platform.hpp`, `src/platform`, `tests/platform` | platform |
+| Places list, `BookmarkStore`, `RecentsStore`, location resolution/resync, highlight helper, JSON and files | `places.hpp`, `src/core` (e.g. `places.cpp`, `places_json.cpp`), `tests/core` | core-fs |
+| `expand_user_path`, `normalize_absolute`, `fix_path_case`, `resolve_input`, completion, Copy as Path formatting | `path_input.hpp`, `src/core` (e.g. `path_input.cpp`), `tests/core` | core-fs |
+| `SidebarState` in `Session` (JSON `"sidebar"`) | `layout.hpp`, `src/core/layout_json.cpp` | core-fs |
+| New ids, names, `to_string`, default chords | `src/commands`, `tests/commands` | commands |
+| Sidebar widget and model, GoTo popup, address-bar edit mode, breadcrumb dropdown, workers (volumes, probes, completion, GoTo resolution), clipboard, persistence timing, i18n (`place.*`, `sidebar.*`, `cmd.*`, notices) | `src/ui`, `src/app` | ui |
+
+The atomic-write and `.bad` logic of `layout_files.cpp` is reused (factored inside `src/core`)
+for `bookmarks.json` and `recents.json`.
+
+### Sidebar model
+
+One sidebar per window, left of the pane tree, not a layout node (design review). Its
+persisted state is `layout::SidebarState` in the `Session` (`visible`, `width` in dp, collapsed
+sections); named layouts never contain it, and loading a layout leaves it unchanged. The
+icon-only collapse on narrow windows is derived from the window width each frame and not
+persisted.
+
+Sections, top to bottom (design review; ui may adjust after the design pass): **Bookmarks**,
+**Recents** (newest first, at most 8 rows shown, "Clear" via `recents.clear`), **Places**
+(`places::build_places`: Home, the XDG user dirs, File System), **Storage** (volumes from the
+volume monitor except the `Root` volume and the `Home` volume, whose usage bars are drawn on the
+File System and Home place rows, docs/features.md "Drive usage bar under Places"). Volume rows
+show `label` (else a derived name), a usage bar and `round(100 * used_fraction(space))` percent
+when `has_space`, and badges for `removable` and `VolumeKind::Network`. Eject is a later phase.
+Row labels: places use `tr(places::label_key(kind))`; bookmarks their `name` or
+`places::default_label(path)`; recents `default_label`.
+
+The sidebar model is ui-internal (like `BrowserModel`) and rebuilt at frame start from: the
+latest volume snapshot, the `BookmarkStore`, the `RecentsStore`, the Places list and the last
+probe results. Widgets read it; clicks become intents/commands applied at frame end.
+
+Highlight: the ui passes the effective paths of all visible rows to
+`places::deepest_containing(active_folder, rows)` and marks only the winner with the selection
+marker; it moves with `F6` / pane activation. Rows shown in other panes get no highlight.
+
+Focus: `F6` / `Shift+F6` cycle sidebar -> panes (reading order) -> sidebar while the sidebar is
+visible; `sidebar.focus` jumps there; `Escape` returns to the last active pane. Keyboard
+routing is described in `docs/keymap.md` "Focus scoping".
+
+### Volumes, bookmarks and recents data flow
+
+```
+volume worker (ui-internal jthread)                         UI thread
+  create_volume_monitor(); loop:                              frame start:
+    wait(1000 ms) -> poll() on change                           take latest snapshot (mailbox)
+    every 10 s while the sidebar is visible:                    resolve_location() for every
+      list_volumes(query_space = true)    -- snapshot -->        bookmark / recent (pure)
+                                                                 BookmarkStore/RecentsStore::
+probe worker                                                       resync(); save if changed
+  for each Online location not on a Network volume:            post probe request on change
+    fs::stat(path, follow) -> Missing on NotFound /  -- results -->  apply statuses
+    not a directory
+```
+
+- `statvfs` and `stat` on a hung network mount can block for minutes: they only ever run on
+  these workers; a stuck worker delays the sidebar's numbers, never a frame. Snapshots carry a
+  generation; stale probe results are dropped.
+- New bookmark (`bookmarks.toggle`, drag a tab onto Bookmarks): `places::identity_for(path,
+  snapshot)` on the UI thread (pure), then `BookmarkStore::add`. Offline rule and rebasing:
+  `places.hpp` "Location status". The acceptance case "a bookmark on an unmounted volume isn't
+  lost and shows offline" is `resolve_location` returning Offline while the store keeps the
+  entry and the file keeps it across restarts.
+- Recents: the ui calls `RecentsStore::record(path, identity_for(path, snapshot), now)` when a
+  tab's listing of a NEW folder succeeds (navigation, GoTo, sidebar, breadcrumb, new tab);
+  refresh, tab activation and session restore do not record. `RecentsOptions::enabled == false`
+  makes it a no-op. `highlight` / `sort_on_top` are persisted stubs with no list behaviour yet.
+
+Persistence timing (same rules and flags as the session):
+
+- **Load** `bookmarks.json` and `recents.json` once at startup on the UI thread, with the
+  session (small files). NotFound: empty store. Other errors: empty store + log line (`.bad`
+  handling in `load_*`). `AppConfig::restore_session = false` skips loading them.
+- **Bookmarks save** right after each edit (add, remove, rename, move, resync change) through
+  the background writer (copy of the store, latest-wins). **Recents save** debounced 2 s after
+  the last change, like the session. Both are written synchronously on quit.
+  `AppConfig::save_session = false` never writes them.
+
+### GoTo and the address bar
+
+Both use `path_input.hpp`. The ui builds an `ExpandContext` with `home = user_dir(Home)`,
+`cwd` = the active tab's folder, `env` = a `getenv` wrapper, `user_home` = a wrapper of
+`platform::user_home`, `percent_variables = true`.
+
+- **Typing** (debounced ~50-100 ms): `parse_completion_input` on the UI thread (pure; `~user`
+  is not resolved here: the ui passes a context without `user_home` and waits for the worker);
+  when `query.dir` differs from the cached one, a worker runs `complete_path` (cancelling the
+  previous job via `std::stop_token`); while the dir is unchanged, `match_completions` filters
+  the cached listing on the UI thread per keystroke.
+- **GoTo list** (`nav.goto`): with empty text, recents (newest first), then bookmarks, then
+  places. With text that looks like a path (starts with `/`, `~`, `$`, `%`, `.`, or contains
+  `/`): completions first, then recents/bookmarks whose path contains the text (`fs::fold_name`
+  substring). Other text: recents, bookmarks and places whose label or path contains it, then
+  completions relative to the active folder. No fuzzy ranking before Phase 5.
+- **Enter / Ctrl+Enter**: a highlighted row goes to its path; otherwise a worker runs
+  `resolve_input` (expand, case-correct, stat). Folder: navigate (or new tab); file: navigate to
+  its folder with the cursor on it (Ctrl+Enter: open with the default app); missing: notice
+  with the path and any `unresolved` variables, text kept for editing. Acceptance: `~/Downloads`
+  and `/` resolve to folders and navigate.
+- **Address bar** (`nav.focus_address_bar`, `Ctrl+L`, click on the empty bar part): the
+  breadcrumb bar of the active pane turns into a text field with the folder's path; same
+  completion and Enter rules; `Escape` or focus loss restores the breadcrumbs.
+- **Breadcrumbs**: segment click navigates to that ancestor (acceptance: "breadcrumb navigates
+  up"); middle-click opens it in a new tab; the optional chevron dropdown lists the segment's
+  subfolders from a worker listing (`fs::list_directory`, folders only, sorted with the tab's
+  sort options).
+- **Copy as Path** (`edit.copy_path`, `Ctrl+Shift+C`): `format_paths_for_copy` on the UI thread
+  (pure), clipboard set through SDL in `src/ui`.
+- **View lock** (`view.toggle_view_lock`): stub; the lock icon may be drawn disabled.
+
+### Deferred
+
+Trash place (`PlaceKind::Trash`, ops phase), eject/unmount buttons, GVfs/network places
+(network phase), recents highlighting and sort-to-top behaviour (stubs persisted now), fuzzy
+GoTo ranking (Phase 5), compact-path toggle, multi-key sequences, a sidebar for a second
+window.
+
+Work split for Phase 4: **contracts** (this diff) -> **core-fs** (`places.hpp`,
+`path_input.hpp`, `SidebarState` JSON, `tests/core`), **platform** (user dirs, `user_home`,
+`tests/platform`) and **commands** (ids, names, keymap rows, `tests/commands`) in parallel with
+**ui** (against the headers) -> integration -> **qa** (GoTo `~/Downloads` and `/`, offline
+bookmark across restart with a fake volume table, breadcrumb up) -> **design-reviewer**
+(sidebar, GoTo popup).
+
 ## Error policy
 
 - One policy: fallible functions return `navigator::Result<T>` (`types.hpp`). No exceptions across module boundaries.
@@ -235,6 +373,7 @@ three panes", drag-to-split) -> **design-reviewer** (drop affordances, dimming, 
 - UI-thread-only: `App`, `CommandQueue`, `CommandRegistry`, `Keymap`, `set_language()`.
 - Reentrant free functions (`fs`, `volume`, `platform`) may be called from workers and may block; never call them on the UI thread. One documented exception: `platform::open_with_default` may run in a frame-end command handler (one stat of a just-listed path + one detached spawn, never waits for the child).
 - Pure functions (`mime::*`, `fs::compare_names`/`sort_entries`, `to_string`/`parse_key_chord`, `layout::Layout`/`ClosedTabs` members, `layout::to_json`/`*_from_json`) are callable from any thread, including the UI thread.
+- Pure Phase 4 helpers (`places::*` store members, resolution and JSON functions, `path_input::expand_user_path` / `parse_completion_input` / `match_completions` / `format_paths_for_copy`, `platform::parse_user_dirs`, volume identity/usage helpers) are callable from any thread. `path_input::fix_path_case` / `resolve_input` / `complete_path`, `places::load_*` / `save_*`, `platform::read_user_dirs` / `user_home` block (worker threads; the startup load and save on quit are the UI-thread exceptions, as for the session).
 - `layout::Session` is a value owned by the UI thread; the background session writer receives a copy. `layout::load_session`/`save_session`/`*_named_layout` block on file I/O; Phase 3's exceptions on the UI thread are the startup load and the save on quit.
 - Interfaces (`IWatcher`, `IVolumeMonitor`, `IMountSource`, `IAppLauncher`, `IIndex`, `IPreviewProvider`) document their own threading. `IWatcher`/`IVolumeMonitor` are single-thread-at-a-time objects with no internal thread (drained with `poll()`, optional blocking `wait()` / pollable `native_handle()`).
 - Cancellation uses `std::stop_token`; a cancelled call fails with `ErrorCode::Cancelled`.
@@ -247,12 +386,14 @@ three panes", drag-to-split) -> **design-reviewer** (drop affordances, dimming, 
 | `detail/expected.hpp` | `std::expected` fallback used by `Result` | Phase 0, concrete |
 | `commands.hpp` | `CommandId`, `CursorArg`, `Command`, `CommandQueue`, `CommandInfo`, `CommandRegistry`; keymap: `Key`, `Modifiers` (+ operators, `has`), `KeyChord`, `to_string(Key/KeyChord)`, `parse_key_chord`, `KeyBinding`, `Keymap`, `load_default_keymap`, `resolve_command` | Phase 0; keymap + Phase 2 ids are a Phase 2 contract, implemented in `src/commands` (commands) |
 | `ui.hpp` | `AppConfig` (Phase 2: `animations`, `start_path`; Phase 3: `config_dir`, `restore_session`, `restore_window_geometry`, `save_session`), `Theme`, `FrameStats`, `App` (pimpl) | Phase 0, implemented in `src/ui`/`src/app` |
-| `layout.hpp` | `layout::PaneId`/`TabId`/`SplitId`, `TabState`, `SplitAxis`, `SplitEdge`, `axis_of`, `Tab`, `PaneNode`, `SplitNode`, `LayoutNode`, `TabLocation`, `SplitResult`, `Layout`, `ClosedTab`, `ClosedTabs`, `WindowGeometry`, `Session`, `to_json`, `session_from_json`, `layout_to_json`, `layout_from_json`, `session_file`, `layouts_dir`, `load_session`, `save_session`, `is_valid_layout_name`, `save/load/list/delete_named_layout`, constants | Phase 3 contract, implemented in `src/core` (core-fs) |
+| `places.hpp` | `places::LocationStatus`, `ResolvedLocation`, `is_tracked_volume`, `containing_volume`, `identity_for`, `resolve_location`, `deepest_containing`, `default_label`, `PlaceKind`, `label_key`, `Place`, `build_places`, `BookmarkId`, `Bookmark`, `BookmarkStore`, `RecentEntry`, `RecentsOptions`, `RecentsStore`, `bookmarks_to_json`/`_from_json`, `recents_to_json`/`_from_json`, `bookmarks_file`, `recents_file`, `load/save_bookmarks`, `load/save_recents`, constants | Phase 4 contract, implemented in `src/core` (core-fs) |
+| `path_input.hpp` | `path_input::normalize_absolute`, `EnvLookup`, `UserHomeLookup`, `ExpandContext`, `ExpandedPath`, `expand_user_path`, `CaseFix`, `fix_path_case`, `ResolvedInput`, `resolve_input`, `CompletionQuery`, `parse_completion_input`, `CompletionMatch`, `CompletionOptions`, `Completion`, `match_completions`, `complete_path`, `PathQuoting`, `quote_for_shell`, `format_paths_for_copy` | Phase 4 contract, implemented in `src/core` (core-fs) |
+| `layout.hpp` | `layout::PaneId`/`TabId`/`SplitId`, `TabState`, `SplitAxis`, `SplitEdge`, `axis_of`, `Tab`, `PaneNode`, `SplitNode`, `LayoutNode`, `TabLocation`, `SplitResult`, `Layout`, `ClosedTab`, `ClosedTabs`, `WindowGeometry`, `Session`, Phase 4 `SidebarSection`/`SidebarState` (+ width constants), `to_json`, `session_from_json`, `layout_to_json`, `layout_from_json`, `session_file`, `layouts_dir`, `load_session`, `save_session`, `is_valid_layout_name`, `save/load/list/delete_named_layout`, constants | Phase 3 contract, implemented in `src/core` (core-fs) |
 | `i18n.hpp` | `Language`, `set_language`, `language`, `tr` | Phase 0, implemented in `src/ui` |
 | `fs.hpp` | `fs::DirEntry`, `EntryKind`, `ListOptions`, `list_directory` (+ `std::stop_token` overload), `stat`, `SortKey`, `SortOptions`, `sort_entries`, `compare_names`, `fold_name`, `to_display_name`, inline `is_hidden_name`/`extension`/`is_directory_like` | Phase 1 contract, implemented in `src/core` (core-fs) |
 | `watch.hpp` | `WatchHandle`, `WatchEventKind`, `WatchEvent`, `IWatcher`, `create_inotify_watcher`, `WatcherFactory` | Phase 1 contract, implemented in `src/platform` (platform) |
-| `volume.hpp` | `MountEntry`, `parse_mountinfo`, `is_pseudo_filesystem`, `is_network_filesystem`, `VolumeKind`, `SpaceInfo`, `VolumeInfo`, `IMountSource`, `create_proc_mount_source`, `VolumeQuery`, `list_volumes`, `volume_for`, `VolumeEvent(Kind)`, `IVolumeMonitor`, `create_volume_monitor` | Phase 1 contract, implemented in `src/platform` (platform) |
-| `platform.hpp` | `platform::LaunchRequest`, `IAppLauncher`, `create_default_launcher`, `open_with_default` (+ launcher overload), `mime_type`, `UserDir`, `user_dir`; stubs `move_to_trash`, `open_terminal` | Phase 2 contract (launcher, open, mime_type, user_dir Home/Config/Cache), implemented in `src/platform` (platform) |
+| `volume.hpp` | `MountEntry`, `parse_mountinfo`, `is_pseudo_filesystem`, `is_network_filesystem`, `VolumeKind`, `SpaceInfo`, `VolumeInfo`, `IMountSource`, `create_proc_mount_source`, `VolumeQuery`, `list_volumes`, `volume_for`, `VolumeEvent(Kind)`, `IVolumeMonitor`, `create_volume_monitor`; Phase 4 inline `used_fraction`, `VolumeIdentity`, `identity_of`, `volume_matches` | Phase 1 contract, implemented in `src/platform` (platform) |
+| `platform.hpp` | `platform::LaunchRequest`, `IAppLauncher`, `create_default_launcher`, `open_with_default` (+ launcher overload), `mime_type`, `UserDir`, `user_dir`; Phase 4 `UserDirs`, `parse_user_dirs`, `read_user_dirs`, `user_home`; stubs `move_to_trash`, `open_terminal` | Phase 2 contract (launcher, open, mime_type, user_dir Home/Config/Cache), Phase 4 (XDG user dirs, `user_home`), implemented in `src/platform` (platform) |
 | `mime.hpp` | `mime::k*` constants, `guess_from_name`, `guess_for_entry`, `type_label_key` (name table + Type-column i18n keys) | Phase 2 contract, implemented in `src/platform` (platform); label texts in the ui i18n catalogs |
 | `search.hpp` | `SearchQuery`, `MatchMode`, `SearchHit` | stub, search phase |
 | `index.hpp` | `IIndex` | stub, search phase |
@@ -260,11 +401,12 @@ three panes", drag-to-split) -> **design-reviewer** (drop affordances, dimming, 
 | `preview.hpp` | `PreviewRequest`, `PreviewResult`, `IPreviewProvider` | stub, preview phase |
 | `plugin.h` | C ABI: `NAVIGATOR_PLUGIN_ABI_VERSION`, `NavigatorPluginInfo`, entry symbol | stub |
 
-Stub functions are declared only; nothing may call them until their phase lands. Public headers never include SDL, GIO, ImGui, FreeType or HarfBuzz. `tests/contracts` compiles each header alone (C++20 and C++23, `-Wall -Wextra -Wpedantic -Werror`) plus `plugin.h` as C11, and compiles (never links) `result_usage.cpp`, `phase1_usage.cpp` (fake `IWatcher`/`IMountSource` implementations prove the interfaces are injectable) `phase2_usage.cpp` (keymap, fake `IAppLauncher`, mime, `AppConfig`) and `phase3_usage.cpp` (layout operations, closed tabs, session JSON/files, tab/pane command ids, `AppConfig` session fields); target `navigator_header_check`.
+Stub functions are declared only; nothing may call them until their phase lands. Public headers never include SDL, GIO, ImGui, FreeType or HarfBuzz. `tests/contracts` compiles each header alone (C++20 and C++23, `-Wall -Wextra -Wpedantic -Werror`) plus `plugin.h` as C11, and compiles (never links) `result_usage.cpp`, `phase1_usage.cpp` (fake `IWatcher`/`IMountSource` implementations prove the interfaces are injectable) `phase2_usage.cpp` (keymap, fake `IAppLauncher`, mime, `AppConfig`) and `phase3_usage.cpp` (layout operations, closed tabs, session JSON/files, tab/pane command ids, `AppConfig` session fields) and `phase4_usage.cpp` (bookmarks offline/resync, recents, places, user dirs, GoTo expansion/completion, copy path, sidebar session state, Phase 4 command ids); target `navigator_header_check`.
 
 ## Commands
 
-- `CommandId` values are stable and never renumbered. Ranges: 1-999 app/view, 1000-1099 navigation, 1100-1199 list (activation, cursor, selection), 1200-1219 tabs, 1220-1239 panes, 1240-1249 named layouts, 1250-1259 windows, 1260+ later phases.
+- `CommandId` values are stable and never renumbered. Ranges: 1-999 app/view, 1000-1099 navigation, 1100-1199 list (activation, cursor, selection), 1200-1219 tabs, 1220-1239 panes, 1240-1249 named layouts, 1250-1259 windows, 1260-1279 sidebar/bookmarks/recents, 1280-1299 edit/clipboard, 1300+ later phases.
+  - Phase 4: `ToggleSidebar = 5` (`view.toggle_sidebar`), `ToggleViewLock = 6` (`view.toggle_view_lock`, stub), `GoTo = 1005` (`nav.goto`), `FocusAddressBar = 1004` now defined (inline path edit, `Ctrl+L`); `FocusSidebar = 1260` (`sidebar.focus`), `ToggleBookmark = 1261` (`bookmarks.toggle`), `RenameBookmark = 1262` (`bookmarks.rename`), `MoveBookmarkUp = 1263` (`bookmarks.move_up`), `MoveBookmarkDown = 1264` (`bookmarks.move_down`), `ClearRecents = 1270` (`recents.clear`), `ToggleRecentsTracking = 1271` (`recents.toggle_tracking`), `CopyPath = 1280` (`edit.copy_path`, arg `CopyPathArg`). Bookmark commands take 0 (focused row / active folder) or a `places::BookmarkId` value. `pane.focus_next/previous` include the visible sidebar in their cycle.
   - Phase 0: `None = 0`, `Quit = 1` (`app.quit`), `ToggleFpsOverlay = 2` (`view.toggle_fps_overlay`), `ToggleTheme = 3` (`view.toggle_theme`).
   - Phase 3: `OpenInNewTab = 1116` (`list.open_in_new_tab`); tabs 1200-1209: `NewTab` (`tab.new`, arg `NewTabArg`), `CloseTab` (`tab.close`), `DuplicateTab` (`tab.duplicate`), `CloseLeftTabs` (`tab.close_left`), `ReopenClosedTab` (`tab.reopen_closed`), `NextTab` (`tab.next`), `PreviousTab` (`tab.previous`), `SearchTabs` (`tab.search`), `MoveTabLeft` (`tab.move_left`), `MoveTabRight` (`tab.move_right`); panes 1220-1224: `SplitRight` (`pane.split_right`), `SplitDown` (`pane.split_down`), `FocusNextPane` (`pane.focus_next`), `FocusPreviousPane` (`pane.focus_previous`), `ClosePane` (`pane.close`); layouts 1240-1242: `SaveLayout` (`layout.save`), `LoadLayout` (`layout.load`), `DeleteLayout` (`layout.delete`); windows: `NewWindow = 1250` (`window.new`, reserved, unbound). Tab commands take arg 0 (active tab) or a `TabId` value, pane commands 0 or a `PaneId` value.
   - Phase 2: `ToggleHidden = 4` (`view.toggle_hidden`); `NavigateBack = 1000` (`nav.back`), `NavigateForward = 1001` (`nav.forward`), `NavigateUp = 1002` (`nav.up`), `Refresh = 1003` (`nav.refresh`), `FocusAddressBar = 1004` (`nav.focus_address_bar`, Phase 4, registered and unbound); `Activate = 1100` (`list.activate`), `SelectAll = 1101` (`list.select_all`), `ClearSelection = 1102` (`list.clear_selection`), `CursorUp/Down/PageUp/PageDown/Home/End = 1110..1115` (`list.cursor_up`, `list.cursor_down`, `list.cursor_page_up`, `list.cursor_page_down`, `list.cursor_home`, `list.cursor_end`).
@@ -327,3 +469,13 @@ stubs: `fs::EntryKind`, `fs::DirEntry`, `fs::SortKey`, `fs::ListOptions`, `fs::l
   - **commands** (commands, `src/commands`): ids and names listed under "Commands"; `NewTabArg::{None, Home}`. Default chords in `docs/keymap.md` "Phase 3 defaults", which also resolves the Ctrl+click conflict (Ctrl+click stays toggle selection; Ctrl+double-click and middle-click open in a new tab) and defers `Ctrl+N`.
   - **ui** (ui, `src/ui`): `AppConfig::config_dir` (empty = `user_dir(Config)/navigator`), `restore_session` (default true), `restore_window_geometry` (default true), `save_session` (default true). Data flow, drag-and-drop state machine and persistence timing in "Phase 3" above.
   - Known breakage until the parallel agents land: exhaustive `switch` over `CommandId` fails `-Werror=switch` in `src/commands/builtin_commands.cpp` (`to_string`, line 46), `src/ui/browser/browser_model.cpp` (`BrowserModel::execute`, line 571) and `src/ui/shell/app.cpp` (`App::Impl::execute`, line 432): 20 new enumerators each. Everything else in the tree compiles unchanged.
+- Phase 4 (contracts): sidebar, GoTo, address bar, bookmarks, recents. Additions only; no existing signature changed.
+  - **volume** (header-only): `used_fraction(SpaceInfo)` (df "Use%"), `VolumeIdentity {uuid, root, device, mount_point}` with `identity_of` and `volume_matches` (uuid + subvolume root when the uuid is known, else device + mount point).
+  - **platform** (platform, `src/platform`): `UserDirs`, `parse_user_dirs` (user-dirs.dirs(5) / GLib rules: `$HOME/...` or absolute, backslash escapes, Desktop default only), `read_user_dirs(home, config_home)` (explicit roots for tests; missing file = defaults), `user_home(name)` (getpwnam_r, for `~name`). `user_dir` becomes concrete for Desktop/Documents/Downloads/Music/Pictures/Videos (NotFound when not configured; no more Unsupported).
+  - **places** (new header, core-fs, `src/core`): Places list from `UserDirs` (disabled = `$HOME` and duplicates dropped; Trash reserved), `BookmarkStore` (runtime `BookmarkId`s, add/remove/rename/move/find/contains/index_of/resync, max 1000), `RecentsStore` (bounded MRU, visit counts, `RecentsOptions {enabled, highlight stub, sort_on_top stub}`), `LocationStatus` Online/Offline/Missing with pure `resolve_location` (rebasing when a volume returns at another mount point) and a worker-side Missing probe, `identity_for` (Root/Home/Virtual volumes are not tracked), `containing_volume`, `deepest_containing` (sidebar highlight), `default_label`; JSON v1 schemas and `bookmarks.json` / `recents.json` with the session's lenient-load / `.bad` / atomic-save rules.
+  - **path_input** (new header, core-fs, `src/core`): `normalize_absolute`; `expand_user_path` (trim + one pair of quotes, `file://` URIs, `~`, `~name`, `$VAR`, `${VAR}`, `%VAR%`, single pass, unresolved tokens reported and kept literal, relative to the active folder, lexical `..`); `fix_path_case` (unique fold-equivalent match per missing component); `resolve_input`; completion split into pure `parse_completion_input` + `match_completions` and blocking `complete_path`; `quote_for_shell` / `format_paths_for_copy` (`PathQuoting::Auto`: one path raw, several shell-quoted and space-joined).
+  - **layout** (core-fs): `SidebarSection`, `SidebarState {visible, width, collapsed}` and width constants; `Session::sidebar`, JSON field `"sidebar"` (additive, version stays 1, lenient, absent in older files). Named layouts unchanged.
+  - **commands** (commands, `src/commands`): ids and names under "Commands"; `CopyPathArg::{None, CurrentFolder}`; focus-scoping rules documented in `commands.hpp` and `docs/keymap.md` (the `Keymap` API is unchanged). Default chords: `Ctrl+B`, `Ctrl+L`, `Ctrl+G`, `Ctrl+D`, `Ctrl+Shift+C` (`docs/keymap.md` "Phase 4 defaults").
+  - **ui** (`ui.hpp`, comment only): `restore_session` / `save_session` also govern `bookmarks.json` / `recents.json`.
+  - Known breakage until the parallel agents land: exhaustive `switch` over `CommandId` fails `-Werror=switch` in `src/commands/builtin_commands.cpp` (`to_string`, line 66), `src/ui/browser/browser_model.cpp` (`BrowserModel::execute`, line 728) and `src/ui/workspace/workspace.cpp` (line 258): 11 new enumerators each. `src/ui/shell/app.cpp` and `src/ui/workspace/popups.cpp` have `default:` and compile. Everything else in the tree compiles unchanged. Runtime tests that need updates by their owners: `tests/commands/keymap_test.cpp` (`read_keymap_doc` must also read the `## Phase 4 defaults` table; row counts 3 + 25 + 21 become 3 + 25 + 21 + 5; the expected `(unbound)` set loses `nav.focus_address_bar`, now `Ctrl+L`, and gains the seven Phase 4 unbound commands; until then the "(unbound) rows" test fails because the Phase 2 `(unbound)` row for `nav.focus_address_bar` was moved into a note), `tests/platform/desktop_test.cpp:277` (expects Unsupported for the XDG user dirs), `tests/core/layout_json_test.cpp` golden session text (new `"sidebar"` field once core writes it).
+- Phase 4 follow-up: `RecentsStore::restore(std::vector<RecentEntry>)` added so the JSON loader can restore visit counts without private access.

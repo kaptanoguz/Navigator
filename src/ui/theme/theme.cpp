@@ -53,6 +53,7 @@ constexpr Palette kDark{
     .tint_slides = rgb(0xEF925A),
     .tint_program = rgb(0x9AA3B5),
     .on_accent = rgb(0x0F1220),
+    .warning = rgb(0xE5A93B),
 };
 
 // Light: cool paper white, ink near-black, accent deepened for contrast on white.
@@ -98,6 +99,7 @@ constexpr Palette kLight{
     .tint_slides = rgb(0xD9692A),
     .tint_program = rgb(0x6B7385),
     .on_accent = rgb(0xFFFFFF),
+    .warning = rgb(0xB06F00),
 };
 
 } // namespace
@@ -177,6 +179,7 @@ Palette mix(const Palette& a, const Palette& b, float t) noexcept {
         .tint_slides = mix(a.tint_slides, b.tint_slides, t),
         .tint_program = mix(a.tint_program, b.tint_program, t),
         .on_accent = mix(a.on_accent, b.on_accent, t),
+        .warning = mix(a.warning, b.warning, t),
     };
 }
 

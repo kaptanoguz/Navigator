@@ -15,6 +15,7 @@
 #include "i18n/catalog.hpp"
 #include "input/sdl_input.hpp"
 #include "widgets/icons.hpp"
+#include "widgets/text_field.hpp"
 #include "workspace/workspace_view.hpp"
 
 namespace navigator::ui {
@@ -65,10 +66,177 @@ bool contains_folded(std::string_view haystack, std::string_view needle) {
 
 bool WorkspaceView::wants_text_input() const noexcept {
     return popup_.kind == PopupKind::SearchTabs || popup_.kind == PopupKind::SaveLayout ||
-           popup_.kind == PopupKind::PickLayout;
+           popup_.kind == PopupKind::PickLayout || popup_.kind == PopupKind::GoTo ||
+           (!popup_open() && address_.is_open());
 }
 
-void WorkspaceView::close_popup() noexcept { popup_ = Popup{}; }
+void WorkspaceView::close_popup() noexcept {
+    if (popup_.kind == PopupKind::GoTo) {
+        goto_.close();
+    }
+    popup_ = Popup{};
+}
+
+TextEdit* WorkspaceView::active_field() noexcept {
+    switch (popup_.kind) {
+    case PopupKind::SearchTabs:
+    case PopupKind::SaveLayout:
+    case PopupKind::PickLayout: return &popup_.field;
+    case PopupKind::GoTo: return &goto_.edit();
+    case PopupKind::TabMenu:
+    case PopupKind::TabList:
+    case PopupKind::Menu: return nullptr;
+    case PopupKind::None: break;
+    }
+    return address_.is_open() ? &address_.edit() : nullptr;
+}
+
+void WorkspaceView::field_changed(double now_ms) {
+    switch (popup_.kind) {
+    case PopupKind::SearchTabs:
+    case PopupKind::SaveLayout:
+    case PopupKind::PickLayout:
+        popup_.confirm.clear();
+        popup_.message.clear();
+        refilter();
+        return;
+    case PopupKind::GoTo: goto_.changed(now_ms); return;
+    case PopupKind::TabMenu:
+    case PopupKind::TabList:
+    case PopupKind::Menu: return;
+    case PopupKind::None: break;
+    }
+    if (address_.is_open()) {
+        address_.changed(now_ms);
+    }
+}
+
+bool WorkspaceView::field_tab(double now_ms) {
+    if (popup_.kind == PopupKind::GoTo) {
+        return goto_.accept_completion(now_ms);
+    }
+    if (!popup_open() && address_.is_open()) {
+        return address_.accept_completion(now_ms);
+    }
+    return false;
+}
+
+void WorkspaceView::attach_paths(PathWorker* worker) noexcept {
+    goto_.attach(worker);
+    address_.attach(worker);
+}
+
+void WorkspaceView::open_goto(const Workspace& ws, const Path& home,
+                              std::vector<GotoSource> sources, double now_ms) {
+    drag_.cancel();
+    close_address_bar();
+    popup_ = Popup{};
+    popup_.kind = PopupKind::GoTo;
+    const BrowserModel* m = ws.model(ws.active_tab());
+    const Path cwd = m != nullptr ? m->current_dir() : home;
+    goto_.open({}, false, cwd, home, std::move(sources), now_ms);
+}
+
+void WorkspaceView::open_address_bar(const Workspace& ws, const Path& home, double now_ms) {
+    if (popup_open()) {
+        return;
+    }
+    drag_.cancel();
+    const BrowserModel* m = ws.model(ws.active_tab());
+    if (m == nullptr || m->current_dir().empty()) {
+        return;
+    }
+    address_.open(fs::to_display_name(m->current_dir().string()), true, m->current_dir(), home, {},
+                  now_ms);
+    address_.tab = ws.active_tab().value;
+    address_scroll_ = 0.0F;
+}
+
+void WorkspaceView::close_address_bar() noexcept {
+    address_.close();
+    address_.tab = 0;
+    path_pressed_.reset();
+}
+
+bool WorkspaceView::route_address(const Command& command) {
+    if (!address_.is_open() || popup_open()) {
+        return false;
+    }
+    switch (command.id) {
+    case CommandId::CursorUp: address_.move(-1); return true;
+    case CommandId::CursorDown: address_.move(1); return true;
+    case CommandId::CursorPageUp:
+        address_.move(-static_cast<std::ptrdiff_t>(kMaxRows));
+        return true;
+    case CommandId::CursorPageDown:
+        address_.move(static_cast<std::ptrdiff_t>(kMaxRows));
+        return true;
+    case CommandId::Activate: address_.submit(false); return true;
+    case CommandId::OpenInNewTab: address_.submit(true); return true;
+    case CommandId::ClearSelection: close_address_bar(); return true;
+    case CommandId::FocusAddressBar: address_.edit().select_all(); return true;
+    default: return false;
+    }
+}
+
+bool WorkspaceView::poll_paths(double now_ms, std::vector<PathOutcome>& out) {
+    bool changed = false;
+    if (goto_.is_open()) {
+        goto_.tick(now_ms);
+        changed = goto_.poll(now_ms) || changed;
+        if (std::optional<PathOutcome> o = goto_.take_outcome(); o) {
+            out.push_back(std::move(*o));
+            close_popup();
+            changed = true;
+        }
+    }
+    if (address_.is_open()) {
+        address_.tick(now_ms);
+        changed = address_.poll(now_ms) || changed;
+        if (std::optional<PathOutcome> o = address_.take_outcome(); o) {
+            out.push_back(std::move(*o));
+            close_address_bar();
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+bool WorkspaceView::paths_busy() const noexcept {
+    return (goto_.is_open() && goto_.busy()) || (address_.is_open() && address_.busy());
+}
+
+layout::TabId WorkspaceView::dragged_tab() const noexcept {
+    return drag_.dragging() ? drag_.tab() : layout::TabId{};
+}
+
+void WorkspaceView::open_menu(const Keymap& keymap, std::vector<MenuEntry> entries, float x,
+                              float y) {
+    drag_.cancel();
+    close_address_bar();
+    popup_ = Popup{};
+    popup_.kind = PopupKind::Menu;
+    popup_.menu_x = x;
+    popup_.menu_y = y;
+    for (MenuEntry& e : entries) {
+        MenuItem m;
+        m.label = std::move(e.label);
+        if (!e.hint_command.empty()) {
+            m.hint_command = chord_text(keymap, e.hint_command, 0, true);
+        }
+        if (e.command) {
+            m.command = *e.command;
+        }
+        m.intent = std::move(e.intent);
+        m.enabled = e.enabled;
+        m.separator_before = e.separator_before;
+        popup_.menu.push_back(std::move(m));
+    }
+    popup_.highlight = 0;
+    popup_.pointer_moved = true;
+    popup_.last_px = x;
+    popup_.last_py = y;
+}
 
 void WorkspaceView::open_search_tabs(const Workspace& ws, const Path* home) {
     drag_.cancel();
@@ -89,6 +257,7 @@ void WorkspaceView::open_save_layout(const Workspace& ws) {
     drag_.cancel();
     popup_ = Popup{};
     popup_.kind = PopupKind::SaveLayout;
+    popup_.field = TextEdit(kMaxNameBytes);
     if (Result<std::vector<std::string>> names = ws.list_layouts(); names) {
         popup_.names = std::move(*names);
     }
@@ -167,11 +336,11 @@ void WorkspaceView::refilter() {
     popup_.highlight = 0;
     popup_.scroll = 0.0F;
     if (popup_.kind == PopupKind::SearchTabs) {
-        popup_.filtered = filter_tab_search(popup_.items, popup_.query);
+        popup_.filtered = filter_tab_search(popup_.items, popup_.query());
     } else if (popup_.kind == PopupKind::PickLayout) {
         popup_.names_filtered.clear();
         for (std::size_t i = 0; i < popup_.names.size(); ++i) {
-            if (contains_folded(popup_.names[i], popup_.query)) {
+            if (contains_folded(popup_.names[i], popup_.query())) {
                 popup_.names_filtered.push_back(i);
             }
         }
@@ -183,7 +352,9 @@ std::size_t WorkspaceView::popup_rows() const noexcept {
     case PopupKind::SearchTabs: return popup_.filtered.size();
     case PopupKind::PickLayout: return popup_.names_filtered.size();
     case PopupKind::TabMenu:
-    case PopupKind::TabList: return popup_.menu.size();
+    case PopupKind::TabList:
+    case PopupKind::Menu: return popup_.menu.size();
+    case PopupKind::GoTo: return goto_.items().size();
     case PopupKind::SaveLayout:
     case PopupKind::None: break;
     }
@@ -195,7 +366,7 @@ void WorkspaceView::move_highlight(std::ptrdiff_t delta) {
     if (n == 0) {
         return;
     }
-    const bool menu = popup_.kind == PopupKind::TabMenu;
+    const bool menu = popup_.kind == PopupKind::TabMenu || popup_.kind == PopupKind::Menu;
     auto h = static_cast<std::ptrdiff_t>(std::min(popup_.highlight, n - 1));
     const auto last = static_cast<std::ptrdiff_t>(n - 1);
     if (menu) {
@@ -221,6 +392,23 @@ bool WorkspaceView::route_command(const Command& command, CommandQueue& queue,
         return false;
     }
     const auto page = static_cast<std::ptrdiff_t>(kMaxRows - 1);
+    if (popup_.kind == PopupKind::GoTo) {
+        switch (command.id) {
+        case CommandId::Quit:
+        case CommandId::ToggleTheme:
+        case CommandId::ToggleFpsOverlay: return false;
+        case CommandId::CursorUp: goto_.move(-1); break;
+        case CommandId::CursorDown: goto_.move(1); break;
+        case CommandId::CursorPageUp: goto_.move(-page); break;
+        case CommandId::CursorPageDown: goto_.move(page); break;
+        case CommandId::Activate: goto_.submit(false); break;
+        case CommandId::OpenInNewTab: goto_.submit(true); break;
+        case CommandId::ClearSelection: close_popup(); break;
+        case CommandId::GoTo: goto_.edit().select_all(); break;
+        default: break;
+        }
+        return true;
+    }
     switch (command.id) {
     case CommandId::Quit:
     case CommandId::ToggleTheme:
@@ -266,7 +454,7 @@ void WorkspaceView::confirm_popup(CommandQueue& queue, std::vector<Intent>& out)
         return;
     }
     case PopupKind::SaveLayout: {
-        const std::string name = popup_.query;
+        const std::string name = popup_.query();
         if (name.empty()) {
             popup_.message = std::string(tr("layout.name_required"));
             popup_.message_error = true;
@@ -317,13 +505,20 @@ void WorkspaceView::confirm_popup(CommandQueue& queue, std::vector<Intent>& out)
         close_popup();
         return;
     }
-    case PopupKind::TabMenu: {
+    case PopupKind::TabMenu:
+    case PopupKind::Menu: {
         if (popup_.highlight < popup_.menu.size() && popup_.menu[popup_.highlight].enabled) {
-            queue.enqueue(popup_.menu[popup_.highlight].command);
+            const MenuItem& m = popup_.menu[popup_.highlight];
+            if (m.intent) {
+                out.push_back(*m.intent);
+            } else {
+                queue.enqueue(m.command);
+            }
             close_popup();
         }
         return;
     }
+    case PopupKind::GoTo: goto_.submit(false); return;
     case PopupKind::TabList: {
         if (popup_.highlight < popup_.menu.size()) {
             Intent in;
@@ -357,7 +552,8 @@ bool WorkspaceView::delete_key(std::vector<Intent>& out) {
 }
 
 void WorkspaceView::text_input(std::string_view utf8) {
-    if (!wants_text_input()) {
+    TextEdit* field = active_field();
+    if (field == nullptr) {
         return;
     }
     for (const char c : utf8) {
@@ -365,27 +561,16 @@ void WorkspaceView::text_input(std::string_view utf8) {
             return; // control characters never reach a name or query
         }
     }
-    if (popup_.kind == PopupKind::SaveLayout && popup_.query.size() + utf8.size() > kMaxNameBytes) {
-        return;
+    if (field->insert(utf8)) {
+        field_changed(last_now_ms_);
     }
-    popup_.query += utf8;
-    popup_.confirm.clear();
-    popup_.message.clear();
-    refilter();
 }
 
 void WorkspaceView::backspace() {
-    if (!wants_text_input() || popup_.query.empty()) {
-        return;
+    TextEdit* field = active_field();
+    if (field != nullptr && field->backspace()) {
+        field_changed(last_now_ms_);
     }
-    std::size_t n = popup_.query.size();
-    while (n > 0 && (static_cast<unsigned char>(popup_.query[n - 1]) & 0xC0U) == 0x80U) {
-        --n;
-    }
-    popup_.query.resize(n > 0 ? n - 1 : 0);
-    popup_.confirm.clear();
-    popup_.message.clear();
-    refilter();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -420,34 +605,9 @@ float WorkspaceView::draw_field(const ShellFrame& f, const RectF& box, std::stri
                           pal.text_secondary, pal.surface_raised);
         x += std::round(p.px(26.0F));
     }
-    const bool empty = popup_.query.empty();
-    const ShapedText t = fitter_.fit(p, type::popup_field, empty ? placeholder : popup_.query,
-                                     box.right() - x - p.px(8.0F), Elide::End);
-    const float baseline = std::round(mid + (0.5F * t.cap_height()));
-    // Typed text scrolls left so the caret stays visible.
-    float tx = x;
-    if (!empty) {
-        const ShapedText full = p.shape(type::popup_field, popup_.query);
-        const float room = box.right() - x - p.px(8.0F);
-        if (full.width() > room) {
-            tx = x + room - full.width();
-            r.set_clip(RectF{x, box.y, room, box.h});
-            p.draw(full, tx, baseline, pal.text_primary);
-            r.set_clip(std::nullopt);
-            tx += full.width();
-        } else {
-            p.draw(full, tx, baseline, pal.text_primary);
-            tx += full.width();
-        }
-    } else {
-        p.draw(t, tx, baseline, pal.text_muted);
-    }
-    // Caret (steady: no blink, so an idle popup does not redraw).
-    const float caret_h = std::round(p.px(18.0F));
-    const float cw = std::max(1.0F, std::round(p.px(1.5F)));
-    r.fill_rect(snap(RectF{empty ? x : tx + p.px(1.0F), mid - (0.5F * caret_h), cw, caret_h}),
-                pal.accent);
-    return tx;
+    return draw_text_field(p, pal, popup_.field,
+                           RectF{x, box.y, box.right() - x - p.px(8.0F), box.h}, placeholder,
+                           popup_.field_scroll);
 }
 
 float WorkspaceView::draw_keycap(const ShellFrame& f, std::string_view legend, float x, float cy,
@@ -556,7 +716,9 @@ void WorkspaceView::draw_popup(const ShellFrame& f) {
     case PopupKind::SaveLayout: draw_save_layout(f); break;
     case PopupKind::PickLayout: draw_layout_picker(f); break;
     case PopupKind::TabMenu:
-    case PopupKind::TabList: draw_menu(f); break;
+    case PopupKind::TabList:
+    case PopupKind::Menu: draw_menu(f); break;
+    case PopupKind::GoTo: draw_goto(f); break;
     case PopupKind::None: break;
     }
     if (ptr.released && popup_open()) {

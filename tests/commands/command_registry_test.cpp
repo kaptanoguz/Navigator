@@ -22,8 +22,9 @@ constexpr auto kTestA = static_cast<CommandId>(900);
 constexpr auto kTestB = static_cast<CommandId>(901);
 
 // Phase 0: 3 ids; Phase 2: ToggleHidden, 5 navigation, 3 list, 6 cursor; Phase 3:
-// OpenInNewTab, 10 tab, 5 pane, 3 layout, 1 window.
-constexpr std::size_t kBuiltinCount = 18 + 20;
+// OpenInNewTab, 10 tab, 5 pane, 3 layout, 1 window; Phase 4: 2 view, GoTo, 1 sidebar,
+// 4 bookmarks, 2 recents, 1 edit.
+constexpr std::size_t kBuiltinCount = 18 + 20 + 11;
 
 struct Expected {
     CommandId id;
@@ -53,6 +54,21 @@ constexpr Expected kPhase3[] = {
     {CommandId::LoadLayout, 1241, "layout.load"},
     {CommandId::DeleteLayout, 1242, "layout.delete"},
     {CommandId::NewWindow, 1250, "window.new"},
+};
+
+// Phase 4 ids with their frozen numeric values and names (include/navigator/commands.hpp).
+constexpr Expected kPhase4[] = {
+    {CommandId::ToggleSidebar, 5, "view.toggle_sidebar"},
+    {CommandId::ToggleViewLock, 6, "view.toggle_view_lock"},
+    {CommandId::GoTo, 1005, "nav.goto"},
+    {CommandId::FocusSidebar, 1260, "sidebar.focus"},
+    {CommandId::ToggleBookmark, 1261, "bookmarks.toggle"},
+    {CommandId::RenameBookmark, 1262, "bookmarks.rename"},
+    {CommandId::MoveBookmarkUp, 1263, "bookmarks.move_up"},
+    {CommandId::MoveBookmarkDown, 1264, "bookmarks.move_down"},
+    {CommandId::ClearRecents, 1270, "recents.clear"},
+    {CommandId::ToggleRecentsTracking, 1271, "recents.toggle_tracking"},
+    {CommandId::CopyPath, 1280, "edit.copy_path"},
 };
 
 } // namespace
@@ -195,11 +211,12 @@ TEST_CASE("to_string(CommandId) values", "[to_string]") {
     CHECK(navigator::to_string(CommandId::CursorPageDown) == "list.cursor_page_down");
     CHECK(navigator::to_string(CommandId::CursorHome) == "list.cursor_home");
     CHECK(navigator::to_string(CommandId::CursorEnd) == "list.cursor_end");
-    CHECK(navigator::to_string(static_cast<CommandId>(5)) == "unknown");
-    CHECK(navigator::to_string(static_cast<CommandId>(1005)) == "unknown");
+    CHECK(navigator::to_string(static_cast<CommandId>(7)) == "unknown");
+    CHECK(navigator::to_string(static_cast<CommandId>(999)) == "unknown");
+    CHECK(navigator::to_string(static_cast<CommandId>(1006)) == "unknown");
     CHECK(navigator::to_string(static_cast<CommandId>(1103)) == "unknown");
-    for (const std::uint32_t gap :
-         {1117U, 1199U, 1210U, 1219U, 1225U, 1239U, 1243U, 1249U, 1251U, 1260U}) {
+    for (const std::uint32_t gap : {1117U, 1199U, 1210U, 1219U, 1225U, 1239U, 1243U, 1249U, 1251U,
+                                    1259U, 1265U, 1269U, 1272U, 1279U, 1281U, 1299U, 1300U}) {
         INFO("id " << gap);
         CHECK(navigator::to_string(static_cast<CommandId>(gap)) == "unknown");
     }
@@ -230,6 +247,8 @@ TEST_CASE("CommandId numeric values are stable", "[to_string]") {
     CHECK(CursorArg::Extend == 1);
     CHECK(navigator::NewTabArg::None == 0);
     CHECK(navigator::NewTabArg::Home == 1);
+    CHECK(navigator::CopyPathArg::None == 0);
+    CHECK(navigator::CopyPathArg::CurrentFolder == 1);
 }
 
 TEST_CASE("Phase 3 ids: stable values, names, registered with cmd.<name>",
@@ -264,6 +283,43 @@ TEST_CASE("Phase 3 ids: stable values, names, registered with cmd.<name>",
             CHECK((e.value >= 1250 && e.value <= 1259));
         } else {
             CHECK((e.value >= 1100 && e.value <= 1199)); // list.open_in_new_tab
+        }
+    }
+}
+
+TEST_CASE("Phase 4 ids: stable values, names, registered with cmd.<name>",
+          "[registry][builtin][phase4]") {
+    CommandRegistry registry;
+    REQUIRE(navigator::register_builtin_commands(registry));
+    std::uint32_t previous = 0;
+    for (const Expected& e : kPhase4) {
+        INFO("command " << e.name);
+        CHECK(static_cast<std::uint32_t>(e.id) == e.value);
+        CHECK(e.value > previous);
+        previous = e.value;
+        CHECK(navigator::to_string(e.id) == e.name);
+        const CommandInfo* by_id = registry.find(e.id);
+        REQUIRE(by_id != nullptr);
+        CHECK(by_id->name == e.name);
+        CHECK(by_id->title_key == std::string("cmd.") + std::string(e.name));
+        const CommandInfo* by_name = registry.find(e.name);
+        REQUIRE(by_name != nullptr);
+        CHECK(by_name->id == e.id);
+    }
+    // Header ranges: app/view 1-999, navigation 1000-1099, sidebar/bookmarks/recents
+    // 1260-1279, edit/clipboard 1280-1299.
+    for (const Expected& e : kPhase4) {
+        INFO("command " << e.name);
+        if (e.name.starts_with("view.")) {
+            CHECK((e.value >= 1 && e.value <= 999));
+        } else if (e.name.starts_with("nav.")) {
+            CHECK((e.value >= 1000 && e.value <= 1099));
+        } else if (e.name.starts_with("sidebar.") || e.name.starts_with("bookmarks.") ||
+                   e.name.starts_with("recents.")) {
+            CHECK((e.value >= 1260 && e.value <= 1279));
+        } else {
+            CHECK(e.name.starts_with("edit."));
+            CHECK((e.value >= 1280 && e.value <= 1299));
         }
     }
 }
