@@ -90,6 +90,9 @@ struct Palette {
 
     // Phase 3.
     Color on_accent; // text and glyphs on an accent fill (primary buttons); >= 4.5:1
+
+    // Phase 4.
+    Color warning; // usage bars from 80% (danger from 90%); >= 3:1 on background (non-text)
 };
 
 [[nodiscard]] const Palette& palette(Theme theme) noexcept;

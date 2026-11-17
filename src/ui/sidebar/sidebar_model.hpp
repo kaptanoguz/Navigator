@@ -46,9 +46,10 @@ enum class SidebarRowKind : std::uint8_t {
 struct SidebarRow {
     SidebarRowKind kind = SidebarRowKind::Place;
     layout::SidebarSection section = layout::SidebarSection::Places;
-    std::string label; // UTF-8, already translated / derived
-    Path path;         // effective path (navigation target); empty for headers
-    Path stored_path;  // bookmarks / recents: the stored path (tooltips, offline notice)
+    std::string label;  // UTF-8, already translated / derived
+    Path path;          // effective path (navigation target); empty for headers
+    Path stored_path;   // bookmarks / recents: the stored path (tooltips, offline notice)
+    std::string source; // network volumes: the mount source ("nas.local:/export/media")
     places::LocationStatus status = places::LocationStatus::Online;
     places::PlaceKind place = places::PlaceKind::Home; // Place rows
     places::BookmarkId bookmark;                       // Bookmark rows
@@ -74,8 +75,9 @@ struct SidebarRow {
     [[nodiscard]] bool online() const noexcept { return status == places::LocationStatus::Online; }
 };
 
-// Display name of a volume: its label, else (network) the device ("server:/export"), else
-// places::default_label(mount_point).
+// Display name of a volume: its label; else, for a network share, "media on nas.local" from
+// "nas.local:/export/media" or "//nas.local/media" (GNOME convention, design review O6; the
+// raw device when it has neither form); else places::default_label(mount_point).
 [[nodiscard]] std::string volume_label(const VolumeInfo& volume);
 
 // The rows for one frame. `active_folder` may be empty (nothing highlighted).
@@ -108,6 +110,22 @@ struct FocusStop {
 };
 [[nodiscard]] FocusStop cycle_focus(std::size_t pane_count, bool sidebar_visible,
                                     bool sidebar_focused, std::size_t active_pane, int delta);
+
+// Who receives the keyboard (design review Phase 4 B1): exactly one place shows a focus ring.
+// A popup (GoTo, Search Tabs, menus) wins, then a focused text field (address bar, bookmark
+// rename), then the sidebar; otherwise the active pane's list. Only List draws the list cursor
+// ring and the focused selection colours; the active pane keeps its active marker either way.
+enum class KeyboardOwner : std::uint8_t { List, Sidebar, TextField, Popup };
+[[nodiscard]] constexpr KeyboardOwner keyboard_owner(bool popup_open, bool text_field,
+                                                     bool sidebar_focused) noexcept {
+    if (popup_open) {
+        return KeyboardOwner::Popup;
+    }
+    if (text_field) {
+        return KeyboardOwner::TextField;
+    }
+    return sidebar_focused ? KeyboardOwner::Sidebar : KeyboardOwner::List;
+}
 
 // Narrow windows collapse the sidebar to icons (design review, Phase 3 notes): below this
 // window width (dp) the sidebar is icon-only. Derived every frame, never persisted.

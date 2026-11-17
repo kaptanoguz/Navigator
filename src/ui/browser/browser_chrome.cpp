@@ -147,7 +147,7 @@ void BrowserView::draw_top_bar(const BrowserFrame& f, const Layout& l) {
     }
     x += b + std::round(p.px(10.0F));
 
-    // Right end: view lock (stub, drawn disabled) and the bookmark star (bookmarks.toggle).
+    // Right end: the bookmark star (bookmarks.toggle).
     const float icon = std::round(p.px(16.0F));
     const float t = std::max(1.0F, p.px(1.35F));
     float right = l.top.right() - margin;
@@ -174,14 +174,9 @@ void BrowserView::draw_top_bar(const BrowserFrame& f, const Layout& l) {
                        std::round(star.center_y() - (0.5F * icon)), icon, t, ink,
                        f.palette.background, f.bookmarked);
     }
-    right = star.x - gap;
-    {
-        const RectF lock{right - b, y, b, b};
-        draw_line_icon(p.renderer(), LineIcon::Lock, std::round(lock.center_x() - (0.5F * icon)),
-                       std::round(lock.center_y() - (0.5F * icon)), icon, t,
-                       f.palette.text_muted.with_alpha(0.55F), f.palette.background);
-        right = lock.x - std::round(p.px(6.0F));
-    }
+    // The view lock (view.toggle_view_lock) stays hidden until it does something (design
+    // review Phase 4 O11).
+    right = star.x - std::round(p.px(6.0F));
 
     const RectF area{x, y, std::max(right - x, 0.0F), b};
     if (f.address != nullptr) {

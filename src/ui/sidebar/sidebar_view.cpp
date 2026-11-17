@@ -60,6 +60,22 @@ LineIcon icon_of(const SidebarRow& row) {
     return LineIcon::Folder;
 }
 
+// Usage bar fill: accent, amber from 80 %, danger from 90 % (design review Phase 4).
+Color usage_color(const Palette& pal, float frac) {
+    return frac >= 0.9F ? pal.danger : frac >= 0.8F ? pal.warning : pal.accent;
+}
+
+// First code point of a label (icon-only bookmark monogram).
+std::string first_code_point(std::string_view s) {
+    std::size_t n = s.empty() ? 0 : 1;
+    while (n < s.size() && (static_cast<unsigned char>(s[n]) & 0xC0U) == 0x80U) {
+        ++n;
+    }
+    return std::string(s.substr(0, n));
+}
+
+constexpr TextStyle kMonogram{9.0F, FontWeight::SemiBold, 0.0F, false};
+
 // Percent text for a usage fraction (df rounding).
 std::string percent(double fraction) {
     return std::to_string(static_cast<int>(std::lround(100.0 * fraction))) + "%";
@@ -336,10 +352,7 @@ void SidebarView::draw_item(const SidebarFrame& f, const SidebarRow& row, std::s
                missing ? pal.danger : pal.text_secondary);
         right = badge.x - std::round(p.px(8.0F));
     } else if (usage) {
-        std::string caption = percent(*row.usage);
-        if (hover && row.available_bytes > 0) {
-            caption = substitute(tr("sidebar.free"), "n", format_size(row.available_bytes));
-        }
+        const std::string caption = percent(*row.usage); // free space: tooltip (O5)
         const ShapedText pt = p.shape(type::status, caption);
         p.draw(pt, std::round(right - pt.width()), std::round(line_mid + (0.5F * pt.cap_height())),
                pal.text_muted);
@@ -374,7 +387,7 @@ void SidebarView::draw_item(const SidebarFrame& f, const SidebarRow& row, std::s
         const auto frac = static_cast<float>(std::clamp(*row.usage, 0.0, 1.0));
         if (frac > 0.0F) {
             const float w = std::max(bar_h, std::round(track.w * frac));
-            const Color fill = frac >= 0.9F ? pal.danger : pal.accent;
+            const Color fill = usage_color(pal, frac);
             r.fill_rounded_rect(RectF{track.x, track.y, w, track.h}, 0.5F * bar_h, fill);
         }
     }
@@ -407,6 +420,24 @@ void SidebarView::draw_icon_row(const SidebarFrame& f, const SidebarRow& row, st
     draw_line_icon(r, icon_of(row), std::round(rr.center_x() - (0.5F * icon)),
                    std::round(rr.center_y() - (0.5F * icon) - (row.usage ? p.px(2.0F) : 0.0F)),
                    icon, std::max(1.0F, p.px(1.4F)), ink, pal.background);
+    const float ix = std::round(rr.center_x() - (0.5F * icon));
+    const float iy = std::round(rr.center_y() - (0.5F * icon));
+    if (row.kind == SidebarRowKind::Bookmark && row.status != places::LocationStatus::Offline) {
+        // Bookmarks share the folder glyph: its first letter tells them apart (O4).
+        const ShapedText mono = p.shape(kMonogram, first_code_point(row.label));
+        p.draw(mono, std::round(ix + (0.5F * icon) - (0.5F * mono.width())),
+               std::round(iy + (icon * 0.56F) + (0.5F * mono.cap_height())), ink);
+    }
+    if (row.status != places::LocationStatus::Online) {
+        // State dot (O4): danger for missing, muted for offline; tooltips carry the words.
+        const float dr = std::round(p.px(3.0F));
+        const float dx = ix + icon - p.px(1.0F);
+        const float dy = iy + p.px(2.0F);
+        r.fill_circle(dx, dy, dr + std::max(1.0F, std::round(p.px(1.5F))), pal.background);
+        r.fill_circle(dx, dy, dr,
+                      row.status == places::LocationStatus::Missing ? pal.danger
+                                                                    : pal.text_secondary);
+    }
     if (row.usage) {
         // A thin usage bar under the icon.
         const float bw = std::round(p.px(22.0F));
@@ -416,7 +447,7 @@ void SidebarView::draw_icon_row(const SidebarFrame& f, const SidebarRow& row, st
         r.fill_rounded_rect(track, 0.5F * bh, pal.control_pressed);
         const auto frac = static_cast<float>(std::clamp(*row.usage, 0.0, 1.0));
         r.fill_rounded_rect(RectF{track.x, track.y, std::max(bh, track.w * frac), track.h},
-                            0.5F * bh, frac >= 0.9F ? pal.danger : pal.accent);
+                            0.5F * bh, usage_color(pal, frac));
     }
 }
 
@@ -695,6 +726,11 @@ void SidebarView::draw(const SidebarFrame& f) {
             draw_empty(f, row, rr);
         } else {
             draw_item(f, row, s.row, rr, hover);
+            // Free space and the full share name live in a tooltip (O5), not in the row.
+            if (hover && (row.usage || row.network) && hover_override_ == kNpos) {
+                tooltip_row_ = s.row;
+                tooltip_anchor_ = rr;
+            }
         }
         // Releases.
         const bool inside = contains(rr, ptr.x, ptr.y) && over_list;
@@ -735,10 +771,24 @@ void SidebarView::draw(const SidebarFrame& f) {
     }
     r.set_clip(std::nullopt);
 
-    // Scroll shadow under the top bar when the list is scrolled.
+    // Scroll affordance (design review O3): a shadow under the top bar once scrolled, a fade
+    // into the background where more rows wait below, and a thin overlay scrollbar on hover.
     if (scroll_ > 0.5F) {
         r.fill_rect_vgradient(RectF{list.x, list.y, list.w, std::round(p.px(8.0F))},
                               faded(pal.shadow, 0.6F), pal.shadow.with_alpha(0.0F));
+    }
+    if (scroll_ < max_scroll - 0.5F) {
+        const float fh = std::round(p.px(28.0F));
+        r.fill_rect_vgradient(RectF{list.x, list.bottom() - fh, list.w, fh},
+                              pal.background.with_alpha(0.0F), pal.background);
+    }
+    if (max_scroll > 0.5F && (over_list || hover_override_ != kNpos)) {
+        const float tw = std::max(2.0F, std::round(p.px(metrics::scrollbar_width)));
+        const float track_h = list.h - p.px(8.0F);
+        const float th = std::max(p.px(24.0F), track_h * (list.h / content_h_));
+        const float ty = list.y + p.px(4.0F) + ((track_h - th) * (scroll_ / max_scroll));
+        r.fill_rounded_rect(snap(RectF{list.right() - tw - p.px(3.0F), ty, tw, th}), 0.5F * tw,
+                            pal.scrollbar);
     }
 
     // Bookmark drag finished.
@@ -771,8 +821,13 @@ void SidebarView::draw(const SidebarFrame& f) {
 }
 
 void SidebarView::draw_overlay(const SidebarFrame& f) {
-    if (!tooltip_row_ || f.popup_open || !f.icon_only) {
-        return; // tooltips only where the labels are hidden
+    if (!tooltip_row_ || f.popup_open || dragging()) {
+        return;
+    }
+    // Full mode: only storage details (free space, the share's source). Icon-only: labels.
+    if (!f.icon_only && (*tooltip_row_ >= f.rows.size() ||
+                         (!f.rows[*tooltip_row_].usage && !f.rows[*tooltip_row_].network))) {
+        return;
     }
     const Painter& p = f.painter;
     Renderer& r = p.renderer();
@@ -792,11 +847,13 @@ void SidebarView::draw_overlay(const SidebarFrame& f) {
             } else if (row.status == places::LocationStatus::Missing) {
                 detail = std::string(tr("sidebar.badge_missing"));
             } else if (row.usage) {
-                detail = percent(*row.usage);
-                if (row.available_bytes > 0) {
-                    detail += "  \xC2\xB7  ";
-                    detail += substitute(tr("sidebar.free"), "n", format_size(row.available_bytes));
-                }
+                detail = f.icon_only ? percent(*row.usage) + "  \xC2\xB7  " : std::string();
+                detail += substitute(
+                    substitute(tr("sidebar.free_of"), "free", format_size(row.available_bytes)),
+                    "total", format_size(row.total_bytes));
+            }
+            if (!f.icon_only && row.network && !row.source.empty()) {
+                text = row.source; // the full share ("nas.local:/export/media")
             }
         }
     }

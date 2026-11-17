@@ -115,8 +115,11 @@ TEST_CASE("GoTo: ~/Downloads and / resolve to folders and navigate", "[goto]") {
     REQUIRE(o.has_value());
     CHECK(got(o).path == Path("/"));
 
-    // Case auto-correction.
+    // Case auto-correction (Enter on the Typed row; by default the "Downloads" completion is
+    // highlighted, which goes to the same folder).
     type(e, "~/downloads");
+    REQUIRE(e.items()[e.highlight()].path == home / "Downloads");
+    e.set_highlight(0);
     e.submit(true);
     o = e.take_outcome();
     REQUIRE(o.has_value());
@@ -177,13 +180,38 @@ TEST_CASE("Enter on a missing path keeps the text and shows an error", "[goto]")
     type(e, "$NAVIGATOR_TEST_SURELY_UNSET/x");
     e.submit(false);
     CHECK_FALSE(e.take_outcome().has_value());
-    CHECK(e.error().find("doesn") != std::string::npos);
-    CHECK(e.error().find("$NAVIGATOR_TEST_SURELY_UNSET") != std::string::npos);
+    // Only the root cause, once (design review O2).
+    CHECK(e.error() == "Unknown variable $NAVIGATOR_TEST_SURELY_UNSET");
     CHECK(e.edit().text() == "$NAVIGATOR_TEST_SURELY_UNSET/x");
     // Editing clears the error.
     e.edit().insert("y");
     e.changed(0.0);
     CHECK(e.error().empty());
+}
+
+TEST_CASE("GoTo: a partial path highlights its first completion; exact names stay typed",
+          "[goto]") {
+    TempDir t;
+    const Path home = t.dir("home");
+    t.dir("home/Belgeler");
+    t.dir("home/Downloads");
+    PathEntry e(PathEntryMode::GoTo);
+    e.open({}, false, home, home, {}, 0.0);
+    type(e, "~/B"); // does not exist, completes uniquely
+    REQUIRE(e.highlight() < e.items().size());
+    CHECK(e.items()[e.highlight()].kind == PathItem::Kind::Completion);
+    e.submit(false);
+    std::optional<PathOutcome> o = e.take_outcome();
+    REQUIRE(o.has_value());
+    CHECK(got(o).path == home / "Belgeler");
+    type(e, "~/Downloads"); // exists as typed: the Typed row stays highlighted
+    CHECK(e.highlight() == 0);
+    type(e, "~/"); // a folder: Typed
+    CHECK(e.highlight() == 0);
+    // Moving the highlight by hand is kept when completions arrive.
+    type(e, "~/B");
+    e.move(-1);
+    CHECK(e.highlight() == 0);
 }
 
 TEST_CASE("Enter on a file reveals it in its folder; Ctrl+Enter opens it", "[goto]") {

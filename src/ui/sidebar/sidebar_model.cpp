@@ -7,6 +7,8 @@
 #include <navigator/i18n.hpp>
 #include <navigator/path_input.hpp>
 
+#include "i18n/catalog.hpp"
+
 namespace navigator::ui {
 namespace {
 
@@ -21,6 +23,9 @@ void fill_volume(SidebarRow& row, const VolumeInfo& v, std::size_t index) {
     row.removable = v.removable || v.kind == VolumeKind::Removable;
     row.network = v.kind == VolumeKind::Network;
     row.read_only = v.read_only;
+    if (row.network) {
+        row.source = fs::to_display_name(v.device);
+    }
     if (v.has_space && (v.space.total_bytes > 0 || v.space.available_bytes > 0)) {
         row.usage = used_fraction(v.space);
         row.total_bytes = v.space.total_bytes;
@@ -44,7 +49,31 @@ std::string volume_label(const VolumeInfo& volume) {
         return volume.label;
     }
     if (volume.kind == VolumeKind::Network && !volume.device.empty()) {
-        return fs::to_display_name(volume.device);
+        std::string dev = fs::to_display_name(volume.device);
+        std::string host;
+        std::string path;
+        if (dev.starts_with("//")) { // CIFS: //host/share
+            const std::size_t slash = dev.find('/', 2);
+            host = dev.substr(2, slash == std::string::npos ? std::string::npos : slash - 2);
+            path = slash == std::string::npos ? std::string() : dev.substr(slash);
+        } else if (const std::size_t colon = dev.find(':');
+                   colon != std::string::npos && colon > 0) { // NFS / sshfs: host:/path
+            host = dev.substr(0, colon);
+            path = dev.substr(colon + 1);
+        }
+        while (!path.empty() && path.back() == '/') {
+            path.pop_back();
+        }
+        const std::size_t last = path.rfind('/');
+        const std::string share = last == std::string::npos ? path : path.substr(last + 1);
+        if (!host.empty() && !share.empty()) {
+            return substitute(substitute(tr("sidebar.network_label"), "share", share), "host",
+                              host);
+        }
+        if (!host.empty()) {
+            return host;
+        }
+        return dev;
     }
     return places::default_label(volume.mount_point);
 }

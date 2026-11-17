@@ -123,7 +123,8 @@ void PathEntry::open(std::string_view text, bool select_all, const Path& cwd, co
     outcome_.reset();
     changed(now_ms);
     edited_ = false;
-    highlight_ = mode_ == PathEntryMode::GoTo ? 0 : kNpos;
+    user_moved_ = false;
+    highlight_ = default_highlight();
 }
 
 void PathEntry::close() {
@@ -171,7 +172,8 @@ void PathEntry::changed(double now_ms) {
         }
     }
     rebuild();
-    highlight_ = mode_ == PathEntryMode::GoTo && !items_.empty() ? 0 : kNpos;
+    user_moved_ = false;
+    highlight_ = default_highlight();
 }
 
 void PathEntry::request_completion(double now_ms) {
@@ -237,9 +239,44 @@ void PathEntry::apply_completion(CompletionReply reply) {
         completions_ = path_input::match_completions(query, cache_.entries, o);
     }
     rebuild();
-    highlight_ = keep < items_.size()                              ? keep
-                 : mode_ == PathEntryMode::GoTo && !items_.empty() ? 0
-                                                                   : kNpos;
+    if (user_moved_ && keep < items_.size()) {
+        highlight_ = keep;
+    } else {
+        highlight_ = default_highlight();
+    }
+}
+
+std::size_t PathEntry::default_highlight() const {
+    if (mode_ != PathEntryMode::GoTo || items_.empty()) {
+        return kNpos;
+    }
+    // Design review Phase 4 O1: when the typed path does not exist but completes, Enter goes
+    // to the first completion ("~/B" -> "~/Belgeler"); the Typed row stays the preview. An
+    // exact name, or a folder path ending in '/', keeps the Typed row ("~/Downloads", "/").
+    if (items_[0].kind != PathItem::Kind::Typed) {
+        return 0;
+    }
+    std::size_t first = kNpos;
+    for (std::size_t i = 0; i < items_.size(); ++i) {
+        if (items_[i].kind == PathItem::Kind::Completion) {
+            first = i;
+            break;
+        }
+    }
+    if (first == kNpos || !cache_.valid) {
+        return 0;
+    }
+    const Result<path_input::CompletionQuery> q =
+        path_input::parse_completion_input(edit_.text(), ui_context());
+    if (!q || q->prefix.empty() || q->typed_dir != cache_.key) {
+        return 0;
+    }
+    for (const fs::DirEntry& e : cache_.entries) {
+        if (e.name == q->prefix) {
+            return 0; // the typed path exists as typed
+        }
+    }
+    return first;
 }
 
 void PathEntry::rebuild() {
@@ -349,6 +386,7 @@ std::optional<PathOutcome> PathEntry::take_outcome() {
 }
 
 void PathEntry::move(std::ptrdiff_t delta) {
+    user_moved_ = true;
     if (items_.empty()) {
         highlight_ = kNpos;
         return;
@@ -369,6 +407,7 @@ void PathEntry::move(std::ptrdiff_t delta) {
 }
 
 void PathEntry::set_highlight(std::size_t index) noexcept {
+    user_moved_ = true;
     highlight_ = index < items_.size() ? index : kNpos;
 }
 
@@ -445,7 +484,8 @@ void PathEntry::apply_resolve(ResolveReply reply, bool new_tab) {
     }
     const path_input::ResolvedInput& r = *reply.result;
     if (!r.exists()) {
-        error_ = substitute(tr("goto.not_found"), "path", display_path(r.path, home_));
+        // Only the root cause (design review Phase 4 O2): an unknown variable explains the
+        // missing path by itself.
         if (!r.unresolved.empty()) {
             std::string names;
             for (const std::string& u : r.unresolved) {
@@ -454,8 +494,9 @@ void PathEntry::apply_resolve(ResolveReply reply, bool new_tab) {
                 }
                 names += u;
             }
-            error_ += "  ";
-            error_ += substitute(tr("goto.unknown_variable"), "name", names);
+            error_ = substitute(tr("goto.unknown_variable"), "name", names);
+        } else {
+            error_ = substitute(tr("goto.not_found"), "path", display_path(r.path, home_));
         }
         return;
     }

@@ -26,9 +26,9 @@ constexpr std::size_t kDropRows = 8;
 LineIcon item_icon(const PathItem& it) {
     switch (it.kind) {
     case PathItem::Kind::Typed:
-    case PathItem::Kind::Completion: return LineIcon::Folder;
+    case PathItem::Kind::Completion:
+    case PathItem::Kind::Bookmark: return LineIcon::Folder; // bookmarks as in the sidebar (O10)
     case PathItem::Kind::Recent: return LineIcon::Clock;
-    case PathItem::Kind::Bookmark: return LineIcon::Star;
     case PathItem::Kind::Place:
         switch (it.place) {
         case places::PlaceKind::Home: return LineIcon::Home;
@@ -201,9 +201,14 @@ void WorkspaceView::draw_goto(const ShellFrame& f) {
             float x = rr.x + std::round(p.px(16.0F));
             const bool offline = it.status != places::LocationStatus::Online;
             if (it.kind == PathItem::Kind::Typed) {
-                // The preview line: where Enter goes.
+                // The preview line: where Enter goes. After a failed Enter the banner carries
+                // the reason; the row keeps only a red chevron (design review O2).
+                const bool unresolved = goto_.preview() && !goto_.preview()->unresolved.empty();
                 draw_chevron(r, x + (0.5F * icon), rm, p.px(9.0F), Direction::Right,
-                             std::max(1.0F, p.px(1.6F)), hi ? pal.accent : pal.text_secondary);
+                             std::max(1.0F, p.px(1.6F)),
+                             unresolved || has_error ? pal.danger
+                             : hi                    ? pal.accent
+                                                     : pal.text_secondary);
                 x += icon + std::round(p.px(12.0F));
                 const ShapedText go = p.shape(type::row, tr("goto.go_to"));
                 const float base = std::round(rm + (0.5F * go.cap_height()));
@@ -211,10 +216,9 @@ void WorkspaceView::draw_goto(const ShellFrame& f) {
                 const float px0 = x + go.width() + std::round(p.px(8.0F));
                 const std::string target =
                     it.path.empty() ? it.label : display_path(it.path, goto_.home());
-                const bool unresolved = goto_.preview() && !goto_.preview()->unresolved.empty();
                 const float right = rr.right() - std::round(p.px(14.0F));
                 std::string note;
-                if (unresolved) {
+                if (unresolved && !has_error) {
                     std::string names;
                     for (const std::string& u : goto_.preview()->unresolved) {
                         names += names.empty() ? u : ", " + u;

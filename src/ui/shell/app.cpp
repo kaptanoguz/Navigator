@@ -1655,6 +1655,9 @@ void App::Impl::draw_frame(double t_ms, double dt_ms) {
         .content = {},
         .bookmarks = &places->bookmarks(),
         .sidebar_visible = false,
+        .list_keyboard =
+            ui::keyboard_owner(view.popup_open(), view.address_open() || sidebar.renaming(),
+                               sidebar_focus) == ui::KeyboardOwner::List,
         .draw_sidebar = {},
         .draw_sidebar_overlay = {},
     };

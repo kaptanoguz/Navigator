@@ -154,6 +154,7 @@ private:
         std::vector<fs::DirEntry> entries;
     };
     void rebuild();
+    [[nodiscard]] std::size_t default_highlight() const;
     void request_completion(double now_ms);
 
     PathEntryMode mode_;
@@ -167,6 +168,7 @@ private:
     std::vector<path_input::Completion> completions_;
     std::vector<PathItem> items_;
     std::size_t highlight_ = 0;
+    bool user_moved_ = false; // Up / Down / pointer moved the highlight since the last edit
     std::string error_;
     std::optional<path_input::ExpandedPath> preview_;
     Cache cache_;

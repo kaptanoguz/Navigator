@@ -73,6 +73,10 @@ struct ShellFrame {
     RectF content;
     const places::BookmarkStore* bookmarks = nullptr;
     bool sidebar_visible = false;
+    // Design review Phase 4 B1: false while the keyboard belongs elsewhere (sidebar, a popup,
+    // the address bar, a rename field): the active pane then draws its list cursor and
+    // selection like an inactive pane (no ring) but keeps its active-pane marker.
+    bool list_keyboard = true;
     // Called by draw(): the sidebar right after the background, its overlays (tooltips) after
     // the panes and before toasts and popups (which cover it with their scrim).
     std::function<void()> draw_sidebar;

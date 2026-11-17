@@ -280,6 +280,36 @@ TEST_CASE("Sidebar keyboard focus skips hint rows and clamps", "[sidebar]") {
     CHECK(sidebar_initial_focus(rows) == 0);
 }
 
+TEST_CASE("Keyboard owner: one focus ring at a time", "[sidebar]") {
+    // Design review Phase 4 B1: the list draws its cursor ring only when it owns the keyboard.
+    CHECK(keyboard_owner(false, false, false) == KeyboardOwner::List);
+    CHECK(keyboard_owner(false, false, true) == KeyboardOwner::Sidebar);
+    CHECK(keyboard_owner(false, true, false) == KeyboardOwner::TextField); // address bar
+    CHECK(keyboard_owner(false, true, true) == KeyboardOwner::TextField);  // bookmark rename
+    CHECK(keyboard_owner(true, false, true) == KeyboardOwner::Popup);      // GoTo, menus
+    CHECK(keyboard_owner(true, true, false) == KeyboardOwner::Popup);
+}
+
+TEST_CASE("Network volumes are named like GNOME: share on host", "[sidebar]") {
+    set_language(Language::English);
+    VolumeInfo v;
+    v.kind = VolumeKind::Network;
+    v.mount_point = "/mnt/nas";
+    v.device = "nas.local:/export/media/";
+    CHECK(volume_label(v) == "media on nas.local");
+    v.device = "//server/share";
+    CHECK(volume_label(v) == "share on server");
+    v.device = "weird";
+    CHECK(volume_label(v) == "weird");
+    v.label = "NAS";
+    CHECK(volume_label(v) == "NAS");
+    set_language(Language::Turkish);
+    v.label.clear();
+    v.device = "nas.local:/export/media";
+    CHECK(volume_label(v) == "nas.local üzerinde media");
+    set_language(Language::English);
+}
+
 TEST_CASE("F6 cycles sidebar -> panes -> sidebar", "[sidebar]") {
     // Two panes, sidebar visible: pane 0 -> pane 1 -> sidebar -> pane 0.
     CHECK(cycle_focus(2, true, false, 0, 1) == FocusStop{false, 1});
