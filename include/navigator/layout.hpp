@@ -2,19 +2,21 @@
 //
 // Purpose: the headless tab / split-pane model (Phase 3): strong ids, per-tab persisted state,
 //          the layout tree with its invariants and edit operations, the recently-closed-tabs
-//          ring, the Session (window geometry + layout + closed tabs), JSON (de)serialization
-//          and the on-disk session / named-layout files. No SDL, no renderer, no JSON library
-//          types: the ui draws and drives this model; src/core implements it.
+//          ring, the Session (window geometry + layout + closed tabs + Phase 4 sidebar state),
+//          JSON (de)serialization and the on-disk session / named-layout files. No SDL, no
+//          renderer, no JSON library types: the ui draws and drives this model; src/core
+//          implements it.
 // Owner:   contracts (header); implementation in src/core (role: core-fs), tests in tests/core.
-// Thread-safety: TabState, LayoutNode, Layout, ClosedTabs, WindowGeometry and Session are plain
-//                values (see types.hpp): distinct objects may be used from different threads, one
-//                object must not be mutated concurrently. In the app the live Session is owned
-//                by the UI thread. Layout and ClosedTabs member functions and the JSON functions
-//                are pure CPU work (no I/O) and may run on the UI thread. The file functions
-//                (load_session, save_session, *_named_layout) perform blocking file I/O; see
-//                docs/architecture.md "Phase 3" for where the ui may call them. All functions are
-//                reentrant: concurrent calls on distinct objects / files are safe, and two
-//                concurrent saves to the same file never produce a torn file (last rename wins).
+// Thread-safety: TabState, LayoutNode, Layout, ClosedTabs, WindowGeometry, SidebarState and
+//                Session are plain values (see types.hpp): distinct objects may be used from
+//                different threads, one object must not be mutated concurrently. In the app the
+//                live Session is owned by the UI thread. Layout and ClosedTabs member functions
+//                and the JSON functions are pure CPU work (no I/O) and may run on the UI thread.
+//                The file functions (load_session, save_session, *_named_layout) perform
+//                blocking file I/O; see docs/architecture.md "Phase 3" for where the ui may call
+//                them. All functions are reentrant: concurrent calls on distinct objects / files
+//                are safe, and two concurrent saves to the same file never produce a torn file
+//                (last rename wins).
 // Errors:  navigator::Result (types.hpp). No exceptions escape these functions; allocation
 //          failure is reported as ErrorCode::OutOfMemory where a Result is returned.
 //
@@ -26,6 +28,7 @@
 //   not nested binary splits (see the invariants on Layout).
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -388,6 +391,40 @@ struct WindowGeometry {
     friend constexpr bool operator==(const WindowGeometry&, const WindowGeometry&) = default;
 };
 
+// Phase 4. One sidebar per window, left of the whole pane tree; it is not a layout node. Stored
+// in the session only: named layouts never contain it, and loading a layout leaves it alone
+// (docs/review/phase-3.md). The automatic icon-only collapse on narrow windows is derived by the
+// ui from the window width every frame and is not persisted; `visible` is the user's choice
+// (view.toggle_sidebar).
+enum class SidebarSection : std::uint8_t {
+    Bookmarks = 0,
+    Recents = 1,
+    Places = 2,
+    Storage = 3,
+};
+inline constexpr std::size_t kSidebarSectionCount = 4;
+
+// Logical pixels (dp) at scale 1.0 (design review: 220 default, 160 minimum).
+inline constexpr double kSidebarDefaultWidth = 220.0;
+inline constexpr double kSidebarMinWidth = 160.0;
+inline constexpr double kSidebarMaxWidth = 480.0;
+
+struct SidebarState {
+    bool visible = true;
+    double width = kSidebarDefaultWidth; // clamped to [kSidebarMinWidth, kSidebarMaxWidth]
+    // Indexed by SidebarSection.
+    std::array<bool, kSidebarSectionCount> collapsed{};
+
+    [[nodiscard]] constexpr bool is_collapsed(SidebarSection section) const noexcept {
+        return collapsed[static_cast<std::size_t>(section)];
+    }
+    constexpr void set_collapsed(SidebarSection section, bool value) noexcept {
+        collapsed[static_cast<std::size_t>(section)] = value;
+    }
+
+    friend constexpr bool operator==(const SidebarState&, const SidebarState&) = default;
+};
+
 struct Session {
     // Format version written by to_json(). See "JSON format" below for the load rules.
     static constexpr int kVersion = 1;
@@ -396,6 +433,7 @@ struct Session {
     WindowGeometry window;
     Layout layout; // includes the active pane
     ClosedTabs closed_tabs;
+    SidebarState sidebar; // Phase 4 (additive "sidebar" field, still version 1)
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -406,7 +444,10 @@ struct Session {
 //   { "version": 1,
 //     "window": { "x": 10, "y": 20, "width": 1280, "height": 800, "maximized": false },
 //     "layout": <layout>,
-//     "closed_tabs": [ <tab>, ... ] }                       oldest first
+//     "closed_tabs": [ <tab>, ... ],                        oldest first
+//     "sidebar": { "visible": true, "width": 220,
+//                  "collapsed": [ "recents", "storage" ] } }  Phase 4; collapsed sections in
+//                                                             SidebarSection order
 // Named layout file:
 //   { "version": 1, "layout": <layout> }
 // <layout> = { "active_pane": 0, "root": <node> }          active_pane: index in pane_order()
@@ -438,6 +479,11 @@ struct Session {
 //     that is neither form (or bad hex) counts as missing.
 //   - "closed_tabs": invalid entries (empty / relative path) are dropped; only the newest
 //     kDefaultClosedTabCapacity are kept; pane is invalid, index 0.
+//   - "sidebar" (Phase 4): missing (older files) or not an object -> SidebarState{}. "width"
+//     not a finite number -> kSidebarDefaultWidth, else clamped to [kSidebarMinWidth,
+//     kSidebarMaxWidth]; "visible" not a bool -> true; "collapsed": strings "bookmarks",
+//     "recents", "places", "storage"; unknown or non-string items are ignored. "width" is
+//     written as a JSON number (integral values without a fraction).
 
 // Errors: OutOfMemory.
 [[nodiscard]] Result<std::string> to_json(const Session& session);

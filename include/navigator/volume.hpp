@@ -12,6 +12,8 @@
 //                a hung network mount can block for a long time: never call them on the UI
 //                thread. An IVolumeMonitor follows the IWatcher rule (watch.hpp): one thread at a
 //                time, no internal thread.
+//                Phase 4 helpers (used_fraction, VolumeIdentity, identity_of, volume_matches) are
+//                header-only and pure.
 // Errors:  navigator::Result (types.hpp); no exceptions escape.
 //
 // Pipeline used by list_volumes() (documented so a fake environment produces exact results):
@@ -132,6 +134,67 @@ struct VolumeInfo {
     bool removable = false; // rule R (independent of kind: a removable "/" is still Root)
     VolumeKind kind = VolumeKind::Other;
 };
+
+// ---------------------------------------------------------------------------------------------
+// Phase 4: usage and stable identity (header-only helpers, pure, callable from any thread)
+// ---------------------------------------------------------------------------------------------
+
+// Used share of a volume as df(1) computes "Use%": used / (used + available), where used =
+// total - free. Root-reserved blocks therefore count neither as used nor as available, and a
+// full disk reads 1.0 for an unprivileged user. Returns 0.0 when nothing is known (all zero),
+// always in [0, 1]. The sidebar draws the bar from this value and the percent as
+// round(100 * value).
+[[nodiscard]] constexpr double used_fraction(const SpaceInfo& space) noexcept {
+    const std::uint64_t used =
+        space.total_bytes > space.free_bytes ? space.total_bytes - space.free_bytes : 0;
+    const std::uint64_t avail = space.available_bytes;
+    if (used == 0 && avail == 0) {
+        return 0.0;
+    }
+    const double fraction =
+        static_cast<double>(used) / (static_cast<double>(used) + static_cast<double>(avail));
+    return fraction < 0.0 ? 0.0 : (fraction > 1.0 ? 1.0 : fraction);
+}
+
+// What a bookmark or recent entry remembers about the volume it lives on, so it can be shown
+// "offline" while that volume is unmounted and found again when it returns (possibly at another
+// mount point, e.g. "/media/u/STICK1" instead of "/media/u/STICK").
+//
+// Matching rule (volume_matches):
+//   - uuid non-empty: the volume matches iff VolumeInfo::uuid == uuid AND VolumeInfo::root ==
+//     root. The root is part of the identity because btrfs subvolumes ("/@", "/@home") share one
+//     filesystem UUID. mount_point and device are ignored for matching (a stick may come back as
+//     /dev/sdc1 at "/media/u/STICK1"); they are updated by resync (places.hpp).
+//   - uuid empty (no /dev/disk/by-uuid entry: network shares, some FUSE and device-mapper
+//     mounts): fallback, the volume matches iff device is non-empty AND VolumeInfo::device ==
+//     device AND VolumeInfo::mount_point == mount_point. Such a volume is only recognised again
+//     at the same mount point.
+//   - uuid and device both empty: matches nothing (callers treat such an identity as absent).
+struct VolumeIdentity {
+    std::string uuid;   // VolumeInfo::uuid when known, else empty
+    std::string root;   // VolumeInfo::root (subvolume root inside the filesystem), e.g. "/"
+    std::string device; // VolumeInfo::device, e.g. "/dev/sdb1" or "server:/export"
+    Path mount_point;   // where the volume was mounted when the identity was recorded
+
+    friend bool operator==(const VolumeIdentity&, const VolumeIdentity&) = default;
+};
+
+[[nodiscard]] inline VolumeIdentity identity_of(const VolumeInfo& volume) {
+    VolumeIdentity id;
+    id.uuid = volume.uuid.value_or(std::string{});
+    id.root = volume.root;
+    id.device = volume.device;
+    id.mount_point = volume.mount_point;
+    return id;
+}
+
+[[nodiscard]] inline bool volume_matches(const VolumeIdentity& id,
+                                         const VolumeInfo& volume) noexcept {
+    if (!id.uuid.empty()) {
+        return volume.uuid.has_value() && *volume.uuid == id.uuid && volume.root == id.root;
+    }
+    return !id.device.empty() && volume.device == id.device && volume.mount_point == id.mount_point;
+}
 
 // System access used by list_volumes()/volume_for()/IVolumeMonitor. Tests inject a fake.
 class IMountSource {

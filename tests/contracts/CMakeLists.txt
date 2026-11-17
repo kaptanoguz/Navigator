@@ -28,6 +28,8 @@ set(NAVIGATOR_CONTRACT_HEADERS
     mime
     i18n
     layout
+    places
+    path_input
     detail/expected
 )
 
@@ -81,6 +83,12 @@ foreach(std IN ITEMS 20 23)
     _navigator_header_object(navigator_contract_phase3_cxx${std}
                              "${CMAKE_CURRENT_SOURCE_DIR}/phase3_usage.cpp" CXX ${std})
     list(APPEND _nav_check_targets navigator_contract_phase3_cxx${std})
+
+    # Phase 4 places/bookmarks/recents, path_input (GoTo), user dirs, sidebar session state,
+    # sidebar/bookmark/copy-path commands (compile only).
+    _navigator_header_object(navigator_contract_phase4_cxx${std}
+                             "${CMAKE_CURRENT_SOURCE_DIR}/phase4_usage.cpp" CXX ${std})
+    list(APPEND _nav_check_targets navigator_contract_phase4_cxx${std})
 endforeach()
 
 # plugin.h from C11

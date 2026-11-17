@@ -38,7 +38,9 @@ namespace navigator {
 //   1220-1239  panes           (Phase 3)
 //   1240-1249  named layouts   (Phase 3)
 //   1250-1259  windows         (reserved: multi-window phase)
-//   1260+      reserved for later phases (file operations, search, ...)
+//   1260-1279  sidebar, bookmarks, recents (Phase 4)
+//   1280-1299  edit / clipboard (Phase 4: copy path; file operations add copy/cut/paste here)
+//   1300+      reserved for later phases (file operations, search, ...)
 // Every id except None is registered by register_builtin_commands() and appears in the palette.
 // `arg` meanings are listed per id; "arg: 0" means the command ignores it.
 enum class CommandId : std::uint32_t {
@@ -47,13 +49,30 @@ enum class CommandId : std::uint32_t {
     ToggleFpsOverlay = 2, // "view.toggle_fps_overlay"
     ToggleTheme = 3,      // "view.toggle_theme"
     ToggleHidden = 4,     // "view.toggle_hidden"    show/hide dot-files; re-lists. arg: 0
+    ToggleSidebar = 5,    // "view.toggle_sidebar"   Phase 4. Show/hide the window's sidebar
+                          //   (layout::SidebarState::visible; persisted in the session). Hiding
+                          //   it while it has keyboard focus returns focus to the active pane.
+                          //   arg: 0
+    ToggleViewLock = 6,   // "view.toggle_view_lock" Phase 4 STUB: registered, unbound, no-op.
+                          //   Reserved for the address-bar lock (folder / hierarchy / global
+                          //   view settings, docs/features.md). arg: 0 (scopes reserved)
 
     // Navigation. arg: 0 for all.
     NavigateBack = 1000,    // "nav.back"     previous history location (no-op at the start)
     NavigateForward = 1001, // "nav.forward"  next history location (no-op at the end)
     NavigateUp = 1002,      // "nav.up"       parent directory (no-op at "/")
     Refresh = 1003,         // "nav.refresh"  re-list the current directory
-    FocusAddressBar = 1004, // "nav.focus_address_bar"  Phase 4; registered, unbound, no-op
+    FocusAddressBar = 1004, // "nav.focus_address_bar"  Phase 4: turns the active pane's
+                            //   breadcrumb bar into a text field holding the folder's path
+                            //   (all selected) and gives it keyboard focus. Enter: go (folder ->
+                            //   navigate the tab; file -> navigate to its folder with the cursor
+                            //   on it); Ctrl+Enter: as list.open_in_new_tab on the target; Tab:
+                            //   accept the highlighted completion; Escape or focus loss: back to
+                            //   breadcrumbs, nothing changes. Resolution: path_input.hpp.
+    GoTo = 1005,            // "nav.goto"  Phase 4: opens the GoTo popup over the active pane:
+                            //   a text field (path_input expansion, case correction, folder-name
+                            //   completion) above a list of recents, bookmarks and places
+                            //   filtered by the text. Enter / Ctrl+Enter as in the address bar.
 
     // List. Cursor commands take the CursorArg bit flags below as `arg`.
     Activate = 1100,       // "list.activate"  open the cursor entry: folder (or link to a folder)
@@ -100,8 +119,10 @@ enum class CommandId : std::uint32_t {
     SplitRight = 1220,        // "pane.split_right"  new pane right of the pane, showing a new
                               //   tab on the pane's active folder (like tab.new); it is active
     SplitDown = 1221,         // "pane.split_down"   same, below the pane
-    FocusNextPane = 1222,     // "pane.focus_next"      next pane in reading order, wrapping
-    FocusPreviousPane = 1223, // "pane.focus_previous"  previous pane, wrapping
+    FocusNextPane = 1222,     // "pane.focus_next"      next pane in reading order, wrapping.
+                              //   Phase 4: while the sidebar is visible it is one more focus
+                              //   stop before the first pane: sidebar -> panes -> sidebar
+    FocusPreviousPane = 1223, // "pane.focus_previous"  previous pane, wrapping (same cycle)
     ClosePane = 1224,         // "pane.close"  closes the pane and all its tabs (all pushed onto
                               //   the closed-tabs list); no-op on the only pane
 
@@ -119,6 +140,41 @@ enum class CommandId : std::uint32_t {
     // second window exists (multi-window phase).
     NewWindow = 1250, // "window.new"  duplicate the active tab into a new window (the source
                       //   tab stays); docs/features.md lists Ctrl+N for this. arg: 0
+
+    // Sidebar, bookmarks, recents (Phase 4). Bookmark commands take arg 0 = the bookmark row
+    // that has keyboard focus in the sidebar (no-op when none), except where stated, or
+    // otherwise places::BookmarkId::value (sidebar context menu). An arg naming no bookmark is
+    // a no-op.
+    FocusSidebar = 1260,     // "sidebar.focus"  keyboard focus to the sidebar (shows it first
+                             //   if hidden), on the row of the active pane's place or the first
+                             //   row. Escape returns focus to the active pane. arg: 0
+    ToggleBookmark = 1261,   // "bookmarks.toggle"  arg 0: bookmark the active tab's folder, or
+                             //   remove its bookmark if it has one (bookmark button in the
+                             //   address bar). arg = BookmarkId: remove that bookmark.
+    RenameBookmark = 1262,   // "bookmarks.rename"  inline rename field on the row; the typed
+                             //   name reaches the ui as an intent (it carries text); empty
+                             //   restores the default label
+    MoveBookmarkUp = 1263,   // "bookmarks.move_up"    one row up (no wrap)
+    MoveBookmarkDown = 1264, // "bookmarks.move_down"  one row down (no wrap)
+    ClearRecents = 1270,     // "recents.clear"  empties the Recents list (no confirmation; it
+                             //   only forgets history). arg: 0
+    ToggleRecentsTracking = 1271, // "recents.toggle_tracking"  flips
+                                  //   places::RecentsOptions::enabled (persisted). arg: 0
+
+    // Edit / clipboard.
+    CopyPath = 1280, // "edit.copy_path"  Phase 4 ("Copy as Path", docs/features.md): puts the
+                     //   absolute paths of the selected entries (list order) on the clipboard,
+                     //   or the current folder when nothing is selected, formatted by
+                     //   path_input::format_paths_for_copy(PathQuoting::Auto).
+                     //   arg: CopyPathArg flags
+};
+
+// Bit flags for the `arg` of CopyPath. Unknown bits are ignored (reserved).
+//   0:             selection, else the current folder (Ctrl+Shift+C).
+//   CurrentFolder: always the current folder (breadcrumb / tab context menu).
+struct CopyPathArg {
+    static constexpr std::uint64_t None = 0;
+    static constexpr std::uint64_t CurrentFolder = std::uint64_t{1} << 0U;
 };
 
 // Bit flags for the `arg` of NewTab. Unknown bits are ignored (reserved).
@@ -231,9 +287,18 @@ Result<void> register_builtin_commands(CommandRegistry& registry);
 //   - Mouse side buttons (X1/X2) map to Key::MouseBack / Key::MouseForward so they bind through
 //     the same keymap. Clicks, double-clicks and drags are not chords (see docs/architecture.md).
 //
-// Phase 2 bindings are global (no focus contexts). Focus-scoped bindings arrive with the address
-// bar (Phase 4). Multi-key sequences ("g g") and command aliases arrive in Phase 8 as an addition
-// (e.g. a KeySequence type and Keymap::bind_sequence); the single-chord API below stays.
+// Bindings are global: the Keymap has no focus contexts. Focus scoping (Phase 4) is done by the
+// ui BEFORE and AFTER resolution, never by a second keymap (docs/keymap.md "Focus scoping"):
+//   - A focused text field (address bar, GoTo, rename and name prompts) first consumes SDL text
+//     input and its editing keys (Left/Right/Home/End with or without Shift, Backspace, Delete,
+//     Ctrl+A/C/X/V/Z, Ctrl+Left/Right, Ctrl+Backspace) without consulting the keymap; Enter,
+//     Ctrl+Enter, KeypadEnter, Tab, Up, Down, PageUp, PageDown and Escape have field meanings.
+//     Every other chord resolves through the keymap as usual (Ctrl+Q, Ctrl+B, F6 still work).
+//   - When the sidebar or a popup has focus, the ui routes the resolved list.cursor_*,
+//     list.activate, list.open_in_new_tab and list.clear_selection commands to it instead of the
+//     active pane (Phase 3 popups already do this).
+// Multi-key sequences ("g g") and command aliases arrive in Phase 8 as an addition (e.g. a
+// KeySequence type and Keymap::bind_sequence); the single-chord API below stays.
 
 // Numeric values are not persisted anywhere (keymap files use to_string() names); they may be
 // regrouped between versions. Append within a group when possible.

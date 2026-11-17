@@ -64,9 +64,11 @@ command is its primary key hint.
 | `Shift+Home` | `list.cursor_home` | `CursorHome` (1114) | `Extend` | |
 | `End` | `list.cursor_end` | `CursorEnd` (1115) | 0 | Last row |
 | `Shift+End` | `list.cursor_end` | `CursorEnd` (1115) | `Extend` | |
-| (unbound) | `nav.focus_address_bar` | `FocusAddressBar` (1004) | 0 | Reserved for Phase 4; registered, no-op |
 
 `Extend` is `CursorArg::Extend` (bit 0 of `Command::arg`).
+
+`nav.focus_address_bar` (`FocusAddressBar`, 1004) was registered unbound in Phase 2; Phase 4
+binds it to `Ctrl+L` (see "Phase 4 defaults").
 
 ### Mouse (Phase 2)
 
@@ -100,7 +102,7 @@ Navigator's own defaults. `docs/features.md` attributes only `Ctrl+T`, `Ctrl+W` 
 File Pilot; every other chord below is Navigator's choice, following browser and Linux file
 manager conventions (GNOME Files, Nemo and Dolphin use `F3` for a split view; GNOME uses `F6` to
 cycle panes). Chords reserved for later phases by `docs/features.md` stay free: `Ctrl+E`
-(flatten, Phase 5), `Ctrl+B` (sidebar, Phase 4), `Ctrl+Shift+P` (palette, Phase 8), `Ctrl+,`
+(flatten, Phase 5), `Ctrl+B` (sidebar, bound in Phase 4), `Ctrl+Shift+P` (palette, Phase 8), `Ctrl+,`
 (settings), `Ctrl+Space` (cursor selection, Phase 8), `Ctrl+Shift+N` (new folder, Phase 7).
 `Ctrl+Alt+arrows` are avoided because GNOME and Cinnamon switch workspaces with them. Chords on
 punctuation keys (such as `Ctrl+\`) are avoided because Turkish layouts put those legends
@@ -186,6 +188,89 @@ and **middle-click**:
   like a plain double-click (open with the default app).
 - Middle-click on a folder row needs no modifier and never touches the selection.
 - A single `Ctrl`+click never opens a tab.
+
+## Phase 4 defaults (sidebar, GoTo, address bar, bookmarks)
+
+`docs/features.md` attributes only `Ctrl+B` (toggle sidebar) and "`Ctrl+Enter` opens" in the
+address bar to File Pilot; every other chord below is Navigator's choice. `Ctrl+L` (location)
+and `Ctrl+D` (bookmark) follow GNOME Files and web browsers. GoTo takes `Ctrl+G` ("go"):
+`Ctrl+P` stays free because it sits next to `Ctrl+Shift+P` (palette, Phase 8) and editors use it
+for quick-open, which Phase 5 search may want. `Ctrl+Shift+C` (copy path) follows GNOME Files'
+"Copy Location"; plain `Ctrl+C` stays reserved for copying files (Phase 7). None of these chords
+was bound before. Chords on punctuation keys remain avoided (Turkish layouts, see Phase 3).
+
+`load_default_keymap()` binds the Phase 0, Phase 2 and Phase 3 tables, then this table, in this
+order.
+
+| Chord | Command name | CommandId | arg | Notes |
+|-------|--------------|-----------|-----|-------|
+| `Ctrl+B` | `view.toggle_sidebar` | `ToggleSidebar` (5) | 0 | File Pilot behaviour per `features.md` |
+| `Ctrl+L` | `nav.focus_address_bar` | `FocusAddressBar` (1004) | 0 | Breadcrumbs become an editable path, all selected |
+| `Ctrl+G` | `nav.goto` | `GoTo` (1005) | 0 | GoTo popup: path, recents, bookmarks, places, completion |
+| `Ctrl+D` | `bookmarks.toggle` | `ToggleBookmark` (1261) | 0 | Bookmark the active folder, or remove its bookmark |
+| `Ctrl+Shift+C` | `edit.copy_path` | `CopyPath` (1280) | 0 | Selection, else the current folder; context-aware quoting |
+| (unbound) | `sidebar.focus` | `FocusSidebar` (1260) | 0 | `F6` reaches the sidebar too (see below) |
+| (unbound) | `bookmarks.rename` | `RenameBookmark` (1262) | 0 | Sidebar context menu |
+| (unbound) | `bookmarks.move_up` | `MoveBookmarkUp` (1263) | 0 | Sidebar context menu; dragging also reorders |
+| (unbound) | `bookmarks.move_down` | `MoveBookmarkDown` (1264) | 0 | Sidebar context menu |
+| (unbound) | `recents.clear` | `ClearRecents` (1270) | 0 | Recents header / context menu |
+| (unbound) | `recents.toggle_tracking` | `ToggleRecentsTracking` (1271) | 0 | Recents context menu; persisted |
+| (unbound) | `view.toggle_view_lock` | `ToggleViewLock` (6) | 0 | Stub: registered, no-op |
+
+Bookmark commands take `arg` = 0 (the bookmark row focused in the sidebar; for
+`bookmarks.toggle` the active tab's folder) or a `places::BookmarkId` value from the context
+menu. `edit.copy_path` takes `CopyPathArg` flags (`CurrentFolder`: ignore the selection; used by
+the breadcrumb and tab context menus). Quoting (`path_input::format_paths_for_copy`, `Auto`): one
+path is copied as is; several paths are shell-quoted where needed and joined by spaces.
+
+`pane.focus_next` / `pane.focus_previous` (`F6` / `Shift+F6`) keep their chords; while the
+sidebar is visible it is one more stop in the cycle: sidebar, then the panes in reading order,
+then the sidebar again (design review, Phase 3 notes).
+
+### Focus scoping (Phase 4)
+
+The keymap stays global (one `Keymap`, no contexts). The ui scopes keys around it:
+
+1. **Text fields** (address bar, GoTo, bookmark rename, and the Phase 3 name prompt) take SDL text
+   input and these editing keys before the keymap is consulted: `Left`, `Right`, `Home`, `End`
+   (also with `Shift` and `Ctrl`), `Backspace`, `Delete`, `Ctrl+Backspace`, `Ctrl+A` (select all
+   text), `Ctrl+C`, `Ctrl+X`, `Ctrl+V`, `Ctrl+Z`. They also give field meanings to:
+
+   | Key | Address bar | GoTo popup |
+   |-----|-------------|------------|
+   | `Enter`, `KeypadEnter` | Go: folder -> navigate the tab; file -> its folder, cursor on it | Same, for the highlighted row or else the typed text |
+   | `Ctrl+Enter` | Target in a new background tab (file: open with the default app), as `list.open_in_new_tab` | Same |
+   | `Tab` | Accept the highlighted completion (text becomes `~/Downloads/`) | Same |
+   | `Up`, `Down`, `PageUp`, `PageDown` | Move the completion highlight | Move the list highlight |
+   | `Escape` | Cancel: breadcrumbs back, focus to the list | Close the popup |
+
+   Every other chord resolves through the keymap as usual, so `Ctrl+Q`, `Ctrl+B`, `Ctrl+W`, `F6`
+   keep working while typing. `Ctrl+A` in a field selects its text, not the list.
+2. **Sidebar and popups**: when either has focus, the ui sends the resolved `list.cursor_*`
+   (row focus), `list.activate` (open the row in the active pane; on a section header:
+   collapse/expand it), `list.open_in_new_tab` (`Ctrl+Enter`: new tab in the active pane) and
+   `list.clear_selection` (`Escape`: back to the last active pane) to it instead of the active
+   pane, as Phase 3 popups already do. No key is hardcoded in the sidebar widget.
+
+### Mouse (Phase 4)
+
+| Gesture | Effect |
+|---------|--------|
+| Click on a sidebar row (place, bookmark, recent, volume) | Navigate the active pane there |
+| `Ctrl`+click or middle-click on a sidebar row | Open it in a new background tab in the active pane |
+| Click on an offline or missing row | No navigation; a notice says the volume is not mounted / the folder is missing |
+| Click on a section header | Collapse or expand the section (persisted in the session) |
+| Right-click on a row | Context menu: Open, Open in new tab, Copy path; bookmarks add Rename, Move up, Move down, Remove; recents add Clear recents, Stop/Resume tracking |
+| Drag a bookmark row | Reorder (insertion marker as in the tab strip) |
+| Drag a tab onto the Bookmarks section | Bookmark its folder at the drop position |
+| Drag a sidebar row onto a pane / pane edge | Optional in Phase 4: open it there or split, reusing the Phase 3 drop zones |
+| Drag the sidebar's right edge | Resize (160-480 dp); double-click restores 220 dp |
+| Click on a breadcrumb segment | Navigate to that folder (up the hierarchy) |
+| Middle-click on a breadcrumb segment | Open that folder in a new background tab |
+| Click on the chevron after a segment | Optional in Phase 4: dropdown of that folder's subfolders; picking one navigates |
+| Click on the empty part of the breadcrumb bar | `nav.focus_address_bar` |
+| Bookmark (star) button in the address bar | `bookmarks.toggle` (filled when the folder is bookmarked) |
+| Lock icon in the address bar | `view.toggle_view_lock` (stub; drawn disabled) |
 
 ## Later phases
 

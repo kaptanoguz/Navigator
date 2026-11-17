@@ -54,6 +54,9 @@ struct AppConfig {
     bool restore_window_geometry = true;
     // Write the session (debounced after changes, and on quit). false: never write it
     // (`--no-session` also clears restore_session; headless smoke tests use it).
+    // Phase 4: these two flags also govern <config_dir>/bookmarks.json and recents.json
+    // (places.hpp): restore_session = false starts with empty bookmarks and recents,
+    // save_session = false never writes them.
     bool save_session = true;
 };
 
