@@ -34,7 +34,11 @@ namespace navigator {
 //      1- 999  app / view
 //   1000-1099  navigation (history, location)
 //   1100-1199  list: activation, cursor, selection
-//   1200+      reserved for later phases (tabs, panes, file operations, search, ...)
+//   1200-1219  tabs            (Phase 3)
+//   1220-1239  panes           (Phase 3)
+//   1240-1249  named layouts   (Phase 3)
+//   1250-1259  windows         (reserved: multi-window phase)
+//   1260+      reserved for later phases (file operations, search, ...)
 // Every id except None is registered by register_builtin_commands() and appears in the palette.
 // `arg` meanings are listed per id; "arg: 0" means the command ignores it.
 enum class CommandId : std::uint32_t {
@@ -63,6 +67,67 @@ enum class CommandId : std::uint32_t {
     CursorPageDown = 1113, // "list.cursor_page_down" one visible page down
     CursorHome = 1114,     // "list.cursor_home"      first row
     CursorEnd = 1115,      // "list.cursor_end"       last row
+    OpenInNewTab = 1116,   // "list.open_in_new_tab"  Phase 3. Cursor entry is a folder (or link
+                           //   to one): open it in a new background tab right after the active
+                           //   tab (same pane, inherits sort/show_hidden; the active tab, cursor
+                           //   and selection do not change). Otherwise: same as list.activate.
+                           //   arg: 0
+
+    // Tabs (Phase 3). Unless stated otherwise, arg selects the target tab: 0 = the active tab
+    // of the active pane, otherwise layout::TabId::value of a specific tab (tab bar buttons and
+    // the tab context menu pass it). An arg naming no existing tab makes the command a no-op.
+    NewTab = 1200,          // "tab.new"  new tab right after the active tab of the active pane,
+                            //   on that tab's folder with its sort/show_hidden, cursor on the
+                            //   first row, scrolled to the top; it becomes active.
+                            //   arg: NewTabArg flags (not a TabId)
+    CloseTab = 1201,        // "tab.close"  pushes it onto the closed-tabs list. The last tab of
+                            //   the last pane is never closed (no-op; Ctrl+Q quits)
+    DuplicateTab = 1202,    // "tab.duplicate"  full copy (folder, sort, cursor, scroll,
+                            //   selection and back/forward history) right after the tab; active
+    CloseLeftTabs = 1203,   // "tab.close_left"  closes the tabs left of the tab in its pane
+    ReopenClosedTab = 1204, // "tab.reopen_closed"  newest closed tab back to its pane and index
+                            //   if that pane still exists, else after the active tab. arg: 0
+    NextTab = 1205,         // "tab.next"      next tab of the active pane, wrapping. arg: 0
+    PreviousTab = 1206,     // "tab.previous"  previous tab of the active pane, wrapping. arg: 0
+    SearchTabs = 1207,      // "tab.search"  opens the Search Tabs list: open tabs of all panes
+                            //   (pane order, then tab order) then recently closed tabs (newest
+                            //   first), filtered by typed text; picking one activates or
+                            //   reopens it. arg: 0
+    MoveTabLeft = 1208,     // "tab.move_left"   swap with the left neighbour (no wrap)
+    MoveTabRight = 1209,    // "tab.move_right"  swap with the right neighbour (no wrap)
+
+    // Panes (Phase 3). arg: 0 = the active pane, otherwise layout::PaneId::value.
+    SplitRight = 1220,        // "pane.split_right"  new pane right of the pane, showing a new
+                              //   tab on the pane's active folder (like tab.new); it is active
+    SplitDown = 1221,         // "pane.split_down"   same, below the pane
+    FocusNextPane = 1222,     // "pane.focus_next"      next pane in reading order, wrapping
+    FocusPreviousPane = 1223, // "pane.focus_previous"  previous pane, wrapping
+    ClosePane = 1224,         // "pane.close"  closes the pane and all its tabs (all pushed onto
+                              //   the closed-tabs list); no-op on the only pane
+
+    // Named layouts (Phase 3). The name prompt / picker these open are ui popups; the typed name
+    // or the picked row reaches the ui as a ui-internal intent (it carries text), not as a
+    // command. arg: 0 for all.
+    SaveLayout = 1240,   // "layout.save"    inline name prompt, then save the current layout
+                         //   (asks before replacing an existing name)
+    LoadLayout = 1241,   // "layout.load"    picker of saved layouts; the picked one replaces
+                         //   the current layout (current tabs go to the closed-tabs list)
+    DeleteLayout = 1242, // "layout.delete"  same picker; deletes the picked layout after a
+                         //   confirmation
+
+    // Windows (reserved). Registered so names and ids are stable; unbound no-ops until a
+    // second window exists (multi-window phase).
+    NewWindow = 1250, // "window.new"  duplicate the active tab into a new window (the source
+                      //   tab stays); docs/features.md lists Ctrl+N for this. arg: 0
+};
+
+// Bit flags for the `arg` of NewTab. Unknown bits are ignored (reserved).
+//   0:    the new tab opens the active tab's folder (default; Ctrl+T, "+" button).
+//   Home: the new tab opens platform::user_dir(Home) with default view options (middle-click
+//         on the "+" button).
+struct NewTabArg {
+    static constexpr std::uint64_t None = 0;
+    static constexpr std::uint64_t Home = std::uint64_t{1} << 0U;
 };
 
 // Bit flags for the `arg` of CursorUp..CursorEnd. Unknown bits are ignored (reserved).

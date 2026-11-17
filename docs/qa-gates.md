@@ -1,7 +1,7 @@
 # QA gates
 
 Phase 0 gates are below. Phase 1 adds the gates in "Phase 1 additions", Phase 2 those in
-"Phase 2 additions"; every earlier gate still applies.
+"Phase 2 additions", Phase 3 those in "Phase 3 additions"; every earlier gate still applies.
 
 ## Phase 0
 
@@ -88,6 +88,31 @@ Notes:
 - `integration.app_headless_start_paths` needs the `navigator` target; build it in sanitizer
   build dirs too or exclude the test there.
 - Findings: `docs/qa-phase2.md`.
+
+## Phase 3 additions (tabs, split panes, layouts, session)
+
+Every earlier gate still applies. `navigator_browser_integration_tests` gains
+`workspace_session_test.cpp` (ui::Workspace + SessionWriter + core session files) and the keymap
+e2e now drives `ui::Workspace`; the app script `integration.app_session_restart`
+(`tests/integration/session_app_smoke.sh`) is new.
+
+| # | Gate | Command | Pass condition |
+|---|------|---------|----------------|
+| 23 | Keymap doc sync, all phases | `ctest --preset dev -R '^integration\..*(keymap\|chord)'` | every `## Phase N defaults` table of `docs/keymap.md` (49 chords: 3 + 25 + 21) equals `load_default_keymap()` row for row; each chord has an effect check through `Workspace::execute`; every registered command has a chord or an `(unbound)` row, never both |
+| 24 | Session round trip | `ctest --preset dev -R '^integration\..*(panes with three tabs\|interchangeable\|corrupt\|Named layouts)'` | 2 panes x 3 tabs restore with paths, sort, hidden, cursor, active tab/pane, closed tabs, window; Workspace JSON == core JSON; corrupt files go to `.bad`; Turkish layout names round-trip |
+| 25 | Writer hammer | `ctest --preset dev -R 'integration\.Background saves'` | 0 torn or invalid reads by 2 reader threads, file == last snapshot, no temp files left |
+| 26 | Lazy tabs | `ctest --preset dev -R 'integration\..*(visible tabs own\|background tab relists)'` | 20 background tabs add 0 threads (`/proc/self/task`) and 0 inotify instances (`/proc/self/fd`); a resumed tab shows changes made while suspended and is watched again |
+| 27 | App restart | `ctest --preset dev -R app_session_restart` | run 1 saves 3 panes, run 2 restores the same dump, PATH adds a live tab, a corrupt file goes to `.bad` with a 1-pane start, `--no-session` reads and writes nothing, missing folders still restore 3 panes |
+| 28 | Flake, parallel, sanitizers | gates 18, 13 (`-j8 --repeat until-fail:5`), 14 and 15 with `-R '^integration\.'` | all pass; `BUG-P3-*` cases are `[!mayfail]` (open bugs, `docs/qa-phase3.md`) |
+
+Notes:
+
+- The app scripts need the `navigator` target; in the TSan dir build `navigator` explicitly (the
+  `navigator_header_check` contract targets do not build there with GCC 13 `-O2`, see
+  `docs/qa-phase3.md`).
+- Thread and inotify counts are process-wide: the lazy-tab tests must not run in a process that
+  has other live workers (Catch2 runs test cases one after another, so this holds).
+- Findings: `docs/qa-phase3.md`.
 
 ## Manual check (developer machine, not CI)
 

@@ -87,11 +87,21 @@ struct Palette {
     Color tint_sheet;
     Color tint_slides;
     Color tint_program;
+
+    // Phase 3.
+    Color on_accent; // text and glyphs on an accent fill (primary buttons); >= 4.5:1
 };
 
 [[nodiscard]] const Palette& palette(Theme theme) noexcept;
 [[nodiscard]] Palette mix(const Palette& a, const Palette& b, float t) noexcept;
 [[nodiscard]] Theme toggled(Theme theme) noexcept;
+
+// Phase 3: the palette of an inactive pane, per theme. The list surface sinks to (dark) or just
+// below (light) the window background, so active and inactive surfaces differ by a visible
+// lightness step in both themes; text and glyphs step toward the next tier. Every text tier
+// keeps WCAG AA (>= 4.5:1) on the dimmed surfaces (tests/ui/theme_test.cpp). Not the only
+// active-pane cue: the active pane also gets an accent marker (never colour alone).
+[[nodiscard]] Palette dimmed(const Palette& p, Theme theme) noexcept;
 
 // Spacing scale (dp), 4-based.
 namespace space {
@@ -132,9 +142,17 @@ inline constexpr TextStyle row_numeric{13.0F, FontWeight::Regular, 0.0F, true};
 inline constexpr TextStyle column_header{12.0F, FontWeight::Medium, 0.01F, false};
 inline constexpr TextStyle crumb{13.0F, FontWeight::Regular, 0.0F, false};
 inline constexpr TextStyle crumb_current{13.0F, FontWeight::SemiBold, 0.0F, false};
+inline constexpr TextStyle crumb_quiet{13.0F, FontWeight::Medium, 0.0F, false}; // inactive pane
 inline constexpr TextStyle status{12.0F, FontWeight::Regular, 0.01F, true};
 inline constexpr TextStyle notice_title{13.0F, FontWeight::Medium, 0.0F, false};
 inline constexpr TextStyle empty_title{15.0F, FontWeight::Medium, 0.0F, false};
+// Phase 3: tabs and popups.
+inline constexpr TextStyle tab{12.5F, FontWeight::Regular, 0.0F, false};
+inline constexpr TextStyle tab_active{12.5F, FontWeight::Medium, 0.0F, false};
+inline constexpr TextStyle popup_title{14.0F, FontWeight::SemiBold, 0.0F, false};
+inline constexpr TextStyle popup_field{14.0F, FontWeight::Regular, 0.0F, false};
+inline constexpr TextStyle section{11.5F, FontWeight::Medium, 0.02F, false};
+inline constexpr TextStyle button{13.0F, FontWeight::Medium, 0.0F, false};
 } // namespace type
 
 namespace radius {
@@ -147,6 +165,7 @@ inline constexpr float pill = 999.0F;
 namespace motion {
 inline constexpr double theme_crossfade_ms = 180.0;
 inline constexpr double scroll_settle_ms = 90.0; // smooth-scroll time constant (exponential)
+inline constexpr double pane_dim_ms = 140.0;     // inactive-pane dimming fade
 } // namespace motion
 
 // Browser metrics (dp) that do not depend on the density.
@@ -173,13 +192,14 @@ struct DensityMetrics {
     float header_height;
     float row_height;
     float notice_height;
+    float tab_bar_height; // Phase 3: a pane's tab strip
 };
 
 [[nodiscard]] constexpr DensityMetrics density_metrics(Density d) noexcept {
     if (d == Density::Comfortable) {
-        return DensityMetrics{52.0F, 32.0F, 30.0F, 10.0F, 30.0F, 28.0F, 40.0F};
+        return DensityMetrics{52.0F, 32.0F, 30.0F, 10.0F, 30.0F, 28.0F, 40.0F, 38.0F};
     }
-    return DensityMetrics{44.0F, 30.0F, 26.0F, 8.0F, 26.0F, 24.0F, 36.0F};
+    return DensityMetrics{44.0F, 30.0F, 26.0F, 8.0F, 26.0F, 24.0F, 36.0F, 34.0F};
 }
 
 } // namespace navigator::ui

@@ -171,4 +171,34 @@ void draw_cross(Renderer& r, float cx, float cy, float size, float thickness, co
     r.stroke_line(cx - size, cy + size, cx + size, cy - size, thickness, color);
 }
 
+void draw_folder_glyph(Renderer& r, const Palette& pal, float x, float y, float size, float dim) {
+    draw_folder(r, pal, Grid{x, y, size / 16.0F}, dim);
+}
+
+void draw_plus(Renderer& r, float cx, float cy, float size, float thickness, const Color& color) {
+    r.stroke_line(cx - size, cy, cx + size, cy, thickness, color);
+    r.stroke_line(cx, cy - size, cx, cy + size, thickness, color);
+}
+
+void draw_search_glyph(Renderer& r, float cx, float cy, float radius, float thickness,
+                       const Color& color, const Color& background) {
+    const float lx = cx - (0.18F * radius);
+    const float ly = cy - (0.18F * radius);
+    r.fill_circle(lx, ly, radius, color);
+    r.fill_circle(lx, ly, std::max(radius - thickness, 0.5F), background);
+    const float d = radius * 0.7071F;
+    r.stroke_line(lx + d, ly + d, lx + (1.75F * d), ly + (1.75F * d), thickness, color);
+}
+
+void draw_layout_glyph(Renderer& r, float x, float y, float size, float thickness,
+                       const Color& color) {
+    const RectF box =
+        snap(RectF{x + (0.06F * size), y + (0.14F * size), 0.88F * size, 0.72F * size});
+    r.stroke_rounded_rect(box, 0.14F * size, thickness, color);
+    const float mx = std::round(box.x + (0.45F * box.w));
+    r.fill_rect(RectF{mx, box.y, thickness, box.h}, color);
+    const float my = std::round(box.y + (0.5F * box.h));
+    r.fill_rect(RectF{mx, my, box.right() - mx, thickness}, color);
+}
+
 } // namespace navigator::ui

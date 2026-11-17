@@ -160,36 +160,58 @@ std::string unquote(const std::string& cell) {
     return cell;
 }
 
-// Rows of the "Phase 0 defaults" and "Phase 2 defaults" tables, in document order, skipping the
-// rows that are not chords ("window close", "(unbound)").
-std::vector<DocRow> keymap_doc_rows() {
+// The chord tables of docs/keymap.md ("Phase 0 defaults", "Phase 2 defaults", "Phase 3
+// defaults"), in document order. `rows` skips the rows that are not chords ("window close",
+// "(unbound)"); `unbound` lists the command names of the "(unbound)" rows.
+struct KeymapDoc {
+    std::vector<DocRow> rows;
+    std::vector<std::string> unbound;
+    std::size_t phase_rows[4] = {0, 0, 0, 0}; // chord rows per phase (index 1 unused)
+};
+
+KeymapDoc read_keymap_doc() {
     std::ifstream in(NAVIGATOR_KEYMAP_DOC);
     REQUIRE(in.good());
-    std::vector<DocRow> rows;
+    KeymapDoc doc;
     std::string line;
-    int section = 0; // 0: elsewhere, 1: Phase 0 table, 2: Phase 2 table
+    int section = 0; // 0: elsewhere, otherwise the phase of the table being read (0, 2, 3)
+    bool in_table = false;
     while (std::getline(in, line)) {
         if (line.starts_with("## ")) {
-            section = line.starts_with("## Phase 0 defaults")   ? 1
-                      : line.starts_with("## Phase 2 defaults") ? 2
-                                                                : 0;
+            in_table = true;
+            if (line.starts_with("## Phase 0 defaults")) {
+                section = 0;
+            } else if (line.starts_with("## Phase 2 defaults")) {
+                section = 2;
+            } else if (line.starts_with("## Phase 3 defaults")) {
+                section = 3;
+            } else {
+                in_table = false;
+            }
             continue;
         }
         if (line.starts_with("### ")) {
-            section = 0; // sub-sections (Mouse) are not chord tables
+            in_table = false; // sub-sections (Mouse, Popups) are not chord tables
             continue;
         }
-        if (section == 0 || !line.starts_with("|")) {
+        if (!in_table || !line.starts_with("|")) {
             continue;
         }
         const std::vector<std::string> cells = split_cells(line);
-        if (cells.size() < 3 || cells[0].empty() || cells[0].front() != '`') {
-            continue; // header, separator, or a non-chord row
+        if (cells.size() < 3) {
+            continue;
+        }
+        if (cells[0] == "(unbound)") {
+            doc.unbound.push_back(unquote(cells[1]));
+            continue;
+        }
+        if (cells[0].empty() || cells[0].front() != '`') {
+            continue; // header, separator, or a non-chord row ("window close")
         }
         DocRow row;
         row.chord = unquote(cells[0]);
         row.command = unquote(cells[1]);
-        if (section == 2) {
+        if (section >= 2) {
             REQUIRE(cells.size() >= 4);
             const std::string arg = unquote(cells[3]);
             if (arg == "Extend") {
@@ -198,9 +220,10 @@ std::vector<DocRow> keymap_doc_rows() {
                 REQUIRE(arg == "0");
             }
         }
-        rows.push_back(std::move(row));
+        doc.rows.push_back(std::move(row));
+        ++doc.phase_rows[section];
     }
-    return rows;
+    return doc;
 }
 
 } // namespace
@@ -432,8 +455,12 @@ TEST_CASE("chords_for returns chords in bind order, with and without arg", "[key
 
 TEST_CASE("load_default_keymap binds exactly the docs/keymap.md tables, in order",
           "[keymap][defaults]") {
-    const std::vector<DocRow> doc = keymap_doc_rows();
-    REQUIRE(doc.size() == 3 + 25); // Phase 0 chords + Phase 2 chords
+    const KeymapDoc parsed = read_keymap_doc();
+    const std::vector<DocRow>& doc = parsed.rows;
+    CHECK(parsed.phase_rows[0] == 3);  // Phase 0 chords
+    CHECK(parsed.phase_rows[2] == 25); // Phase 2 chords
+    CHECK(parsed.phase_rows[3] == 21); // Phase 3 chords
+    REQUIRE(doc.size() == 3 + 25 + 21);
 
     Keymap keymap;
     REQUIRE(navigator::load_default_keymap(keymap));
@@ -462,12 +489,53 @@ TEST_CASE("every default binding resolves to a registered built-in", "[keymap][d
         CHECK(c == Command{info->id, b.arg});
         bound.insert(info->id);
     }
-    // Every registered command has a default chord, except the reserved Phase 4 id.
+    // Every registered command has a default chord, except the documented "(unbound)" rows.
+    const std::set<CommandId> unbound{CommandId::FocusAddressBar, CommandId::CloseLeftTabs,
+                                      CommandId::DeleteLayout, CommandId::NewWindow};
     for (const CommandInfo& info : registry.all()) {
         INFO("command " << info.name);
-        CHECK(bound.contains(info.id) == (info.id != CommandId::FocusAddressBar));
+        CHECK(bound.contains(info.id) == !unbound.contains(info.id));
     }
-    CHECK(keymap.chords_for("nav.focus_address_bar").empty());
+    for (const CommandId id : unbound) {
+        INFO("command " << to_string(id));
+        CHECK(keymap.chords_for(to_string(id)).empty());
+    }
+}
+
+TEST_CASE("docs/keymap.md (unbound) rows are exactly the unbound built-ins", "[keymap][defaults]") {
+    const KeymapDoc doc = read_keymap_doc();
+    const CommandRegistry registry = builtin_registry();
+    Keymap keymap;
+    REQUIRE(navigator::load_default_keymap(keymap));
+
+    std::set<std::string> documented(doc.unbound.begin(), doc.unbound.end());
+    CHECK(documented.size() == doc.unbound.size()); // no duplicate (unbound) rows
+    CHECK(documented == std::set<std::string>{"nav.focus_address_bar", "tab.close_left",
+                                              "layout.delete", "window.new"});
+    std::set<std::string> actual;
+    for (const CommandInfo& info : registry.all()) {
+        if (keymap.chords_for(info.name).empty()) {
+            actual.insert(std::string(info.name));
+        }
+    }
+    CHECK(actual == documented);
+}
+
+TEST_CASE("default chords are unique and leave reserved chords free", "[keymap][defaults]") {
+    Keymap keymap;
+    REQUIRE(navigator::load_default_keymap(keymap));
+    std::set<std::string> seen;
+    for (const KeyBinding& b : keymap.bindings()) {
+        INFO("chord " << to_string(b.chord));
+        CHECK(seen.insert(to_string(b.chord)).second);
+    }
+    // Reserved for later phases or avoided (docs/keymap.md, "Phase 3 defaults").
+    for (const char* text :
+         {"Ctrl+E", "Ctrl+B", "Ctrl+Shift+P", "Ctrl+Comma", "Ctrl+Space", "Ctrl+Shift+N", "Ctrl+N",
+          "Ctrl+Alt+Left", "Ctrl+Alt+Right", "Ctrl+Alt+Up", "Ctrl+Alt+Down", "Ctrl+Backslash"}) {
+        INFO("reserved chord " << text);
+        CHECK(keymap.resolve(chord(text)) == nullptr);
+    }
 }
 
 TEST_CASE("default primary chords", "[keymap][defaults]") {
@@ -486,6 +554,24 @@ TEST_CASE("default primary chords", "[keymap][defaults]") {
     CHECK(primary("list.cursor_down") == "Down");
     CHECK(to_string(keymap.chords_for("list.cursor_down", CursorArg::Extend).front()) ==
           "Shift+Down");
+    // Phase 3
+    CHECK(primary("tab.new") == "Ctrl+T");
+    CHECK(primary("tab.close") == "Ctrl+W");
+    CHECK(primary("tab.reopen_closed") == "Ctrl+Shift+T");
+    CHECK(primary("tab.next") == "Ctrl+Tab");
+    CHECK(primary("tab.previous") == "Ctrl+Shift+Tab");
+    CHECK(primary("tab.move_left") == "Ctrl+Shift+PageUp");
+    CHECK(primary("tab.move_right") == "Ctrl+Shift+PageDown");
+    CHECK(primary("tab.duplicate") == "Ctrl+Shift+D");
+    CHECK(primary("tab.search") == "Ctrl+Shift+A");
+    CHECK(primary("list.open_in_new_tab") == "Ctrl+Enter");
+    CHECK(primary("pane.split_right") == "F3");
+    CHECK(primary("pane.split_down") == "Shift+F3");
+    CHECK(primary("pane.focus_next") == "F6");
+    CHECK(primary("pane.focus_previous") == "Shift+F6");
+    CHECK(primary("pane.close") == "Ctrl+Shift+W");
+    CHECK(primary("layout.save") == "Ctrl+Shift+S");
+    CHECK(primary("layout.load") == "Ctrl+Shift+O");
 }
 
 TEST_CASE("default keymap loads once; a second load fails and changes nothing",
@@ -501,8 +587,8 @@ TEST_CASE("default keymap loads once; a second load fails and changes nothing",
 
 TEST_CASE("default keymap is all-or-nothing on a pre-bound chord", "[keymap][defaults]") {
     Keymap keymap;
-    // Shift+End is the last default row, so a partial load would have bound everything else.
-    const KeyChord shift_end{Key::End, kShift};
+    // Ctrl+Shift+O is the last default row, so a partial load would have bound everything else.
+    const KeyChord shift_end{Key::O, kCtrl | kShift};
     REQUIRE(keymap.bind(shift_end, "user.custom", 42));
     REQUIRE(keymap.bind(KeyChord{Key::F9, kNone}, "user.other"));
 
@@ -565,7 +651,7 @@ TEST_CASE("a key sequence becomes the expected command list", "[keymap][resolve]
 
     // As the ui does it: each chord goes through resolve_command, hits are enqueued, misses
     // (unbound chords, inexact modifiers) are dropped, and the queue drains at frame end.
-    const char* presses[] = {"Down",         "Down",   "Shift+Down", "F7",        "Ctrl+Shift+A",
+    const char* presses[] = {"Down",         "Down",   "Shift+Down", "F7",        "Ctrl+E",
                              "Ctrl+A",       "Escape", "Enter",      "Backspace", "Alt+Left",
                              "MouseForward", "Ctrl+H", "Shift+End",  "Ctrl+R",    "Ctrl+Q"};
     CommandQueue queue;
@@ -592,6 +678,73 @@ TEST_CASE("a key sequence becomes the expected command list", "[keymap][resolve]
         {CommandId::CursorEnd, CursorArg::Extend},
         {CommandId::Refresh, 0},
         {CommandId::Quit, 0},
+    };
+    CHECK(ran == expected);
+    CHECK(queue.empty());
+}
+
+TEST_CASE("a Phase 3 key sequence becomes the expected command list",
+          "[keymap][resolve][sequence]") {
+    const CommandRegistry registry = builtin_registry();
+    Keymap keymap;
+    REQUIRE(navigator::load_default_keymap(keymap));
+
+    // Ctrl+N (window.new) and Ctrl+Shift+N stay unbound and are dropped.
+    const char* presses[] = {"Ctrl+T",
+                             "Ctrl+Tab",
+                             "Ctrl+Shift+Tab",
+                             "Ctrl+N",
+                             "Ctrl+PageDown",
+                             "Ctrl+Shift+PageUp",
+                             "Ctrl+Enter",
+                             "F3",
+                             "Shift+F3",
+                             "F6",
+                             "Shift+F6",
+                             "Ctrl+Shift+W",
+                             "Ctrl+W",
+                             "Ctrl+F4",
+                             "Ctrl+Shift+T",
+                             "Ctrl+Shift+D",
+                             "Ctrl+Shift+A",
+                             "Ctrl+Shift+N",
+                             "Ctrl+Shift+S",
+                             "Ctrl+Shift+O",
+                             "Ctrl+Shift+PageDown",
+                             "Ctrl+KeypadEnter",
+                             "Ctrl+PageUp"};
+    CommandQueue queue;
+    for (const char* text : presses) {
+        if (const std::optional<Command> c =
+                navigator::resolve_command(keymap, registry, chord(text))) {
+            queue.enqueue(*c);
+        }
+    }
+    std::vector<Command> ran;
+    queue.drain([&](const Command& c) { ran.push_back(c); });
+
+    const std::vector<Command> expected{
+        {CommandId::NewTab, navigator::NewTabArg::None},
+        {CommandId::NextTab, 0},
+        {CommandId::PreviousTab, 0},
+        {CommandId::NextTab, 0},
+        {CommandId::MoveTabLeft, 0},
+        {CommandId::OpenInNewTab, 0},
+        {CommandId::SplitRight, 0},
+        {CommandId::SplitDown, 0},
+        {CommandId::FocusNextPane, 0},
+        {CommandId::FocusPreviousPane, 0},
+        {CommandId::ClosePane, 0},
+        {CommandId::CloseTab, 0},
+        {CommandId::CloseTab, 0},
+        {CommandId::ReopenClosedTab, 0},
+        {CommandId::DuplicateTab, 0},
+        {CommandId::SearchTabs, 0},
+        {CommandId::SaveLayout, 0},
+        {CommandId::LoadLayout, 0},
+        {CommandId::MoveTabRight, 0},
+        {CommandId::OpenInNewTab, 0},
+        {CommandId::PreviousTab, 0},
     };
     CHECK(ran == expected);
     CHECK(queue.empty());

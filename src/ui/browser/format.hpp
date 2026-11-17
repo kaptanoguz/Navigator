@@ -35,6 +35,27 @@ struct SizeParts {
 // Empty for Timestamp{} (unknown).
 [[nodiscard]] std::string format_date(Timestamp when, Timestamp now);
 
+// The Modified column when a pane is narrow: "14:05" for today, otherwise the date without the
+// time ("Nov 10" / "10 Kas" this year, "Nov 10, 2024" / "10 Kas 2024" before).
+[[nodiscard]] std::string format_date_short(Timestamp when, Timestamp now);
+
+// Details columns for a list whose name text may use `room_dp` (from the name's left edge to
+// the right content edge). Narrow panes degrade in this order: Type hides, Modified shortens to
+// format_date_short(), Size hides, Modified hides; Name always stays.
+inline constexpr float kColumnGapDp = 20.0F;
+inline constexpr float kSizeWidthDp = 84.0F;
+inline constexpr float kTypeWidthDp = 160.0F;
+inline constexpr float kDateWidthDp = 150.0F;
+inline constexpr float kShortDateWidthDp = 92.0F;
+struct ColumnPlan {
+    bool size = false;
+    bool type = false;
+    bool date = false;
+    bool short_date = false;
+    friend constexpr bool operator==(const ColumnPlan&, const ColumnPlan&) = default;
+};
+[[nodiscard]] ColumnPlan plan_columns(float room_dp) noexcept;
+
 // Type-column text: tr(mime::type_label_key(mime::guess_for_entry(entry))), except a dangling
 // link ("Broken link") and an unknown type with an extension ("XYZ file").
 [[nodiscard]] std::string type_label(const fs::DirEntry& entry);

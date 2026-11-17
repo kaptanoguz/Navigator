@@ -145,6 +145,19 @@ Result<CliOptions> parse_cli(const std::vector<std::string_view>& args) {
             }
             o.config.width = w;
             o.config.height = h;
+            o.config.restore_window_geometry = false; // an explicit size wins over the session
+        } else if (a == "--no-session") {
+            o.config.restore_session = false;
+            o.config.save_session = false;
+        } else if (a == "--config-dir") {
+            auto v = value(a);
+            if (!v) {
+                return fail(v.error().code, v.error().message);
+            }
+            if (v->empty()) {
+                return fail(ErrorCode::InvalidArgument, "--config-dir must not be empty");
+            }
+            o.config_dir = std::string(*v);
         } else if (a == "--fps") {
             o.config.show_fps = true;
         } else if (a == "--no-fps") {
@@ -216,13 +229,18 @@ std::string usage_text(std::string_view program) {
     s += program;
     s += " [options] [PATH]\n\n"
          "Navigator, a fast keyboard-first file manager for Linux.\n\n"
-         "Opens PATH (default: your home folder).\n\n"
+         "Restores your last session (tabs, panes, window) and opens PATH as a new tab\n"
+         "(default: your home folder when there is no session).\n\n"
          "Options:\n"
          "  --frames N        render N frames, then exit (headless smoke tests)\n"
          "  --theme THEME     start with the 'dark' or 'light' theme\n"
          "  --lang LANG       UI language: 'en' or 'tr' (default: from LANGUAGE/LC_*/LANG)\n"
          "  --density D       list density: 'compact' (default) or 'comfortable'\n"
-         "  --size WxH        initial window size in logical pixels (default 1280x800)\n"
+         "  --size WxH        initial window size in logical pixels (default 1280x800;\n"
+         "                    overrides the size saved in the session)\n"
+         "  --no-session      do not restore or save the session\n"
+         "  --config-dir DIR  keep session.json and layouts/ in DIR\n"
+         "                    (default: $XDG_CONFIG_HOME/navigator)\n"
          "  --fps, --no-fps   show or hide the performance overlay (default: hidden)\n"
          "  --no-animations   turn off UI animations such as smooth scrolling\n"
          "                    (also: NAVIGATOR_NO_ANIMATIONS=1)\n"

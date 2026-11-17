@@ -15,6 +15,7 @@ include(FetchContent)
 
 set(NAVIGATOR_SDL3_TAG "release-3.4.18" CACHE STRING "SDL3 git tag used by FetchContent")
 set(NAVIGATOR_CATCH2_TAG "v3.16.0" CACHE STRING "Catch2 git tag used by FetchContent")
+set(NAVIGATOR_JSON_TAG "v3.12.0" CACHE STRING "nlohmann/json git tag used by FetchContent")
 
 # Do not run clang-tidy (tidy preset) over fetched third-party sources.
 macro(_navigator_tidy_off)
@@ -83,6 +84,28 @@ if(NAVIGATOR_BUILD_TESTS)
         message(FATAL_ERROR "Catch2 v3 not found and NAVIGATOR_FETCH_DEPS is OFF.")
     endif()
     include(Catch)
+endif()
+
+# --------------------------------------------------------------------------
+# nlohmann/json (header-only; layout/session/settings persistence, src/ only)
+# --------------------------------------------------------------------------
+find_package(nlohmann_json 3.11 CONFIG QUIET)
+if(nlohmann_json_FOUND)
+    message(STATUS "Navigator: nlohmann_json ${nlohmann_json_VERSION} (find_package)")
+elseif(NAVIGATOR_FETCH_DEPS)
+    message(STATUS "Navigator: nlohmann_json via FetchContent (${NAVIGATOR_JSON_TAG})")
+    set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+    set(JSON_Install OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(nlohmann_json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG ${NAVIGATOR_JSON_TAG}
+        GIT_SHALLOW TRUE
+        SYSTEM)
+    _navigator_tidy_off()
+    FetchContent_MakeAvailable(nlohmann_json)
+    _navigator_tidy_restore()
+else()
+    message(FATAL_ERROR "nlohmann_json not found and NAVIGATOR_FETCH_DEPS is OFF.")
 endif()
 
 # --------------------------------------------------------------------------

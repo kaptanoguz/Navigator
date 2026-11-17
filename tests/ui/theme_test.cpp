@@ -1,5 +1,6 @@
 // Theme tokens: WCAG contrast of text tokens against every background they sit on.
 #include <array>
+#include <cmath>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -148,5 +149,44 @@ TEST_CASE("Browser tokens keep text readable on banners and selection", "[theme]
         // The selection marker and focus ring are visible UI components (>= 3:1).
         CHECK(contrast_ratio(p.selection_marker, over(p.surface, p.selection)) >= 3.0F);
         CHECK(contrast_ratio(over(p.surface, p.focus_ring), p.surface) >= 3.0F);
+    }
+}
+
+TEST_CASE("Inactive-pane dimming keeps every text tier at WCAG AA", "[theme]") {
+    for (const Theme t : {Theme::Dark, Theme::Light}) {
+        const Palette& p = palette(t);
+        const Palette d = dimmed(p, t);
+        for (const Color& bg : {d.surface, d.background, d.surface_raised}) {
+            INFO((t == Theme::Dark ? "dark" : "light"));
+            CHECK(contrast_ratio(d.text_primary, bg) >= 4.5F);
+            CHECK(contrast_ratio(d.text_secondary, bg) >= 4.5F);
+            CHECK(contrast_ratio(d.text_muted, bg) >= 4.5F);
+        }
+        // It is a visible step down from the active pane, and keeps the hierarchy.
+        CHECK(contrast_ratio(d.text_primary, d.surface) <
+              contrast_ratio(p.text_primary, p.surface));
+        CHECK(contrast_ratio(d.text_primary, d.surface) >
+              contrast_ratio(d.text_secondary, d.surface));
+        // Text on an accent fill (primary buttons, drop labels).
+        CHECK(contrast_ratio(p.on_accent, p.accent) >= 4.5F);
+    }
+}
+
+TEST_CASE("Inactive panes differ visibly from the active one in both themes", "[theme]") {
+    // CIE L* (0..100) from WCAG relative luminance.
+    const auto lightness = [](const Color& c) {
+        const double y = relative_luminance(c);
+        return y > 0.008856 ? (116.0 * std::cbrt(y)) - 16.0 : 903.3 * y;
+    };
+    for (const Theme t : {Theme::Dark, Theme::Light}) {
+        const Palette& p = palette(t);
+        const Palette d = dimmed(p, t);
+        INFO((t == Theme::Dark ? "dark" : "light"));
+        // Design review B1: the light list surface moved only ~1.03:1 before.
+        CHECK(std::abs(lightness(p.surface) - lightness(d.surface)) >= 3.5);
+        // The inactive list sits at or below the window background, never above it.
+        CHECK(lightness(d.surface) <= lightness(p.background) + 0.01);
+        // Text tiers also step down.
+        CHECK(std::abs(lightness(p.text_primary) - lightness(d.text_primary)) >= 3.0);
     }
 }

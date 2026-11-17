@@ -83,6 +83,7 @@ int main(int argc, char** argv) {
     });
     navigator::AppConfig config = options->config;
     config.start_path = options->start_path; // `options` outlives the App
+    config.config_dir = options->config_dir;
     int code = 1;
     {
         auto app = navigator::App::create(config);

@@ -39,3 +39,25 @@ Each role appends its own section. Never rewrite another role's section.
 - Screenshots with `--scale 2` need a GPU-path renderer under xvfb (`SDL_RENDER_DRIVER=opengl`):
   the SDL software renderer on X11 keeps the pre-resize 1280x800 surface (also true of the
   Phase 0 binary).
+
+## ui (Phase 3)
+
+- `src/ui/CMakeLists.txt`: `navigator_ui_browser` gains the headless workspace sources
+  (`workspace/{workspace,pane_geometry,tab_strip,drag_drop,tab_search,session_writer}.cpp`);
+  `navigator_ui` gains `workspace/{workspace_view,popups}.cpp`. No new external dependency
+  (the layout JSON stays inside `navigator::core`).
+- `src/app/main.cpp` / `cli.cpp` (assigned to ui): `--no-session` (clears `restore_session` and
+  `save_session`), `--config-dir DIR` (`AppConfig::config_dir`, a view into `CliOptions`),
+  `--size` clears `restore_window_geometry`.
+- Headless safety: `App` neither reads nor writes the session when `max_frames > 0` and no
+  `config_dir` is given, so `smoke.app_headless`, `integration.app_headless_start_paths` and
+  other `--frames` runs never touch `~/.config/navigator`. Dev runs that need a session pass
+  `--config-dir`.
+- New gate test `ui.smoke_session_restores_three_panes` (`tests/ui/session_smoke.sh`, needs the
+  `navigator` target, dummy video driver, temp `--config-dir`).
+- `--debug-script` gains `type:`, `focus:`, `tab:`, `hovertab:`, `dragpreview:` and `dump:` steps
+  (documented at the top of `src/ui/shell/app.cpp`).
+- For qa: `integration.docs/keymap.md and load_default_keymap agree row for row` and
+  `integration.Every default chord resolves ...` (`tests/integration/keymap_e2e_test.cpp`) fail
+  since the commands agent added the Phase 3 rows: the doc parser and the per-command effect
+  table only know the Phase 2 rows. Not caused by src/ui.

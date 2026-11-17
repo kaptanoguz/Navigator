@@ -33,6 +33,18 @@ void draw_theme_glyph(Renderer& r, float cx, float cy, float radius, Theme curre
 void draw_alert_glyph(Renderer& r, float cx, float cy, float radius, const Color& color,
                       const Color& mark, float scale);
 
+// Phase 3 glyphs.
+// Folder glyph alone (tab labels, Search Tabs rows) in a `size` box at (x, y).
+void draw_folder_glyph(Renderer& r, const Palette& pal, float x, float y, float size, float dim);
+// "+" of half-width `size`.
+void draw_plus(Renderer& r, float cx, float cy, float size, float thickness, const Color& color);
+// Magnifier of radius `radius` (lens) with a handle; `background` paints the lens hole.
+void draw_search_glyph(Renderer& r, float cx, float cy, float radius, float thickness,
+                       const Color& color, const Color& background);
+// Split-layout glyph (a frame with one vertical and one half horizontal divider), `size` box.
+void draw_layout_glyph(Renderer& r, float x, float y, float size, float thickness,
+                       const Color& color);
+
 // A cross ("x") of half-width `size`.
 void draw_cross(Renderer& r, float cx, float cy, float size, float thickness, const Color& color);
 

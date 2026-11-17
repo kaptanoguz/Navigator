@@ -1,7 +1,8 @@
 // load_default_keymap(): Navigator's default bindings.
 //
 // This table must match docs/keymap.md exactly: the Phase 0 table (minus "window close", which
-// is a window event, not a chord) followed by the Phase 2 table, in the same row order. The first
+// is a window event, not a chord), then the Phase 2 table, then the Phase 3 table, in the same
+// row order ("(unbound)" rows are skipped). The first
 // chord of a command is its primary key hint, so order matters. tests/commands checks the table.
 #include <array>
 #include <cstdint>
@@ -23,6 +24,7 @@ constexpr Modifiers kNone = Modifiers::None;
 constexpr Modifiers kCtrl = Modifiers::Ctrl;
 constexpr Modifiers kShift = Modifiers::Shift;
 constexpr Modifiers kAlt = Modifiers::Alt;
+constexpr Modifiers kCtrlShift = Modifiers::Ctrl | Modifiers::Shift;
 constexpr std::uint64_t kExtend = CursorArg::Extend;
 
 constexpr std::array kDefaults{
@@ -56,6 +58,28 @@ constexpr std::array kDefaults{
     DefaultBinding{{Key::Home, kShift}, "list.cursor_home", kExtend},
     DefaultBinding{{Key::End, kNone}, "list.cursor_end", 0},
     DefaultBinding{{Key::End, kShift}, "list.cursor_end", kExtend},
+    // Phase 3
+    DefaultBinding{{Key::T, kCtrl}, "tab.new", 0},
+    DefaultBinding{{Key::W, kCtrl}, "tab.close", 0},
+    DefaultBinding{{Key::F4, kCtrl}, "tab.close", 0},
+    DefaultBinding{{Key::T, kCtrlShift}, "tab.reopen_closed", 0},
+    DefaultBinding{{Key::Tab, kCtrl}, "tab.next", 0},
+    DefaultBinding{{Key::PageDown, kCtrl}, "tab.next", 0},
+    DefaultBinding{{Key::Tab, kCtrlShift}, "tab.previous", 0},
+    DefaultBinding{{Key::PageUp, kCtrl}, "tab.previous", 0},
+    DefaultBinding{{Key::PageUp, kCtrlShift}, "tab.move_left", 0},
+    DefaultBinding{{Key::PageDown, kCtrlShift}, "tab.move_right", 0},
+    DefaultBinding{{Key::D, kCtrlShift}, "tab.duplicate", 0},
+    DefaultBinding{{Key::A, kCtrlShift}, "tab.search", 0},
+    DefaultBinding{{Key::Enter, kCtrl}, "list.open_in_new_tab", 0},
+    DefaultBinding{{Key::KeypadEnter, kCtrl}, "list.open_in_new_tab", 0},
+    DefaultBinding{{Key::F3, kNone}, "pane.split_right", 0},
+    DefaultBinding{{Key::F3, kShift}, "pane.split_down", 0},
+    DefaultBinding{{Key::F6, kNone}, "pane.focus_next", 0},
+    DefaultBinding{{Key::F6, kShift}, "pane.focus_previous", 0},
+    DefaultBinding{{Key::W, kCtrlShift}, "pane.close", 0},
+    DefaultBinding{{Key::S, kCtrlShift}, "layout.save", 0},
+    DefaultBinding{{Key::O, kCtrlShift}, "layout.load", 0},
 };
 
 } // namespace

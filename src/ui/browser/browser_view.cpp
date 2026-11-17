@@ -21,17 +21,15 @@ Color over(const Color& base, const Color& overlay) {
                  (base.b * (1.0F - a)) + (overlay.b * a), 1.0F};
 }
 
-constexpr float kWheelRows = 3.0F;     // rows per wheel notch
-constexpr float kDragThreshold = 4.0F; // dp before a press becomes a band
-constexpr float kColumnGap = 20.0F;    // dp
-constexpr float kSizeWidth = 84.0F;
-constexpr float kTypeWidth = 160.0F;
-constexpr float kDateWidth = 150.0F;
-constexpr float kTextPad = 10.0F;          // row highlight edge -> content
-constexpr float kGlyphGap = 10.0F;         // glyph -> name text
-constexpr float kListPad = 4.0F;           // above the first row
-constexpr float kMinNameWithType = 260.0F; // name text room (dp) to keep the Type column
-constexpr float kMinNameWithDate = 160.0F; // ... and the Modified column
+constexpr float kWheelRows = 3.0F;         // rows per wheel notch
+constexpr float kDragThreshold = 4.0F;     // dp before a press becomes a band
+constexpr float kColumnGap = kColumnGapDp; // dp (format.hpp, shared with plan_columns)
+constexpr float kSizeWidth = kSizeWidthDp;
+constexpr float kTypeWidth = kTypeWidthDp;
+constexpr float kDateWidth = kDateWidthDp;
+constexpr float kTextPad = 10.0F;  // row highlight edge -> content
+constexpr float kGlyphGap = 10.0F; // glyph -> name text
+constexpr float kListPad = 4.0F;   // above the first row
 
 } // namespace
 
@@ -43,18 +41,19 @@ BrowserView::Layout BrowserView::compute_layout(const BrowserFrame& f) const {
     const Painter& p = f.painter;
     const DensityMetrics dm = density_metrics(f.density);
     Layout l;
-    const float w = f.width;
-    const float h = f.height;
+    const RectF b = f.bounds;
+    const float w = b.w;
     const float margin = std::round(p.px(dm.panel_margin));
-    l.top = RectF{0.0F, 0.0F, w, std::round(p.px(dm.top_bar_height))};
+    l.top = RectF{b.x, b.y, w, std::round(p.px(dm.top_bar_height))};
     float y = l.top.bottom();
     if (f.model.notice_shown()) {
-        l.notice = RectF{margin, y, w - (2.0F * margin), std::round(p.px(dm.notice_height))};
+        l.notice = RectF{b.x + margin, y, w - (2.0F * margin), std::round(p.px(dm.notice_height))};
         y = l.notice.bottom() + margin;
     }
     const float status_h = std::round(p.px(dm.status_bar_height));
-    l.status = RectF{0.0F, h - status_h, w, status_h};
-    l.panel = RectF{margin, y, w - (2.0F * margin), std::max(l.status.y - y, 0.0F)};
+    l.status = RectF{b.x, b.bottom() - status_h, w, status_h};
+    l.panel =
+        RectF{b.x + margin, y, std::max(w - (2.0F * margin), 0.0F), std::max(l.status.y - y, 0.0F)};
     l.header = RectF{l.panel.x, l.panel.y, l.panel.w, std::round(p.px(dm.header_height))};
     l.body = RectF{l.panel.x, l.header.bottom(), l.panel.w,
                    std::max(l.panel.bottom() - l.header.bottom(), 0.0F)};
@@ -68,25 +67,18 @@ BrowserView::Layout BrowserView::compute_layout(const BrowserFrame& f) const {
     l.name_x = left;
     l.text_x = std::round(left + p.px(metrics::icon_size + kGlyphGap));
 
-    // Columns degrade gracefully on narrow windows: Type goes first, then Modified, so the
-    // name keeps a readable width. Size always stays.
-    const auto name_room = [&](bool type, bool date) {
-        float used = p.px(kSizeWidth) + gap;
-        if (type) {
-            used += p.px(kTypeWidth) + gap;
-        }
-        if (date) {
-            used += p.px(kDateWidth) + gap;
-        }
-        return (right - used) - l.text_x;
-    };
-    l.show_date = name_room(false, true) >= p.px(kMinNameWithDate);
-    l.show_type = l.show_date && name_room(true, true) >= p.px(kMinNameWithType);
+    // Columns degrade gracefully in narrow panes (plan_columns): Type goes first, then
+    // Modified shortens, then Size goes; Modified is the last to go. Name always stays.
+    const ColumnPlan plan = plan_columns((right - l.text_x) / p.scale());
+    l.show_size = plan.size;
+    l.show_type = plan.type;
+    l.show_date = plan.date;
+    l.short_date = plan.short_date;
 
     float edge = right;
     if (l.show_date) {
         l.date_r = edge;
-        l.date_x = std::round(edge - p.px(kDateWidth));
+        l.date_x = std::round(edge - p.px(l.short_date ? kShortDateWidthDp : kDateWidth));
         edge = l.date_x - gap;
     } else {
         l.date_x = l.date_r = edge;
@@ -98,9 +90,14 @@ BrowserView::Layout BrowserView::compute_layout(const BrowserFrame& f) const {
     } else {
         l.type_x = l.type_r = edge;
     }
-    l.size_r = edge;
-    l.size_x = std::round(l.size_r - p.px(kSizeWidth));
-    l.name_r = std::max(l.size_x - gap, l.text_x + p.px(40.0F));
+    if (l.show_size) {
+        l.size_r = edge;
+        l.size_x = std::round(l.size_r - p.px(kSizeWidth));
+        edge = l.size_x - gap;
+    } else {
+        l.size_x = l.size_r = edge + gap;
+    }
+    l.name_r = std::max(edge, l.text_x + p.px(40.0F));
     return l;
 }
 
@@ -231,7 +228,7 @@ void BrowserView::update(const BrowserFrame& f) {
 void BrowserView::draw(const BrowserFrame& f) {
     const Layout l = compute_layout(f);
     Renderer& r = f.painter.renderer();
-    r.clear(f.palette.background);
+    const std::size_t first_intent = f.intents.size();
 
     draw_top_bar(f, l);
     if (f.model.notice_shown()) {
@@ -256,14 +253,19 @@ void BrowserView::draw(const BrowserFrame& f) {
     }
     draw_scrollbar(f, l);
     r.set_clip(std::nullopt);
-    r.stroke_rounded_rect(l.panel, rad, hair, f.palette.border);
+    if (f.marked) {
+        // Active pane in a split layout: an accent frame, not just a tint (design review B1).
+        r.stroke_rounded_rect(l.panel, rad, hair, f.palette.accent.with_alpha(0.62F));
+    } else {
+        r.stroke_rounded_rect(l.panel, rad, hair, f.palette.border);
+    }
 
     draw_status(f, l);
-    if (f.show_fps) {
-        draw_fps(f);
-    }
     if (f.pointer.released) {
         active_ = WidgetId::None;
+    }
+    for (std::size_t i = first_intent; i < f.intents.size(); ++i) {
+        f.intents[i].tab = f.tab;
     }
 }
 
@@ -285,8 +287,10 @@ void BrowserView::draw_header(const BrowserFrame& f, const Layout& l) {
     const float gap = std::round(p.px(kColumnGap));
     std::vector<Column> cols{
         {"column.name", fs::SortKey::Name, l.name_x, l.name_r, false},
-        {"column.size", fs::SortKey::Size, l.size_x, l.size_r, true},
     };
+    if (l.show_size) {
+        cols.push_back({"column.size", fs::SortKey::Size, l.size_x, l.size_r, true});
+    }
     if (l.show_type) {
         cols.push_back({"column.type", fs::SortKey::Extension, l.type_x, l.type_r, false});
     }
@@ -349,6 +353,18 @@ void BrowserView::handle_list_pointer(const BrowserFrame& f, const Layout& l) {
                            f.painter.px(14.0F) - hair, l.body.h};
     const bool scrollable = max_scroll_ > 0.0F;
 
+    if (ptr.middle_pressed && active_ == WidgetId::None && contains(l.body, ptr.x, ptr.y) &&
+        !(scrollable && contains(scroll_hit, ptr.x, ptr.y))) {
+        // Middle-click on a folder row: cursor to it (selection unchanged), open in a new tab.
+        const std::size_t row = row_at(ptr.y, l, f);
+        if (row != kNoRow && fs::is_directory_like(m.entries()[row])) {
+            Intent in;
+            in.kind = Intent::Kind::CursorTo;
+            in.row = row;
+            f.intents.push_back(in);
+            f.queue.enqueue(CommandId::OpenInNewTab);
+        }
+    }
     if (ptr.pressed && active_ == WidgetId::None && contains(l.body, ptr.x, ptr.y)) {
         if (scrollable && contains(scroll_hit, ptr.x, ptr.y)) {
             // Thumb grab or a jump on the track.
@@ -370,11 +386,15 @@ void BrowserView::handle_list_pointer(const BrowserFrame& f, const Layout& l) {
         band_started_ = false;
         if (row != kNoRow && ptr.clicks >= 2) {
             // Double-click: the click lands first so Activate sees the row as cursor.
+            // Ctrl+double-click is two Ctrl+clicks (the selection ends where it started), then
+            // list.open_in_new_tab (docs/keymap.md, "Opening in a new tab").
+            const bool ctrl = has(ptr.mods, Modifiers::Ctrl) && !has(ptr.mods, Modifiers::Shift);
             Intent in;
             in.kind = Intent::Kind::ClickRow;
             in.row = row;
+            in.mods = ctrl ? Modifiers::Ctrl : Modifiers::None;
             f.intents.push_back(in);
-            f.queue.enqueue(CommandId::Activate);
+            f.queue.enqueue(ctrl ? CommandId::OpenInNewTab : CommandId::Activate);
             active_ = WidgetId::Rows;
             press_row_ = kNoRow;
             return;
@@ -570,7 +590,7 @@ void BrowserView::draw_rows(const BrowserFrame& f, const Layout& l) {
             e.hidden && !m.is_selected(i) ? pal.text_secondary : pal.text_primary;
         p.draw(name_text, l.text_x, baseline, name_ink);
 
-        if (!dir && !e.metadata_error) {
+        if (l.show_size && !dir && !e.metadata_error) {
             // Numbers right-aligned in one slot, units left-aligned in the next, so "980 B"
             // and "88.1 kB" line up on the digits.
             const SizeParts parts = format_size_parts(e.size);
@@ -585,7 +605,9 @@ void BrowserView::draw_rows(const BrowserFrame& f, const Layout& l) {
                 fitter_.fit(p, type::row, type_label(e), l.type_r - l.type_x, Elide::End);
             p.draw(kind, l.type_x, baseline, pal.text_secondary);
         }
-        const std::string date = l.show_date ? format_date(e.mtime, f.now) : std::string();
+        const std::string date = !l.show_date   ? std::string()
+                                 : l.short_date ? format_date_short(e.mtime, f.now)
+                                                : format_date(e.mtime, f.now);
         if (!date.empty()) {
             const ShapedText when =
                 fitter_.fit(p, type::row_numeric, date, l.date_r - l.date_x, Elide::End);

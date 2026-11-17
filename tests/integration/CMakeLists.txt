@@ -22,12 +22,15 @@ catch_discover_tests(navigator_integration_tests
 )
 
 # Phase 2: BrowserModel (headless, navigator_ui_browser: no SDL, no window) under concurrency,
-# and the default keymap end to end (docs/keymap.md -> resolve_command -> BrowserModel). Activate
-# on files goes to a recording launcher; nothing is spawned.
+# and the default keymap end to end (docs/keymap.md -> resolve_command -> ui::Workspace ->
+# BrowserModel). Activate on files goes to a recording launcher; nothing is spawned.
+# Phase 3: Workspace session / named-layout round trips, the session-writer hammer and lazy tabs
+# (workspace_session_test.cpp; the Workspace sources are part of navigator_ui_browser).
 if(TARGET navigator_ui_browser)
     add_executable(navigator_browser_integration_tests
         browser_race_test.cpp
         keymap_e2e_test.cpp
+        workspace_session_test.cpp
     )
     target_link_libraries(navigator_browser_integration_tests
         PRIVATE
@@ -54,6 +57,19 @@ if(TARGET navigator)
         COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/app_smoke.sh $<TARGET_FILE:navigator> 120
     )
     set_tests_properties(integration.app_headless_start_paths PROPERTIES
+        TIMEOUT 120
+        LABELS "integration;app"
+    )
+endif()
+
+# Phase 3 headless app: two runs on one --config-dir (3 panes saved, then restored), a corrupt
+# session.json (moved to .bad, default layout), --no-session, missing folders, PATH + session
+# (tests/integration/session_app_smoke.sh).
+if(TARGET navigator)
+    add_test(NAME integration.app_session_restart
+        COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/session_app_smoke.sh $<TARGET_FILE:navigator>
+    )
+    set_tests_properties(integration.app_session_restart PROPERTIES
         TIMEOUT 120
         LABELS "integration;app"
     )

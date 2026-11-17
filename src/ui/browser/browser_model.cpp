@@ -29,12 +29,149 @@ Path normalize(const Path& dir) {
 
 } // namespace
 
-BrowserModel::BrowserModel(Options options)
-    : options_(std::move(options)),
-      watcher_(options_.watcher_factory
-                   ? std::make_unique<WatchWorker>(options_.watcher_factory, options_.wake)
-                   : nullptr),
-      lister_(options_.wake) {}
+BrowserModel::BrowserModel(Options options) : options_(std::move(options)) {
+    if (options_.start_suspended) {
+        suspended_ = true;
+    } else {
+        start_workers();
+    }
+}
+
+void BrowserModel::start_workers() {
+    if (options_.watcher_factory) {
+        watcher_ = std::make_unique<WatchWorker>(options_.watcher_factory, options_.wake);
+    }
+    lister_ = std::make_unique<ListingWorker>(options_.wake);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Suspension
+// ---------------------------------------------------------------------------------------------
+
+void BrowserModel::suspend() {
+    if (suspended_) {
+        return;
+    }
+    if (pending_) {
+        const bool relist = pending_->kind == NavKind::Refresh || pending_->kind == NavKind::Relist;
+        if (!relist || !loaded_) {
+            deferred_ = Deferred{pending_->kind, pending_->target};
+        }
+        pending_.reset();
+    }
+    lister_.reset(); // cancels a running listing and joins
+    watcher_.reset();
+    watch_tag_ = 0;
+    watch_gone_ = true; // the next request adds a fresh watch
+    band_active_ = false;
+    band_base_.clear();
+    suspended_ = true;
+}
+
+void BrowserModel::resume() {
+    if (!suspended_) {
+        return;
+    }
+    suspended_ = false;
+    start_workers();
+    if (deferred_) {
+        Deferred d = std::move(*deferred_);
+        deferred_.reset();
+        request(d.kind, std::move(d.target), /*fold=*/false);
+    } else if (loaded_) {
+        request(NavKind::Relist, here());
+    }
+}
+
+void BrowserModel::restore(const layout::TabState& state, float row_dp) {
+    sort_ = state.sort;
+    show_hidden_ = state.show_hidden;
+    Location target;
+    target.dir = normalize(state.path);
+    target.cursor_name = state.cursor_name;
+    restored_dir_ = target.dir;
+    restored_rows_ = state.scroll_rows;
+    if (state.scroll_rows.has_value()) {
+        target.scroll = static_cast<float>(*state.scroll_rows) * row_dp;
+    }
+    request(NavKind::Start, std::move(target));
+}
+
+void BrowserModel::copy_from(const BrowserModel& other) {
+    current_ = other.current_;
+    entries_ = other.entries_;
+    selected_ = other.selected_;
+    cursor_ = other.cursor_;
+    anchor_ = other.anchor_;
+    selected_count_ = other.selected_count_;
+    selected_bytes_ = other.selected_bytes_;
+    hidden_names_ = other.hidden_names_;
+    show_hidden_ = other.show_hidden_;
+    sort_ = other.sort_;
+    loaded_ = other.loaded_;
+    listing_error_ = other.listing_error_;
+    back_ = other.back_;
+    forward_ = other.forward_;
+    scroll_ = other.scroll_;
+    restored_scroll_ = other.scroll_;
+    listed_sort_ = other.listed_sort_;
+    listed_hidden_ = other.listed_hidden_;
+    page_rows_ = other.page_rows_;
+    restored_dir_ = other.restored_dir_;
+    restored_rows_ = other.restored_rows_;
+    if (other.pending_ && (!other.loaded_ || (other.pending_->kind != NavKind::Refresh &&
+                                              other.pending_->kind != NavKind::Relist))) {
+        Deferred d{other.pending_->kind, other.pending_->target};
+        if (suspended_) {
+            deferred_ = std::move(d);
+        } else {
+            request(d.kind, std::move(d.target), /*fold=*/false);
+        }
+    } else if (other.deferred_) {
+        if (suspended_) {
+            deferred_ = other.deferred_;
+        } else {
+            request(other.deferred_->kind, other.deferred_->target, /*fold=*/false);
+        }
+    }
+    ++location_serial_;
+    ++content_serial_;
+    ++cursor_serial_;
+}
+
+layout::TabState BrowserModel::tab_state(float row_dp) const {
+    layout::TabState s;
+    s.sort = sort_;
+    s.show_hidden = show_hidden_;
+    const Location* unloaded = nullptr;
+    if (!loaded_) {
+        if (deferred_) {
+            unloaded = &deferred_->target;
+        } else if (pending_) {
+            unloaded = &pending_->target;
+        }
+    }
+    if (unloaded != nullptr) {
+        s.path = unloaded->dir;
+        s.cursor_name = unloaded->cursor_name;
+        // Never listed: hand back exactly what restore() was given (nullopt stays nullopt,
+        // 0 stays 0), so save -> load -> save is a fixed point.
+        if (restored_rows_ && unloaded->dir == restored_dir_) {
+            s.scroll_rows = restored_rows_;
+        } else if (unloaded->scroll > 0.0F && row_dp > 0.0F) {
+            s.scroll_rows = static_cast<double>(unloaded->scroll / row_dp);
+        }
+        return s;
+    }
+    s.path = current_.dir;
+    if (cursor_ < entries_.size()) {
+        s.cursor_name = entries_[cursor_].name;
+    }
+    if (row_dp > 0.0F) {
+        s.scroll_rows = static_cast<double>(std::max(scroll_, 0.0F) / row_dp);
+    }
+    return s;
+}
 
 BrowserModel::~BrowserModel() = default;
 
@@ -44,7 +181,10 @@ BrowserModel::~BrowserModel() = default;
 
 bool BrowserModel::frame_start() {
     bool changed = false;
-    for (ListingResult& result : lister_.take()) {
+    if (!lister_) {
+        return false; // suspended
+    }
+    for (ListingResult& result : lister_->take()) {
         if (!pending_ || result.generation != pending_->generation) {
             continue; // stale
         }
@@ -73,10 +213,10 @@ bool BrowserModel::frame_start() {
 }
 
 bool BrowserModel::wait_listing(std::chrono::milliseconds timeout) {
-    if (!pending_) {
+    if (!pending_ || !lister_) {
         return true;
     }
-    return lister_.wait_for(pending_->generation, timeout);
+    return lister_->wait_for(pending_->generation, timeout);
 }
 
 bool BrowserModel::wait_watch_batch(std::chrono::milliseconds timeout) {
@@ -108,6 +248,14 @@ bool BrowserModel::can_up() const noexcept {
 
 void BrowserModel::request(NavKind kind, Location target, bool fold) {
     const bool relist = kind == NavKind::Refresh || kind == NavKind::Relist;
+    if (suspended_) {
+        // Issued by resume(). A re-list is implied by resume() and never replaces a deferred
+        // navigation; a navigation replaces whatever was deferred.
+        if (!relist) {
+            deferred_ = Deferred{kind, std::move(target)};
+        }
+        return;
+    }
     if (fold && relist && pending_ && pending_->kind != NavKind::Refresh &&
         pending_->kind != NavKind::Relist) {
         // A re-list (new sort, hidden toggle) while a navigation is in flight: keep navigating,
@@ -154,7 +302,7 @@ void BrowserModel::request(NavKind kind, Location target, bool fold) {
             (void)w->wait_for_tag(tag, std::chrono::milliseconds(200));
         };
     }
-    lister_.request(std::move(req));
+    lister_->request(std::move(req));
     pending_ = std::move(next);
 }
 
@@ -401,6 +549,15 @@ void BrowserModel::raise(NoticeKind kind, ErrorCode code, Path path) {
 
 void BrowserModel::dismiss_notice() noexcept { notice_.reset(); }
 
+void BrowserModel::cursor_to(std::size_t row) {
+    if (row >= entries_.size()) {
+        return;
+    }
+    cursor_ = row;
+    anchor_ = row;
+    ++cursor_serial_;
+}
+
 bool BrowserModel::notice_shown() const noexcept {
     if (!notice_) {
         return false;
@@ -587,7 +744,28 @@ bool BrowserModel::execute(const Command& command) {
     case CommandId::None:
     case CommandId::Quit:
     case CommandId::ToggleFpsOverlay:
-    case CommandId::ToggleTheme: return false; // app level
+    case CommandId::ToggleTheme:
+    // Phase 3: workspace level (tabs, panes, layouts; ui::Workspace).
+    case CommandId::OpenInNewTab:
+    case CommandId::NewTab:
+    case CommandId::CloseTab:
+    case CommandId::DuplicateTab:
+    case CommandId::CloseLeftTabs:
+    case CommandId::ReopenClosedTab:
+    case CommandId::NextTab:
+    case CommandId::PreviousTab:
+    case CommandId::SearchTabs:
+    case CommandId::MoveTabLeft:
+    case CommandId::MoveTabRight:
+    case CommandId::SplitRight:
+    case CommandId::SplitDown:
+    case CommandId::FocusNextPane:
+    case CommandId::FocusPreviousPane:
+    case CommandId::ClosePane:
+    case CommandId::SaveLayout:
+    case CommandId::LoadLayout:
+    case CommandId::DeleteLayout:
+    case CommandId::NewWindow: return false;
     }
     return false;
 }

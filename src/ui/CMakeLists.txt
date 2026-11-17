@@ -4,7 +4,9 @@
 
 find_package(Threads REQUIRED)
 
-# Headless browser logic (no SDL): model, listing/watch workers, formatting, i18n catalog.
+# Headless browser logic (no SDL): model, listing/watch workers, formatting, i18n catalog, and
+# the Phase 3 workspace (tabs/panes state, pane geometry, tab strip math, drag and drop, Search
+# Tabs filtering, session writer).
 # Unit-tested on fixture directories in tests/ui.
 add_library(navigator_ui_browser STATIC
     browser/browser_model.cpp
@@ -12,6 +14,12 @@ add_library(navigator_ui_browser STATIC
     browser/listing_worker.cpp
     browser/watch_worker.cpp
     i18n/i18n.cpp
+    workspace/drag_drop.cpp
+    workspace/pane_geometry.cpp
+    workspace/session_writer.cpp
+    workspace/tab_search.cpp
+    workspace/tab_strip.cpp
+    workspace/workspace.cpp
 )
 target_include_directories(navigator_ui_browser PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
 target_link_libraries(navigator_ui_browser
@@ -41,6 +49,8 @@ add_library(navigator_ui STATIC
     theme/theme.cpp
     widgets/icons.cpp
     widgets/text_fit.cpp
+    workspace/popups.cpp
+    workspace/workspace_view.cpp
 )
 add_library(navigator::ui ALIAS navigator_ui)
 

@@ -117,6 +117,63 @@ std::string format_date(Timestamp when, Timestamp now) {
     return substitute(out, "time", time);
 }
 
+std::string format_date_short(Timestamp when, Timestamp now) {
+    if (when == Timestamp{}) {
+        return {};
+    }
+    const auto secs = [](Timestamp t) {
+        return static_cast<std::time_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(t.time_since_epoch()).count());
+    };
+    std::tm tw{};
+    std::tm tn{};
+    if (!local_tm(secs(when), tw) || !local_tm(secs(now), tn)) {
+        return {};
+    }
+    if (same_day(tw, tn)) {
+        return two_digits(tw.tm_hour) + ":" + two_digits(tw.tm_min);
+    }
+    const std::string month_key = "date.month." + std::to_string(tw.tm_mon + 1);
+    const bool this_year = tw.tm_year == tn.tm_year;
+    std::string date = substitute(tr(this_year ? "date.format_this_year" : "date.format"), "d",
+                                  std::to_string(tw.tm_mday));
+    date = substitute(date, "mon", tr(month_key));
+    return substitute(date, "y", std::to_string(tw.tm_year + 1900));
+}
+
+ColumnPlan plan_columns(float room_dp) noexcept {
+    // Widest first; each step trades a column for name room (Phase 2 review: Type goes first,
+    // then Modified shortens, then Size goes; Modified is the last to go).
+    constexpr float gap = kColumnGapDp;
+    struct Step {
+        bool size;
+        bool type;
+        bool date;
+        bool short_date;
+        float min_name;
+    };
+    constexpr std::array<Step, 5> steps{
+        Step{true, true, true, false, 200.0F}, Step{true, false, true, false, 150.0F},
+        Step{true, false, true, true, 130.0F}, Step{false, false, true, true, 110.0F},
+        Step{false, false, false, false, 0.0F}};
+    for (const Step& st : steps) {
+        float used = 0.0F;
+        if (st.size) {
+            used += kSizeWidthDp + gap;
+        }
+        if (st.type) {
+            used += kTypeWidthDp + gap;
+        }
+        if (st.date) {
+            used += (st.short_date ? kShortDateWidthDp : kDateWidthDp) + gap;
+        }
+        if (room_dp - used >= st.min_name || st.min_name <= 0.0F) {
+            return ColumnPlan{st.size, st.type, st.date, st.short_date};
+        }
+    }
+    return ColumnPlan{};
+}
+
 std::string type_label(const fs::DirEntry& entry) {
     if (entry.kind == fs::EntryKind::Symlink && entry.dangling) {
         return std::string(tr("type.link_broken"));

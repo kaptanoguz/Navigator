@@ -1,8 +1,10 @@
 // src/ui/browser/browser_view.hpp
 //
-// The single-pane browser screen, immediate mode: top bar (Back / Forward / Up, breadcrumb path,
-// theme switch), notice banner, the virtualized Details list (sticky column header, rows,
-// rubber band, overlay scrollbar, empty states), status bar and the FPS overlay.
+// One tab's browser inside a pane, immediate mode: navigation bar (Back / Forward / Up,
+// breadcrumb path), notice banner, the virtualized Details list (sticky column header, rows,
+// rubber band, overlay scrollbar, empty states) and the pane's status line, all inside
+// BrowserFrame::bounds. Phase 3: one BrowserView per tab (scroll and pointer state survive tab
+// switches); the workspace view draws the tab strip, splitters and window-level overlays.
 //
 // Contract with the App (frame model in docs/architecture.md):
 //   update(frame)  before drawing: consumes the wheel, follows the cursor, animates scrolling.
@@ -42,20 +44,25 @@ struct BrowserFrame {
     const PointerInput& pointer;
     CommandQueue& queue;
     std::vector<Intent>& intents;
-    float width = 0.0F; // px
+    float width = 0.0F; // px, window
     float height = 0.0F;
-    bool focused = true; // window has keyboard focus
+    RectF bounds;          // px, the area this view draws in (below the pane's tab strip)
+    std::uint32_t tab = 0; // layout::TabId value: every recorded Intent carries it
+    bool focused = true;   // window has keyboard focus AND this is the active pane
+    // Phase 3: false in an inactive pane (quieter breadcrumb). marked: draw the active-pane
+    // accent frame around the list (only with more than one pane).
+    bool pane_active = true;
+    bool marked = false;
     bool animations = true;
     Density density = Density::Compact;
     double dt_ms = 16.0;        // since the previous frame
     Timestamp now{};            // for "Today"/"Yesterday"
     const Path* home = nullptr; // breadcrumb "Home" root (may be null)
-    // FPS overlay
-    bool show_fps = false;
-    double fps = 0.0;
-    double frame_ms = 0.0;
-    std::string_view render_driver;
 };
+
+// Performance overlay (F12) at the bottom-right of the window.
+void draw_fps_overlay(const Painter& p, const Palette& pal, float width, float height,
+                      Density density, double fps, double frame_ms, std::string_view driver);
 
 class BrowserView {
 public:
@@ -97,8 +104,10 @@ private:
         float type_r = 0.0F;
         float date_x = 0.0F;
         float date_r = 0.0F;
+        bool show_size = true;
         bool show_type = true;
         bool show_date = true;
+        bool short_date = false;
     };
     struct Crumb {
         std::string label;
@@ -123,7 +132,6 @@ private:
     void draw_scrollbar(const BrowserFrame& f, const Layout& l);
     void draw_empty_state(const BrowserFrame& f, const Layout& l);
     void draw_status(const BrowserFrame& f, const Layout& l);
-    void draw_fps(const BrowserFrame& f);
     float draw_key_hint(const BrowserFrame& f, std::string_view command, std::string_view label,
                         float center_x, float center_y, bool measure_only);
 
