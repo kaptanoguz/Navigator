@@ -165,6 +165,9 @@ void PathEntry::changed(double now_ms) {
                 path_input::CompletionOptions o;
                 o.max_results = kMaxCompletions;
                 completions_ = path_input::match_completions(query, cache_.entries, o);
+                // Served from the cache: an in-flight request for another folder is now stale
+                // and must not replace these completions when it arrives (BUG-P4-1).
+                completion_id_ = 0;
             } else {
                 pending_input_ = text;
                 debounce_at_ = now_ms + kDebounceMs;

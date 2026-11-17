@@ -471,7 +471,7 @@ TEST_CASE("Completion under rapid typing in a 20k folder never shows a stale com
 
 TEST_CASE("Completion: a superseded request's reply does not wipe completions served from the "
           "cache [BUG-P4-1]",
-          "[goto][e2e][completion][!mayfail]") {
+          "[goto][e2e][completion]") {
     // Repro: completions for folder B are cached; the user types into folder A (a request for
     // A goes out after the debounce) and, before it returns, back into B (cache hit, B's
     // completions shown). A's reply still carries the newest request id, so poll() applies it:
