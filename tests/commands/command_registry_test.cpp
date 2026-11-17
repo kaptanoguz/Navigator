@@ -23,8 +23,8 @@ constexpr auto kTestB = static_cast<CommandId>(901);
 
 // Phase 0: 3 ids; Phase 2: ToggleHidden, 5 navigation, 3 list, 6 cursor; Phase 3:
 // OpenInNewTab, 10 tab, 5 pane, 3 layout, 1 window; Phase 4: 2 view, GoTo, 1 sidebar,
-// 4 bookmarks, 2 recents, 1 edit.
-constexpr std::size_t kBuiltinCount = 18 + 20 + 11;
+// 4 bookmarks, 2 recents, 1 edit; Phase 5: 2 list filter, 6 search.
+constexpr std::size_t kBuiltinCount = 18 + 20 + 11 + 8;
 
 struct Expected {
     CommandId id;
@@ -69,6 +69,18 @@ constexpr Expected kPhase4[] = {
     {CommandId::ClearRecents, 1270, "recents.clear"},
     {CommandId::ToggleRecentsTracking, 1271, "recents.toggle_tracking"},
     {CommandId::CopyPath, 1280, "edit.copy_path"},
+};
+
+// Phase 5 ids with their frozen numeric values and names (include/navigator/commands.hpp).
+constexpr Expected kPhase5[] = {
+    {CommandId::FocusFilter, 1300, "list.filter"},
+    {CommandId::ClearFilter, 1301, "list.clear_filter"},
+    {CommandId::ToggleFlatten, 1302, "search.flatten"},
+    {CommandId::FlattenVolume, 1303, "search.flatten_volume"},
+    {CommandId::ToggleTypesPopup, 1304, "search.types"},
+    {CommandId::ToggleFuzzy, 1305, "search.toggle_fuzzy"},
+    {CommandId::CancelSearch, 1306, "search.cancel"},
+    {CommandId::RebuildIndex, 1307, "search.rebuild_index"},
 };
 
 } // namespace
@@ -215,8 +227,9 @@ TEST_CASE("to_string(CommandId) values", "[to_string]") {
     CHECK(navigator::to_string(static_cast<CommandId>(999)) == "unknown");
     CHECK(navigator::to_string(static_cast<CommandId>(1006)) == "unknown");
     CHECK(navigator::to_string(static_cast<CommandId>(1103)) == "unknown");
-    for (const std::uint32_t gap : {1117U, 1199U, 1210U, 1219U, 1225U, 1239U, 1243U, 1249U, 1251U,
-                                    1259U, 1265U, 1269U, 1272U, 1279U, 1281U, 1299U, 1300U}) {
+    for (const std::uint32_t gap :
+         {1117U, 1199U, 1210U, 1219U, 1225U, 1239U, 1243U, 1249U, 1251U, 1259U, 1265U, 1269U, 1272U,
+          1279U, 1281U, 1299U, 1308U, 1319U, 1320U}) {
         INFO("id " << gap);
         CHECK(navigator::to_string(static_cast<CommandId>(gap)) == "unknown");
     }
@@ -321,6 +334,30 @@ TEST_CASE("Phase 4 ids: stable values, names, registered with cmd.<name>",
             CHECK(e.name.starts_with("edit."));
             CHECK((e.value >= 1280 && e.value <= 1299));
         }
+    }
+}
+
+TEST_CASE("Phase 5 ids: stable values, names, registered with cmd.<name>",
+          "[registry][builtin][phase5]") {
+    CommandRegistry registry;
+    REQUIRE(navigator::register_builtin_commands(registry));
+    std::uint32_t previous = 0;
+    for (const Expected& e : kPhase5) {
+        INFO("command " << e.name);
+        CHECK(static_cast<std::uint32_t>(e.id) == e.value);
+        CHECK(e.value > previous);
+        previous = e.value;
+        CHECK(navigator::to_string(e.id) == e.name);
+        const CommandInfo* by_id = registry.find(e.id);
+        REQUIRE(by_id != nullptr);
+        CHECK(by_id->name == e.name);
+        CHECK(by_id->title_key == std::string("cmd.") + std::string(e.name));
+        const CommandInfo* by_name = registry.find(e.name);
+        REQUIRE(by_name != nullptr);
+        CHECK(by_name->id == e.id);
+        // Header range: filter, flatten, name search, index 1300-1319.
+        CHECK((e.value >= 1300 && e.value <= 1319));
+        CHECK((e.name.starts_with("list.") || e.name.starts_with("search.")));
     }
 }
 

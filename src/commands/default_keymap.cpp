@@ -1,9 +1,9 @@
 // load_default_keymap(): Navigator's default bindings.
 //
 // This table must match docs/keymap.md exactly: the Phase 0 table (minus "window close", which
-// is a window event, not a chord), then the Phase 2, Phase 3 and Phase 4 tables, in the same
-// row order ("(unbound)" rows are skipped). The first chord of a command is its primary key
-// hint, so order matters. tests/commands checks the table.
+// is a window event, not a chord), then the Phase 2, Phase 3, Phase 4 and Phase 5 tables, in
+// the same row order ("(unbound)" rows are skipped). The first chord of a command is its primary
+// key hint, so order matters. tests/commands checks the table.
 #include <array>
 #include <cstdint>
 #include <string>
@@ -86,6 +86,11 @@ constexpr std::array kDefaults{
     DefaultBinding{{Key::G, kCtrl}, "nav.goto", 0},
     DefaultBinding{{Key::D, kCtrl}, "bookmarks.toggle", 0},
     DefaultBinding{{Key::C, kCtrlShift}, "edit.copy_path", CopyPathArg::None},
+    // Phase 5
+    DefaultBinding{{Key::F, kCtrl}, "list.filter", 0},
+    DefaultBinding{{Key::E, kCtrl}, "search.flatten", 0},
+    DefaultBinding{{Key::E, kCtrlShift}, "search.flatten_volume", 0},
+    DefaultBinding{{Key::F, kCtrlShift}, "search.types", 0},
 };
 
 } // namespace

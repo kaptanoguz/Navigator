@@ -70,6 +70,14 @@ constexpr std::array kBuiltins{
     Builtin{CommandId::ToggleRecentsTracking, "recents.toggle_tracking",
             "cmd.recents.toggle_tracking"},
     Builtin{CommandId::CopyPath, "edit.copy_path", "cmd.edit.copy_path"},
+    Builtin{CommandId::FocusFilter, "list.filter", "cmd.list.filter"},
+    Builtin{CommandId::ClearFilter, "list.clear_filter", "cmd.list.clear_filter"},
+    Builtin{CommandId::ToggleFlatten, "search.flatten", "cmd.search.flatten"},
+    Builtin{CommandId::FlattenVolume, "search.flatten_volume", "cmd.search.flatten_volume"},
+    Builtin{CommandId::ToggleTypesPopup, "search.types", "cmd.search.types"},
+    Builtin{CommandId::ToggleFuzzy, "search.toggle_fuzzy", "cmd.search.toggle_fuzzy"},
+    Builtin{CommandId::CancelSearch, "search.cancel", "cmd.search.cancel"},
+    Builtin{CommandId::RebuildIndex, "search.rebuild_index", "cmd.search.rebuild_index"},
 };
 
 } // namespace
@@ -126,6 +134,14 @@ std::string_view to_string(CommandId id) noexcept {
     case CommandId::ClearRecents: return "recents.clear";
     case CommandId::ToggleRecentsTracking: return "recents.toggle_tracking";
     case CommandId::CopyPath: return "edit.copy_path";
+    case CommandId::FocusFilter: return "list.filter";
+    case CommandId::ClearFilter: return "list.clear_filter";
+    case CommandId::ToggleFlatten: return "search.flatten";
+    case CommandId::FlattenVolume: return "search.flatten_volume";
+    case CommandId::ToggleTypesPopup: return "search.types";
+    case CommandId::ToggleFuzzy: return "search.toggle_fuzzy";
+    case CommandId::CancelSearch: return "search.cancel";
+    case CommandId::RebuildIndex: return "search.rebuild_index";
     }
     return "unknown";
 }
