@@ -13,25 +13,12 @@
 #include <SDL3/SDL.h>
 
 #include "theme/theme.hpp"
+#include "widgets/rect.hpp"
 
 namespace navigator::ui {
 
-struct RectF {
-    float x = 0.0F;
-    float y = 0.0F;
-    float w = 0.0F;
-    float h = 0.0F;
-
-    [[nodiscard]] constexpr float right() const noexcept { return x + w; }
-    [[nodiscard]] constexpr float bottom() const noexcept { return y + h; }
-};
-
 // Rounds a rect's edges to whole pixels (keeps hairlines and fills crisp).
 [[nodiscard]] RectF snap(const RectF& r) noexcept;
-
-[[nodiscard]] constexpr bool contains(const RectF& r, float px, float py) noexcept {
-    return px >= r.x && px < r.right() && py >= r.y && py < r.bottom();
-}
 
 // Intersection (zero-sized when disjoint).
 [[nodiscard]] RectF intersect(const RectF& a, const RectF& b) noexcept;

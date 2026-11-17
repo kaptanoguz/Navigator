@@ -22,11 +22,16 @@ namespace navigator::app {
 enum class DensityChoice : std::uint8_t { Compact, Comfortable };
 
 struct CliOptions {
-    // config.animations follows --no-animations. config.start_path is left empty: it is a view,
+    // config.animations follows --no-animations; --no-session clears restore_session and
+    // save_session; --size clears restore_window_geometry. config.start_path and
+    // config.config_dir are left empty: they are views,
     // and CliOptions is moved around; main() points it at `start_path` right before
     // App::create().
     AppConfig config;
     std::string start_path; // positional PATH (raw bytes); empty: home
+    // --config-dir DIR (raw bytes); empty: $XDG_CONFIG_HOME/navigator. main() points
+    // config.config_dir at it, like start_path.
+    std::string config_dir;
     bool show_help = false;
     bool show_version = false;
     std::optional<Language> language;               // --lang overrides the environment

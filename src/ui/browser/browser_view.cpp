@@ -43,18 +43,19 @@ BrowserView::Layout BrowserView::compute_layout(const BrowserFrame& f) const {
     const Painter& p = f.painter;
     const DensityMetrics dm = density_metrics(f.density);
     Layout l;
-    const float w = f.width;
-    const float h = f.height;
+    const RectF b = f.bounds;
+    const float w = b.w;
     const float margin = std::round(p.px(dm.panel_margin));
-    l.top = RectF{0.0F, 0.0F, w, std::round(p.px(dm.top_bar_height))};
+    l.top = RectF{b.x, b.y, w, std::round(p.px(dm.top_bar_height))};
     float y = l.top.bottom();
     if (f.model.notice_shown()) {
-        l.notice = RectF{margin, y, w - (2.0F * margin), std::round(p.px(dm.notice_height))};
+        l.notice = RectF{b.x + margin, y, w - (2.0F * margin), std::round(p.px(dm.notice_height))};
         y = l.notice.bottom() + margin;
     }
     const float status_h = std::round(p.px(dm.status_bar_height));
-    l.status = RectF{0.0F, h - status_h, w, status_h};
-    l.panel = RectF{margin, y, w - (2.0F * margin), std::max(l.status.y - y, 0.0F)};
+    l.status = RectF{b.x, b.bottom() - status_h, w, status_h};
+    l.panel =
+        RectF{b.x + margin, y, std::max(w - (2.0F * margin), 0.0F), std::max(l.status.y - y, 0.0F)};
     l.header = RectF{l.panel.x, l.panel.y, l.panel.w, std::round(p.px(dm.header_height))};
     l.body = RectF{l.panel.x, l.header.bottom(), l.panel.w,
                    std::max(l.panel.bottom() - l.header.bottom(), 0.0F)};
@@ -231,7 +232,7 @@ void BrowserView::update(const BrowserFrame& f) {
 void BrowserView::draw(const BrowserFrame& f) {
     const Layout l = compute_layout(f);
     Renderer& r = f.painter.renderer();
-    r.clear(f.palette.background);
+    const std::size_t first_intent = f.intents.size();
 
     draw_top_bar(f, l);
     if (f.model.notice_shown()) {
@@ -259,11 +260,11 @@ void BrowserView::draw(const BrowserFrame& f) {
     r.stroke_rounded_rect(l.panel, rad, hair, f.palette.border);
 
     draw_status(f, l);
-    if (f.show_fps) {
-        draw_fps(f);
-    }
     if (f.pointer.released) {
         active_ = WidgetId::None;
+    }
+    for (std::size_t i = first_intent; i < f.intents.size(); ++i) {
+        f.intents[i].tab = f.tab;
     }
 }
 
@@ -349,6 +350,18 @@ void BrowserView::handle_list_pointer(const BrowserFrame& f, const Layout& l) {
                            f.painter.px(14.0F) - hair, l.body.h};
     const bool scrollable = max_scroll_ > 0.0F;
 
+    if (ptr.middle_pressed && active_ == WidgetId::None && contains(l.body, ptr.x, ptr.y) &&
+        !(scrollable && contains(scroll_hit, ptr.x, ptr.y))) {
+        // Middle-click on a folder row: cursor to it (selection unchanged), open in a new tab.
+        const std::size_t row = row_at(ptr.y, l, f);
+        if (row != kNoRow && fs::is_directory_like(m.entries()[row])) {
+            Intent in;
+            in.kind = Intent::Kind::CursorTo;
+            in.row = row;
+            f.intents.push_back(in);
+            f.queue.enqueue(CommandId::OpenInNewTab);
+        }
+    }
     if (ptr.pressed && active_ == WidgetId::None && contains(l.body, ptr.x, ptr.y)) {
         if (scrollable && contains(scroll_hit, ptr.x, ptr.y)) {
             // Thumb grab or a jump on the track.
@@ -370,11 +383,15 @@ void BrowserView::handle_list_pointer(const BrowserFrame& f, const Layout& l) {
         band_started_ = false;
         if (row != kNoRow && ptr.clicks >= 2) {
             // Double-click: the click lands first so Activate sees the row as cursor.
+            // Ctrl+double-click is two Ctrl+clicks (the selection ends where it started), then
+            // list.open_in_new_tab (docs/keymap.md, "Opening in a new tab").
+            const bool ctrl = has(ptr.mods, Modifiers::Ctrl) && !has(ptr.mods, Modifiers::Shift);
             Intent in;
             in.kind = Intent::Kind::ClickRow;
             in.row = row;
+            in.mods = ctrl ? Modifiers::Ctrl : Modifiers::None;
             f.intents.push_back(in);
-            f.queue.enqueue(CommandId::Activate);
+            f.queue.enqueue(ctrl ? CommandId::OpenInNewTab : CommandId::Activate);
             active_ = WidgetId::Rows;
             press_row_ = kNoRow;
             return;

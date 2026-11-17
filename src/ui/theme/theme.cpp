@@ -52,6 +52,7 @@ constexpr Palette kDark{
     .tint_sheet = rgb(0x55B96E),
     .tint_slides = rgb(0xEF925A),
     .tint_program = rgb(0x9AA3B5),
+    .on_accent = rgb(0x0F1220),
 };
 
 // Light: cool paper white, ink near-black, accent deepened for contrast on white.
@@ -96,6 +97,7 @@ constexpr Palette kLight{
     .tint_sheet = rgb(0x22893F),
     .tint_slides = rgb(0xD9692A),
     .tint_program = rgb(0x6B7385),
+    .on_accent = rgb(0xFFFFFF),
 };
 
 } // namespace
@@ -174,7 +176,20 @@ Palette mix(const Palette& a, const Palette& b, float t) noexcept {
         .tint_sheet = mix(a.tint_sheet, b.tint_sheet, t),
         .tint_slides = mix(a.tint_slides, b.tint_slides, t),
         .tint_program = mix(a.tint_program, b.tint_program, t),
+        .on_accent = mix(a.on_accent, b.on_accent, t),
     };
+}
+
+Palette dimmed(const Palette& p) noexcept {
+    Palette d = p;
+    d.surface = mix(p.surface, p.background, 0.45F);
+    d.text_primary = mix(p.text_primary, p.text_secondary, 0.30F);
+    d.text_secondary = mix(p.text_secondary, p.text_muted, 0.30F);
+    d.icon_folder_back = mix(p.icon_folder_back, p.background, 0.22F);
+    d.icon_folder_front = mix(p.icon_folder_front, p.background, 0.22F);
+    d.icon_page_border = mix(p.icon_page_border, p.background, 0.15F);
+    d.scrollbar = p.scrollbar.with_alpha(p.scrollbar.a * 0.7F);
+    return d;
 }
 
 Theme toggled(Theme theme) noexcept { return theme == Theme::Dark ? Theme::Light : Theme::Dark; }

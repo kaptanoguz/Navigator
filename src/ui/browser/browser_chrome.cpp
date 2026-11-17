@@ -132,7 +132,7 @@ void BrowserView::draw_top_bar(const BrowserFrame& f, const Layout& l) {
     const float y = std::round(l.top.y + (0.5F * (l.top.h - b)));
     const float gap = std::round(p.px(2.0F));
 
-    float x = margin;
+    float x = l.top.x + margin;
     if (tool_button(f, RectF{x, y, b, b}, WidgetId::Back, m.can_back(), kGlyphBack)) {
         f.queue.enqueue(CommandId::NavigateBack);
     }
@@ -146,11 +146,7 @@ void BrowserView::draw_top_bar(const BrowserFrame& f, const Layout& l) {
     }
     x += b + std::round(p.px(10.0F));
 
-    const float theme_x = l.top.right() - margin - b;
-    if (tool_button(f, RectF{theme_x, y, b, b}, WidgetId::Theme, true, kGlyphTheme)) {
-        f.queue.enqueue(CommandId::ToggleTheme);
-    }
-    draw_breadcrumbs(f, RectF{x, y, theme_x - p.px(12.0F) - x, b});
+    draw_breadcrumbs(f, RectF{x, y, l.top.right() - margin - x, b});
 }
 
 void BrowserView::draw_breadcrumbs(const BrowserFrame& f, const RectF& area) {
@@ -466,7 +462,7 @@ void BrowserView::draw_status(const BrowserFrame& f, const Layout& l) {
             cx += s.width();
         }
     };
-    draw_parts(left, margin, false);
+    draw_parts(left, l.status.x + margin, false);
     draw_parts(right, l.status.right() - margin, true);
 }
 
@@ -474,13 +470,12 @@ void BrowserView::draw_status(const BrowserFrame& f, const Layout& l) {
 // FPS overlay (Phase 0 design, F12)
 // ---------------------------------------------------------------------------------------------
 
-void BrowserView::draw_fps(const BrowserFrame& f) {
-    const Painter& p = f.painter;
-    const Palette& pal = f.palette;
+void draw_fps_overlay(const Painter& p, const Palette& pal, float width, float height,
+                      Density density, double fps, double frame_ms, std::string_view driver) {
     std::array<char, 32> fps_buf{};
     std::array<char, 32> ms_buf{};
-    std::snprintf(fps_buf.data(), fps_buf.size(), "%.0f", f.fps);
-    std::snprintf(ms_buf.data(), ms_buf.size(), "%.1f %s", f.frame_ms,
+    std::snprintf(fps_buf.data(), fps_buf.size(), "%.0f", fps);
+    std::snprintf(ms_buf.data(), ms_buf.size(), "%.1f %s", frame_ms,
                   std::string(tr("fps.unit_ms")).c_str());
     struct Row {
         ShapedText label;
@@ -489,7 +484,7 @@ void BrowserView::draw_fps(const BrowserFrame& f) {
     std::array rows{
         Row{p.shape(type::caption, tr("fps.label")), p.shape(type::numeric, fps_buf.data())},
         Row{p.shape(type::caption, tr("fps.frame_time")), p.shape(type::numeric, ms_buf.data())},
-        Row{p.shape(type::caption, tr("fps.driver")), p.shape(type::numeric, f.render_driver)},
+        Row{p.shape(type::caption, tr("fps.driver")), p.shape(type::numeric, driver)},
     };
     const float reserve = p.shape(type::numeric, "000.0 ms").width();
     float label_w = 0.0F;
@@ -504,9 +499,9 @@ void BrowserView::draw_fps(const BrowserFrame& f) {
     const float w = std::ceil(pad_x + label_w + p.px(space::xl) + value_w + pad_x);
     const float h = std::ceil((2.0F * pad_y) + (row_h * static_cast<float>(rows.size())));
     const float margin = p.px(space::lg);
-    const RectF panel = snap(
-        RectF{f.width - margin - w,
-              f.height - p.px(density_metrics(f.density).status_bar_height) - margin - h, w, h});
+    const RectF panel =
+        snap(RectF{width - margin - w,
+                   height - p.px(density_metrics(density).status_bar_height) - margin - h, w, h});
     const float rad = p.px(radius::lg);
     Renderer& r = p.renderer();
     r.drop_shadow(panel, rad, p.px(space::lg), p.px(space::xs), pal.shadow);

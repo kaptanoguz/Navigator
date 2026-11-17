@@ -11,6 +11,8 @@ add_executable(navigator_ui_tests
     text_fit_test.cpp
     text_shaping_test.cpp
     theme_test.cpp
+    workspace_logic_test.cpp
+    workspace_test.cpp
 )
 target_link_libraries(navigator_ui_tests
     PRIVATE
@@ -25,3 +27,12 @@ catch_discover_tests(navigator_ui_tests
     TEST_PREFIX "ui."
     DISCOVERY_MODE PRE_TEST
 )
+
+# Phase 3 acceptance: a 3-pane layout is saved on exit and restored by the next run (headless,
+# temporary --config-dir, never the user's ~/.config).
+if(TARGET navigator)
+    add_test(NAME ui.smoke_session_restores_three_panes
+        COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/session_smoke.sh $<TARGET_FILE:navigator>)
+    set_tests_properties(ui.smoke_session_restores_three_panes PROPERTIES
+        TIMEOUT 60 LABELS "smoke;app")
+endif()

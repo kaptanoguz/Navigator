@@ -22,6 +22,11 @@
 //   - Watch batches from the WatchWorker are applied incrementally (insert at the sorted
 //     position, remove, rename, replace); overflow or a large batch re-lists; a vanished
 //     directory raises a notice and keeps the stale list.
+//   - Suspension (Phase 3, one model per tab): only the active tab of each pane is live. A
+//     suspended model has no worker threads and no watch; it keeps its entries, selection,
+//     history, cursor and scroll. A navigation requested while suspended (session restore,
+//     duplicate of a tab that was still loading) is deferred and issued by resume(); resuming a
+//     loaded model re-lists its folder (selection and cursor carried by name, scroll kept).
 //
 // Thread-safety: UI thread only (the workers it owns have their own threads and mailboxes).
 #pragma once
@@ -38,6 +43,7 @@
 
 #include <navigator/commands.hpp>
 #include <navigator/fs.hpp>
+#include <navigator/layout.hpp>
 #include <navigator/platform.hpp>
 #include <navigator/types.hpp>
 #include <navigator/watch.hpp>
@@ -83,6 +89,8 @@ public:
         std::function<void()> wake;
         // A watch batch with more changes than this re-lists instead of patching.
         std::size_t max_incremental_changes = 256;
+        // Phase 3: construct suspended (no threads until resume()). Background tabs.
+        bool start_suspended = false;
     };
 
     explicit BrowserModel(Options options);
@@ -104,6 +112,25 @@ public:
     // Tests: blocks until the watch worker has a batch waiting / has applied the last target.
     [[nodiscard]] bool wait_watch_batch(std::chrono::milliseconds timeout);
     [[nodiscard]] bool wait_watch_ready(std::chrono::milliseconds timeout);
+
+    // ---- Suspension (Phase 3) ----------------------------------------------------------------
+    // Stops the workers (joins their threads) and drops the watch. A pending navigation is kept
+    // and re-issued by resume(). No-op when already suspended.
+    void suspend();
+    // Starts the workers again and issues the deferred navigation, or re-lists the folder.
+    void resume();
+    [[nodiscard]] bool suspended() const noexcept { return suspended_; }
+
+    // First location of a tab restored from the session (or created by tab.new): sort, hidden
+    // setting, cursor name and scroll (rows * row_dp) come from `state`. Lists right away when
+    // live, on resume() when suspended.
+    void restore(const layout::TabState& state, float row_dp);
+    // Full copy of `other`'s browsing state (folder, entries, sort, selection, cursor, anchor,
+    // scroll, back/forward history, pending navigation) for tab.duplicate. Call on a fresh,
+    // suspended model; resume() then re-lists the copy.
+    void copy_from(const BrowserModel& other);
+    // The persisted subset (layout::TabState) of this tab; scroll in rows of `row_dp`.
+    [[nodiscard]] layout::TabState tab_state(float row_dp) const;
 
     // ---- Navigation (frame end) -------------------------------------------------------------
     // First location. Relative paths resolve against the working directory.
@@ -142,6 +169,8 @@ public:
     void band_update(std::size_t first, std::size_t last);
     void band_end();
     void dismiss_notice() noexcept;
+    // Middle-click on a row: cursor and anchor to `row`, selection unchanged.
+    void cursor_to(std::size_t row);
 
     // View geometry reported by the details view (frame end).
     void set_page_rows(std::size_t rows) noexcept { page_rows_ = rows > 0 ? rows : 1; }
@@ -178,6 +207,11 @@ public:
     }
     [[nodiscard]] bool loaded() const noexcept { return loaded_; } // first listing committed
     [[nodiscard]] std::size_t page_rows() const noexcept { return page_rows_; }
+    [[nodiscard]] float scroll() const noexcept { return scroll_; }
+    // The entry under the cursor, or nullptr.
+    [[nodiscard]] const fs::DirEntry* cursor_entry() const noexcept {
+        return cursor_ < entries_.size() ? &entries_[cursor_] : nullptr;
+    }
     [[nodiscard]] const std::vector<Location>& back_stack() const noexcept { return back_; }
     [[nodiscard]] const std::vector<Location>& forward_stack() const noexcept { return forward_; }
     // Index of the entry named `name` (raw bytes), or kNoRow.
@@ -219,10 +253,19 @@ private:
     void erase_row(std::size_t row);
     bool apply_change(const WatchChange& change);
 
+    struct Deferred {
+        NavKind kind = NavKind::Start;
+        Location target;
+    };
+    void start_workers();
+
     Options options_;
-    // Destroyed after lister_ (whose thread may call into it through before_read).
+    // Destroyed after lister_ (whose thread may call into it through before_read). Both are
+    // null while suspended.
     std::unique_ptr<WatchWorker> watcher_;
-    ListingWorker lister_;
+    std::unique_ptr<ListingWorker> lister_;
+    bool suspended_ = false;
+    std::optional<Deferred> deferred_; // navigation requested while suspended
 
     std::uint64_t generation_ = 0;
     std::optional<Pending> pending_;

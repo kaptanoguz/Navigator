@@ -128,3 +128,36 @@ TEST_CASE("Language detection follows POSIX precedence", "[cli]") {
     CHECK(detect_language("", "", "", "trx") == Language::English);
     CHECK(detect_language("", "C", "", "tr_TR") == Language::English);
 }
+
+TEST_CASE("Session flags (Phase 3)", "[cli]") {
+    auto d = parse_cli({});
+    REQUIRE(d);
+    CHECK(d->config.restore_session);
+    CHECK(d->config.save_session);
+    CHECK(d->config.restore_window_geometry);
+    CHECK(d->config_dir.empty());
+
+    auto o = parse_cli({"--no-session"});
+    REQUIRE(o);
+    CHECK_FALSE(o->config.restore_session);
+    CHECK_FALSE(o->config.save_session);
+    CHECK(o->config.restore_window_geometry);
+
+    auto c = parse_cli({"--config-dir", "/tmp/nav cfg", "/data"});
+    REQUIRE(c);
+    CHECK(c->config_dir == "/tmp/nav cfg");
+    CHECK(c->config.config_dir.empty()); // main() points the view at config_dir
+    CHECK(c->start_path == "/data");
+    CHECK(c->config.restore_session);
+
+    auto s = parse_cli({"--size", "1024x700"});
+    REQUIRE(s);
+    CHECK_FALSE(s->config.restore_window_geometry); // an explicit size wins
+    CHECK(s->config.restore_session);
+
+    CHECK_FALSE(parse_cli({"--config-dir"}));
+    CHECK_FALSE(parse_cli({"--config-dir", ""}));
+    const std::string help = navigator::app::usage_text("navigator");
+    CHECK(help.find("--no-session") != std::string::npos);
+    CHECK(help.find("--config-dir") != std::string::npos);
+}

@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include <navigator/commands.hpp>
+#include <navigator/layout.hpp>
 #include <navigator/platform.hpp>
 #include <navigator/watch.hpp>
 
@@ -600,4 +601,89 @@ TEST_CASE("Without a launcher, opening a file never spawns and reports Unsupport
     REQUIRE(m.notice());
     CHECK(notice_of(m).kind == NoticeKind::OpenFileFailed);
     CHECK(notice_of(m).code == ErrorCode::Unsupported);
+}
+
+TEST_CASE("Suspended models keep state and re-list on resume (Phase 3)", "[browser][phase3]") {
+    TempDir t;
+    populate(t);
+    BrowserModel m(no_watch());
+    m.open_start(t.path());
+    settle(m);
+    m.click_row(m.find("gamma.txt"), Modifiers::None);
+    m.set_scroll(48.0F);
+    m.suspend();
+    CHECK(m.suspended());
+    CHECK_FALSE(m.busy());
+    CHECK(m.frame_start() == false);
+    CHECK(cursor_name(m) == "gamma.txt"); // state is kept
+    t.file("zeta.txt", "z");              // changed while in the background
+    m.resume();
+    settle(m);
+    CHECK(m.find("zeta.txt") != kNoRow);
+    CHECK(cursor_name(m) == "gamma.txt");
+    CHECK(selected_names(m) == std::vector<std::string>{"gamma.txt"});
+
+    // tab_state: persisted subset with scroll in rows.
+    const layout::TabState s = m.tab_state(24.0F);
+    CHECK(s.path == t.path());
+    CHECK(s.cursor_name == "gamma.txt");
+    REQUIRE(s.scroll_rows.has_value());
+    CHECK(s.scroll_rows.value_or(-1.0) == 2.0);
+}
+
+TEST_CASE("A restored background tab lists on first resume (Phase 3)", "[browser][phase3]") {
+    TempDir t;
+    populate(t);
+    BrowserModel::Options o = no_watch();
+    o.start_suspended = true;
+    BrowserModel m(std::move(o));
+    layout::TabState s;
+    s.path = t.path() / "alpha";
+    s.cursor_name = "a2.txt";
+    s.scroll_rows = 1.5;
+    s.sort.key = fs::SortKey::Size;
+    m.restore(s, 24.0F);
+    CHECK_FALSE(m.loaded());
+    CHECK_FALSE(m.busy());
+    // Not listed yet, but its persisted state is already what was restored.
+    CHECK(m.tab_state(24.0F).path == s.path);
+    CHECK(m.tab_state(24.0F).cursor_name == "a2.txt");
+    m.resume();
+    settle(m);
+    CHECK(m.current_dir() == s.path);
+    CHECK(cursor_name(m) == "a2.txt");
+    CHECK(m.sort().key == fs::SortKey::Size);
+    CHECK(m.restored_scroll() == 36.0F);
+
+    // A navigation requested while suspended is deferred to resume().
+    m.suspend();
+    m.navigate_to(t.path() / "beta");
+    CHECK(m.current_dir() == s.path);
+    m.resume();
+    settle(m);
+    CHECK(m.current_dir() == t.path() / "beta");
+    CHECK(m.can_back());
+
+    // copy_from (tab.duplicate) on a suspended model.
+    BrowserModel::Options o2 = no_watch();
+    o2.start_suspended = true;
+    BrowserModel copy(std::move(o2));
+    copy.copy_from(m);
+    CHECK(copy.current_dir() == t.path() / "beta");
+    CHECK(copy.back_stack().size() == m.back_stack().size());
+    copy.resume();
+    settle(copy);
+    CHECK(copy.current_dir() == t.path() / "beta");
+}
+
+TEST_CASE("Middle-click cursor keeps the selection (Phase 3)", "[browser][phase3]") {
+    TempDir t;
+    populate(t);
+    BrowserModel m(no_watch());
+    m.open_start(t.path());
+    settle(m);
+    m.click_row(m.find("gamma.txt"), Modifiers::None);
+    m.cursor_to(m.find("alpha"));
+    CHECK(cursor_name(m) == "alpha");
+    CHECK(selected_names(m) == std::vector<std::string>{"gamma.txt"});
 }

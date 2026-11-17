@@ -150,3 +150,23 @@ TEST_CASE("Browser tokens keep text readable on banners and selection", "[theme]
         CHECK(contrast_ratio(over(p.surface, p.focus_ring), p.surface) >= 3.0F);
     }
 }
+
+TEST_CASE("Inactive-pane dimming keeps every text tier at WCAG AA", "[theme]") {
+    for (const Theme t : {Theme::Dark, Theme::Light}) {
+        const Palette& p = palette(t);
+        const Palette d = dimmed(p);
+        for (const Color& bg : {d.surface, d.background, d.surface_raised}) {
+            INFO((t == Theme::Dark ? "dark" : "light"));
+            CHECK(contrast_ratio(d.text_primary, bg) >= 4.5F);
+            CHECK(contrast_ratio(d.text_secondary, bg) >= 4.5F);
+            CHECK(contrast_ratio(d.text_muted, bg) >= 4.5F);
+        }
+        // It is a visible step down from the active pane, and keeps the hierarchy.
+        CHECK(contrast_ratio(d.text_primary, d.surface) <
+              contrast_ratio(p.text_primary, p.surface));
+        CHECK(contrast_ratio(d.text_primary, d.surface) >
+              contrast_ratio(d.text_secondary, d.surface));
+        // Text on an accent fill (primary buttons, drop labels).
+        CHECK(contrast_ratio(p.on_accent, p.accent) >= 4.5F);
+    }
+}
