@@ -1,5 +1,6 @@
 // open_with_default (fake IAppLauncher only: never starts xdg-open), mime_type on real temp
-// entries, user_dir with XDG variables set/unset, and the later-phase stubs.
+// entries, user_dir with XDG variables set/unset (including the user-dirs.dirs directories), and
+// the later-phase stubs.
 #include <cstdlib>
 #include <deque>
 #include <filesystem>
@@ -274,10 +275,68 @@ TEST_CASE("user_dir: Config and Cache honour absolute XDG variables only", "[use
     CHECK(platform::user_dir(UserDir::Cache).value() == Path("/other/.cache"));
 }
 
-TEST_CASE("user_dir: XDG user directories are Unsupported until Phase 4", "[user_dir]") {
-    for (const UserDir which : {UserDir::Desktop, UserDir::Documents, UserDir::Downloads,
-                                UserDir::Music, UserDir::Pictures, UserDir::Videos}) {
-        CHECK(platform::user_dir(which).error().code == ErrorCode::Unsupported);
+TEST_CASE("user_dir: XDG user directories from $XDG_CONFIG_HOME/user-dirs.dirs", "[user_dir]") {
+    TempDir dir;
+    EnvGuard home("HOME");
+    EnvGuard config("XDG_CONFIG_HOME");
+    const Path home_path = dir / "home";
+    home.set(home_path.native());
+    const auto dir_of = [](UserDir which) { return platform::user_dir(which); };
+
+    SECTION("no file: Desktop default only, the rest NotFound") {
+        config.set((dir / "noconfig").native());
+        CHECK(dir_of(UserDir::Desktop).value() == home_path / "Desktop");
+        for (const UserDir which : {UserDir::Documents, UserDir::Downloads, UserDir::Music,
+                                    UserDir::Pictures, UserDir::Videos}) {
+            CHECK(dir_of(which).error().code == ErrorCode::NotFound);
+        }
+    }
+    SECTION("XDG_CONFIG_HOME set: its file, localized names") {
+        config.set((dir / "cfg").native());
+        write_file(dir / "cfg" / "user-dirs.dirs", "XDG_DESKTOP_DIR=\"$HOME/Masaüstü\"\n"
+                                                   "XDG_DOCUMENTS_DIR=\"$HOME/Belgeler\"\n"
+                                                   "XDG_DOWNLOAD_DIR=\"$HOME/İndirilenler\"\n"
+                                                   "XDG_MUSIC_DIR=\"$HOME/Müzik\"\n"
+                                                   "XDG_PICTURES_DIR=\"$HOME/Resimler\"\n"
+                                                   "XDG_VIDEOS_DIR=\"/srv/Videolar\"\n");
+        CHECK(dir_of(UserDir::Desktop).value() == home_path / "Masaüstü");
+        CHECK(dir_of(UserDir::Documents).value() == home_path / "Belgeler");
+        CHECK(dir_of(UserDir::Downloads).value() == home_path / "İndirilenler");
+        CHECK(dir_of(UserDir::Music).value() == home_path / "Müzik");
+        CHECK(dir_of(UserDir::Pictures).value() == home_path / "Resimler");
+        CHECK(dir_of(UserDir::Videos).value() == Path("/srv/Videolar"));
+    }
+    SECTION("XDG_CONFIG_HOME unset or relative: Home/.config") {
+        write_file(home_path / ".config" / "user-dirs.dirs", "XDG_MUSIC_DIR=\"$HOME/Tunes\"\n");
+        config.unset();
+        CHECK(dir_of(UserDir::Music).value() == home_path / "Tunes");
+        config.set("relative/cfg");
+        CHECK(dir_of(UserDir::Music).value() == home_path / "Tunes");
+    }
+    SECTION("a directory set to $HOME (disabled) returns Home as user_dir(Home) does") {
+        config.set((dir / "cfg").native());
+        write_file(dir / "cfg" / "user-dirs.dirs",
+                   "XDG_DESKTOP_DIR=\"$HOME/\"\nXDG_DOWNLOAD_DIR=\"$HOME\"\n");
+        CHECK(dir_of(UserDir::Desktop).value() == platform::user_dir(UserDir::Home).value());
+        CHECK(dir_of(UserDir::Downloads).value() == home_path);
+        // A trailing slash in $HOME is kept on the Home value, and still detected.
+        home.set(home_path.native() + "/");
+        CHECK(dir_of(UserDir::Downloads).value().native() == home_path.native() + "/");
+    }
+    SECTION("read on every call") {
+        config.set((dir / "cfg").native());
+        write_file(dir / "cfg" / "user-dirs.dirs", "XDG_PICTURES_DIR=\"$HOME/A\"\n");
+        CHECK(dir_of(UserDir::Pictures).value() == home_path / "A");
+        write_file(dir / "cfg" / "user-dirs.dirs", "XDG_PICTURES_DIR=\"$HOME/B\"\n");
+        CHECK(dir_of(UserDir::Pictures).value() == home_path / "B");
+    }
+    SECTION("unreadable file: the read error") {
+        if (::geteuid() != 0) {
+            config.set((dir / "cfg").native());
+            write_file(dir / "cfg" / "user-dirs.dirs", "XDG_MUSIC_DIR=\"$HOME/M\"\n");
+            stdfs::permissions(dir / "cfg" / "user-dirs.dirs", stdfs::perms::none);
+            CHECK(dir_of(UserDir::Music).error().code == ErrorCode::PermissionDenied);
+        }
     }
 }
 

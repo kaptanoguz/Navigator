@@ -10,6 +10,7 @@ add_executable(navigator_platform_tests
     mime_test.cpp
     mountinfo_test.cpp
     proc_source_test.cpp
+    user_dirs_test.cpp
     volume_monitor_test.cpp
     volume_test.cpp
     watch_test.cpp

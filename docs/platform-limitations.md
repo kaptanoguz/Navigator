@@ -1,4 +1,4 @@
-# Platform limitations (Phases 1-2)
+# Platform limitations (Phases 1-4)
 
 Owner: platform (`src/platform`). This page lists what the Linux watch and volume backends
 cannot see or do. Users and later phases should rely on these limits being real, not on them
@@ -116,11 +116,29 @@ being worked around. Contracts: `include/navigator/watch.hpp`, `include/navigato
 - **Compound suffixes** are only `tar.gz`, `tar.bz2`, `tar.xz` and `tar.zst`. The part before
   the last dot must be exactly `tar` (ASCII case-insensitive), so a file named `tar.gz` counts too.
 
-## XDG directories (Phase 2)
+## XDG directories (Phases 2 and 4)
 
 - `Home`, `Config` and `Cache` follow the header. Relative or empty `$HOME`, `$XDG_CONFIG_HOME`
   and `$XDG_CACHE_HOME` values are ignored, as the XDG Base Directory spec says.
-- `Desktop`, `Documents`, `Downloads`, `Music`, `Pictures` and `Videos` return `Unsupported`
-  until Phase 4 parses `user-dirs.dirs`.
+- `Desktop`, `Documents`, `Downloads`, `Music`, `Pictures` and `Videos` come from
+  `$XDG_CONFIG_HOME/user-dirs.dirs` (Phase 4). Only that file is read: the system defaults in
+  `/etc/xdg/user-dirs.defaults` are not, and `xdg-user-dirs-update` is never run. On a system
+  without the file only Desktop has a value (`$HOME/Desktop`, as in GLib); the others are
+  `NotFound`, and the sidebar leaves them out.
+- **Parser scope.** The parser accepts exactly the format `xdg-user-dirs-update` writes and GLib
+  reads: `XDG_<NAME>_DIR="$HOME/..."` or `="/..."`, no spaces around `=`, double quotes,
+  backslash escapes. It is not a shell: `~`, `${HOME}`, other variables, single quotes and
+  `export` lines are ignored, not expanded. Unlike GLib, spaces around `=` make the line invalid
+  (the contract says so; `xdg-user-dirs-update` never writes them).
+- **No caching, no watching.** `user_dir()` re-reads the file on every call. A rename done by
+  `xdg-user-dirs-update` (for example after a locale change) is seen on the next call, but no
+  event announces it.
+- Files over 64 KiB are treated as empty (defaults). The file is opened with `O_NONBLOCK`, so a
+  FIFO in its place cannot hang the caller.
+- Names are bytes: a Turkish file's `Masaüstü` or `İndirilenler` is used exactly as written,
+  without Unicode normalization. A file in another encoding than the file system's is not
+  converted.
+- `user_home("name")` uses `getpwnam_r`, so it sees every NSS source (LDAP, SSSD) and may block
+  on the network. It is meant for the GoTo worker, never the UI thread.
 - `move_to_trash` and `open_terminal` are defined but always return `Unsupported` until their
   phases land, so nothing links against a missing symbol.
