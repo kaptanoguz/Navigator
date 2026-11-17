@@ -2,11 +2,8 @@
 // readdir (getdents64 underneath) + fstatat relative to the directory fd. No std::filesystem
 // iteration; std::filesystem::path is used only as the byte container of the argument.
 #include <cerrno>
-#include <chrono>
 #include <cstddef>
-#include <cstdint>
 #include <cstring>
-#include <limits>
 #include <new>
 #include <stop_token>
 #include <string>
@@ -22,8 +19,14 @@
 
 #include <navigator/fs.hpp>
 
+#include "entry_meta.hpp"
+
 namespace navigator::fs {
 namespace {
+
+using core::Credentials;
+using core::kind_from_dtype;
+using core::map_stat_errno;
 
 // stop is polled when (entries read & kStopMask) == 0, i.e. every 256 readdir results; the
 // contract requires at least every 1024.
@@ -59,131 +62,6 @@ ErrorCode map_list_errno(int err) noexcept {
     case ENOMEM: return ErrorCode::OutOfMemory;
     default: return ErrorCode::IoError;
     }
-}
-
-// Errors of stat() and of per-entry metadata calls.
-ErrorCode map_stat_errno(int err) noexcept {
-    switch (err) {
-    case ELOOP:
-    case ENAMETOOLONG: return ErrorCode::InvalidArgument;
-    case ENOENT:
-    case ENOTDIR: return ErrorCode::NotFound;
-    case EACCES:
-    case EPERM: return ErrorCode::PermissionDenied;
-    case ENOMEM: return ErrorCode::OutOfMemory;
-    default: return ErrorCode::IoError;
-    }
-}
-
-EntryKind kind_from_mode(mode_t mode) noexcept {
-    switch (mode & S_IFMT) {
-    case S_IFREG: return EntryKind::File;
-    case S_IFDIR: return EntryKind::Directory;
-    case S_IFLNK: return EntryKind::Symlink;
-    default: return EntryKind::Other;
-    }
-}
-
-EntryKind kind_from_dtype(unsigned char type) noexcept {
-    switch (type) {
-    case DT_REG: return EntryKind::File;
-    case DT_DIR: return EntryKind::Directory;
-    case DT_LNK: return EntryKind::Symlink;
-    case DT_UNKNOWN: return EntryKind::Unknown;
-    default: return EntryKind::Other;
-    }
-}
-
-Timestamp to_timestamp(const struct timespec& ts) noexcept {
-    using std::chrono::nanoseconds;
-    constexpr std::int64_t kNs = 1'000'000'000;
-    constexpr std::int64_t kMaxSec = std::numeric_limits<std::int64_t>::max() / kNs - 1;
-    const auto sec = static_cast<std::int64_t>(ts.tv_sec);
-    if (sec > kMaxSec) {
-        return Timestamp{nanoseconds{std::numeric_limits<std::int64_t>::max()}};
-    }
-    if (sec < -kMaxSec) {
-        return Timestamp{nanoseconds{std::numeric_limits<std::int64_t>::min()}};
-    }
-    return Timestamp{nanoseconds{sec * kNs + static_cast<std::int64_t>(ts.tv_nsec)}};
-}
-
-// Effective credentials, captured once per call.
-class Credentials {
-public:
-    Credentials() : uid_(geteuid()), gid_(getegid()) {
-        const int n = getgroups(0, nullptr);
-        if (n > 0) {
-            groups_.resize(static_cast<std::size_t>(n));
-            const int got = getgroups(n, groups_.data());
-            groups_.resize(got > 0 ? static_cast<std::size_t>(got) : 0U);
-        }
-    }
-
-    [[nodiscard]] bool can_read(std::uint32_t mode, std::uint32_t uid,
-                                std::uint32_t gid) const noexcept {
-        if (uid_ == 0) {
-            return true;
-        }
-        if (uid == uid_) {
-            return (mode & S_IRUSR) != 0;
-        }
-        if (in_group(gid)) {
-            return (mode & S_IRGRP) != 0;
-        }
-        return (mode & S_IROTH) != 0;
-    }
-
-private:
-    [[nodiscard]] bool in_group(std::uint32_t gid) const noexcept {
-        if (gid == gid_) {
-            return true;
-        }
-        for (const gid_t g : groups_) {
-            if (g == gid) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    uid_t uid_;
-    gid_t gid_;
-    std::vector<gid_t> groups_;
-};
-
-// Copies the metadata fields of `st` (whatever it describes) into `entry`.
-void fill_metadata(DirEntry& entry, const struct stat& st, const Credentials& creds) noexcept {
-    const mode_t type = st.st_mode & S_IFMT;
-    entry.size = (type == S_IFREG || type == S_IFLNK) && st.st_size > 0
-                     ? static_cast<std::uint64_t>(st.st_size)
-                     : 0U;
-    entry.mtime = to_timestamp(st.st_mtim);
-    entry.mode = static_cast<std::uint32_t>(st.st_mode);
-    entry.uid = static_cast<std::uint32_t>(st.st_uid);
-    entry.gid = static_cast<std::uint32_t>(st.st_gid);
-    entry.id = FileId{static_cast<std::uint64_t>(st.st_dev), static_cast<std::uint64_t>(st.st_ino)};
-    entry.readable = creds.can_read(entry.mode, entry.uid, entry.gid);
-}
-
-// Fills everything except name/hidden from an lstat result `lst` of `name` relative to `dirfd`.
-void describe(DirEntry& entry, int dirfd, const char* name, const struct stat& lst,
-              bool follow_symlinks, const Credentials& creds) noexcept {
-    entry.kind = kind_from_mode(lst.st_mode);
-    if (entry.kind != EntryKind::Symlink) {
-        fill_metadata(entry, lst, creds);
-        return;
-    }
-    struct stat target {};
-    if (fstatat(dirfd, name, &target, 0) == 0) {
-        entry.target_kind = kind_from_mode(target.st_mode);
-        fill_metadata(entry, follow_symlinks ? target : lst, creds);
-        return;
-    }
-    const int err = errno;
-    entry.dangling = err == ENOENT || err == ENOTDIR;
-    entry.target_kind = EntryKind::Unknown;
-    fill_metadata(entry, lst, creds); // dangling / unreadable target: lstat metadata
 }
 
 class DirHandle {
@@ -264,7 +142,7 @@ Result<std::vector<DirEntry>> list_impl(const Path& dir, const ListOptions& opti
             entry.kind = kind_from_dtype(d->d_type);
             continue;
         }
-        describe(entry, dir_fd, cname, lst, options.follow_symlinks, creds);
+        core::describe_entry(entry, dir_fd, cname, lst, options.follow_symlinks, creds);
     }
     if (stop.stop_requested()) {
         return cancelled();
@@ -322,7 +200,7 @@ Result<DirEntry> stat(const Path& path, bool follow_symlinks) {
         DirEntry entry;
         entry.name = last_component(path.native());
         entry.hidden = is_hidden_name(entry.name);
-        describe(entry, AT_FDCWD, path.c_str(), lst, follow_symlinks, creds);
+        core::describe_entry(entry, AT_FDCWD, path.c_str(), lst, follow_symlinks, creds);
         return entry;
     } catch (const std::bad_alloc&) {
         return out_of_memory();
