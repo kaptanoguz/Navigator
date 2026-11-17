@@ -1,6 +1,7 @@
 # navigator_core (owner: core-fs): directory listing, metadata, name folding/comparison and
-# sorting for navigator/fs.hpp, and the tab/pane layout model, session JSON and session /
-# named-layout files for navigator/layout.hpp. POSIX only; no SDL, GIO, UI or src/platform
+# sorting for navigator/fs.hpp, the tab/pane layout model, session JSON and session /
+# named-layout files for navigator/layout.hpp, and (Phase 4) places / bookmarks / recents for
+# navigator/places.hpp and typed-path handling for navigator/path_input.hpp. POSIX only; no SDL, GIO, UI or src/platform
 # dependency. nlohmann_json is a PRIVATE dependency (never visible in public headers).
 #
 # case_fold_data.inc is generated offline by tools/gen_case_fold.py from the system
@@ -8,11 +9,16 @@
 
 add_library(navigator_core STATIC
     case_fold.cpp
+    document_files.cpp
+    json_util.cpp
     layout.cpp
     layout_files.cpp
     layout_json.cpp
     listing.cpp
     names.cpp
+    path_input.cpp
+    places.cpp
+    places_json.cpp
     sort.cpp
 )
 add_library(navigator::core ALIAS navigator_core)
