@@ -312,6 +312,12 @@ public:
     // entry's position. Returns how many entries changed or were merged away.
     std::size_t resync(Span<const VolumeInfo> volumes);
 
+    // Loader support (recents_from_json): replaces all entries with `entries`, given newest
+    // first. Entries with empty or relative paths are dropped, paths are normalized, duplicates
+    // keep the first (newest) occurrence, visit_count is raised to at least 1, and the list is
+    // truncated to capacity(). Options are kept.
+    void restore(std::vector<RecentEntry> entries);
+
 private:
     std::vector<RecentEntry> entries_;
     std::size_t capacity_ = kDefaultRecentsCapacity;

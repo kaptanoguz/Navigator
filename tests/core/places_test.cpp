@@ -7,6 +7,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -403,4 +404,58 @@ TEST_CASE("places: Recents visit counts saturate", "[places][recents]") {
     pl::RecentsStore s = *store;
     REQUIRE(s.record("/a", std::nullopt, at_seconds(1)));
     CHECK(s.entries()[0].visit_count == std::numeric_limits<std::uint32_t>::max());
+}
+
+TEST_CASE("places: Recents restore", "[places][recents]") {
+    const auto entry = [](Path path, std::uint32_t visits, long long t,
+                          std::optional<VolumeIdentity> volume = std::nullopt) {
+        pl::RecentEntry e;
+        e.path = std::move(path);
+        e.visit_count = visits;
+        e.last_visit = at_seconds(t);
+        e.volume = std::move(volume);
+        return e;
+    };
+    pl::RecentsStore store(3);
+    pl::RecentsOptions options;
+    options.enabled = false;
+    options.highlight = true;
+    store.set_options(options);
+    REQUIRE_FALSE(store.record("/old", std::nullopt, at_seconds(1))); // disabled: no-op
+    store.set_options(pl::RecentsOptions{});
+    REQUIRE(store.record("/old", std::nullopt, at_seconds(1)));
+    store.set_options(options);
+
+    const std::optional<VolumeIdentity> id = pl::identity_for("/media/u/STICK/x", system_volumes());
+    store.restore({
+        entry("/a//b/", 7, 50, id),
+        entry("", 1, 49),
+        entry("relative", 1, 48),
+        entry("/c", 0, 47, VolumeIdentity{}), // count raised to 1, empty identity dropped
+        entry("/a/b", 3, 46),                 // older duplicate: dropped
+        entry(std::string("/raw/\xff"), 4294967295U, 45),
+        entry("/beyond-capacity", 1, 44),
+    });
+    CHECK(store.options() == options); // kept
+    REQUIRE(store.size() == 3);        // replaced "/old"; truncated to capacity
+    CHECK(store.find("/old") == nullptr);
+    CHECK(store.entries()[0].path == "/a/b");
+    CHECK(store.entries()[0].visit_count == 7);
+    CHECK(store.entries()[0].last_visit == at_seconds(50));
+    CHECK(store.entries()[0].volume == id);
+    CHECK(store.entries()[1].path == "/c");
+    CHECK(store.entries()[1].visit_count == 1);
+    CHECK_FALSE(store.entries()[1].volume.has_value());
+    CHECK(store.entries()[2].path.native() == std::string("/raw/\xff"));
+    CHECK(store.entries()[2].visit_count == 4294967295U);
+
+    // Restored entries behave like recorded ones.
+    store.set_options(pl::RecentsOptions{});
+    REQUIRE(store.record("/c", std::nullopt, at_seconds(60)));
+    CHECK(store.entries()[0].path == "/c");
+    CHECK(store.entries()[0].visit_count == 2);
+
+    store.restore({});
+    CHECK(store.empty());
+    CHECK(store.capacity() == 3);
 }

@@ -12,8 +12,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include <navigator/path_input.hpp>
 #include <navigator/places.hpp>
@@ -258,13 +258,13 @@ Result<RecentsStore> recents_from_json(std::string_view text, std::size_t capaci
         if (list == nullptr) {
             return store;
         }
-        std::unordered_set<std::string> seen;
+        // Dedupe, normalization and the capacity cut are restore()'s; only the per-field
+        // leniency is done here.
+        std::vector<RecentEntry> loaded;
+        loaded.reserve(std::min(list->size(), store.capacity()));
         for (const InJson& entry : *list) {
-            if (store.size() >= store.capacity()) {
-                break;
-            }
             Path path = path_from(entry);
-            if (path.empty() || !seen.insert(path.native()).second) {
+            if (path.empty()) {
                 continue;
             }
             RecentEntry recent;
@@ -277,8 +277,9 @@ Result<RecentsStore> recents_from_json(std::string_view text, std::size_t capaci
             recent.visit_count = !visits || *visits < 1
                                      ? 1U
                                      : static_cast<std::uint32_t>(std::min(*visits, kMaxVisits));
-            internal::append_loaded(store, std::move(recent));
+            loaded.push_back(std::move(recent));
         }
+        store.restore(std::move(loaded));
         return store;
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::OutOfMemory, "out of memory while reading recents");

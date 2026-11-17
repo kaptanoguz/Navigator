@@ -490,32 +490,24 @@ std::size_t RecentsStore::resync(Span<const VolumeInfo> volumes) {
     return changed;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Loader access (places_internal.hpp)
-// ---------------------------------------------------------------------------------------------
-//
-// recents_from_json() must restore visit counts and timestamps, which RecentsStore's public API
-// cannot set (record() always counts one visit "now"), and places.hpp declares no friend. The
-// explicit-instantiation access idiom below names the private member legally ([temp.spec]:
-// access checking does not apply to the template arguments of an explicit instantiation).
-// TODO(contracts): replace with a declared friend or a restore function in places.hpp.
-namespace {
-
-struct RecentsEntriesTag {
-    using type = std::vector<RecentEntry> RecentsStore::*;
-    friend type member_pointer(RecentsEntriesTag) noexcept;
-};
-
-template <class Tag, typename Tag::type Member> struct PrivateMember {
-    friend typename Tag::type member_pointer(Tag) noexcept { return Member; }
-};
-
-template struct PrivateMember<RecentsEntriesTag, &RecentsStore::entries_>;
-
-} // namespace
-
-void internal::append_loaded(RecentsStore& store, RecentEntry entry) {
-    (store.*member_pointer(RecentsEntriesTag{})).push_back(std::move(entry));
+void RecentsStore::restore(std::vector<RecentEntry> entries) {
+    std::vector<RecentEntry> kept;
+    kept.reserve(std::min(entries.size(), capacity_));
+    for (RecentEntry& entry : entries) {
+        if (kept.size() >= capacity_) {
+            break;
+        }
+        Path normal = normalize_absolute(entry.path);
+        if (normal.empty() || std::any_of(kept.begin(), kept.end(),
+                                          [&](const RecentEntry& e) { return e.path == normal; })) {
+            continue; // invalid, or a later (older) duplicate of a kept entry
+        }
+        entry.path = std::move(normal);
+        entry.volume = usable(std::move(entry.volume));
+        entry.visit_count = std::max<std::uint32_t>(entry.visit_count, 1);
+        kept.push_back(std::move(entry));
+    }
+    entries_ = std::move(kept);
 }
 
 } // namespace navigator::places
