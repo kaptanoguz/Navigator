@@ -32,6 +32,9 @@ struct CliOptions {
     // --config-dir DIR (raw bytes); empty: $XDG_CONFIG_HOME/navigator. main() points
     // config.config_dir at it, like start_path.
     std::string config_dir;
+    // Phase 5: --cache-dir DIR (raw bytes); empty: $XDG_CACHE_HOME/navigator. main() points
+    // config.cache_dir at it. --no-index clears config.enable_index.
+    std::string cache_dir;
     bool show_help = false;
     bool show_version = false;
     std::optional<Language> language;               // --lang overrides the environment
@@ -41,6 +44,7 @@ struct CliOptions {
     std::optional<float> scale;
     std::string debug_script; // --debug-script STEPS (see src/ui/shell/app.cpp)
     int bench_scroll = 0;     // --bench-scroll N: generated N-entry fixture, scroll benchmark
+    int bench_flatten = 0;    // --bench-flatten N: generated N-entry tree, flatten + cancel
 };
 
 // `args` excludes argv[0]. Errors: InvalidArgument with a user-facing English message.

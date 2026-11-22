@@ -10,6 +10,8 @@
 #include <unordered_set>
 #include <utility>
 
+#include "search/filter_rules.hpp"
+
 namespace navigator::ui {
 namespace {
 
@@ -65,6 +67,25 @@ void BrowserModel::suspend() {
     watch_gone_ = true; // the next request adds a fresh watch
     band_active_ = false;
     band_base_.clear();
+    // Phase 5: a suspended tab has no threads. A running walk is cancelled (never joined: it
+    // detaches) and the rows found so far stay; resume() walks again. Search jobs are CPU-bound
+    // and stop within one check interval, so joining the worker is bounded.
+    if (flat_ && flat_->walk) {
+        flat_->walk->cancel();
+        flat_->walk.reset();
+        flat_->walking = false;
+        flat_->cancelled = true;
+        flat_->interrupted = true;
+    }
+    if (flat_) {
+        flat_->in_flight = false;
+        flat_->query_due.reset();
+    }
+    worker_.reset();
+    if (listing_job_out_) {
+        listing_job_out_ = false;
+        ++listing_job_; // the lost result is re-requested by the next commit (resume re-lists)
+    }
     suspended_ = true;
 }
 
@@ -81,12 +102,23 @@ void BrowserModel::resume() {
     } else if (loaded_) {
         request(NavKind::Relist, here());
     }
+    if (flat_) {
+        if (flat_->request.index) {
+            post_index_query();
+        } else if (flat_->interrupted) {
+            start_walk(); // interrupted by suspension: walk again
+        } else {
+            post_flat_job(true); // suspension may have dropped a job in flight
+        }
+    }
 }
 
 void BrowserModel::restore(const layout::TabState& state, float row_dp, bool record_visit) {
     record_start_ = record_visit;
     sort_ = state.sort;
     show_hidden_ = state.show_hidden;
+    types_ = state.type_filter;
+    search::normalize(types_);
     Location target;
     target.dir = normalize(state.path);
     target.cursor_name = state.cursor_name;
@@ -120,6 +152,37 @@ void BrowserModel::copy_from(const BrowserModel& other) {
     page_rows_ = other.page_rows_;
     restored_dir_ = other.restored_dir_;
     restored_rows_ = other.restored_rows_;
+    // Phase 5: the type filter is a persisted view setting and follows the copy; the filter
+    // text and the flattened view are runtime-only and do not (tab.duplicate opens unfiltered).
+    types_ = other.types_;
+    list_mode_ = other.list_mode_;
+    ++listing_version_;
+    compile_query();
+    {
+        const std::size_t cursor_src = other.listing_shown() ? other.list_src(other.cursor_)
+                                                             : find(other.flat_->list_cursor_name);
+        const std::size_t anchor_src =
+            other.listing_shown() ? other.list_src(other.anchor_) : cursor_src;
+        list_identity_ = true;
+        list_rows_.clear();
+        if (listing_filtering()) {
+            // Inline even for big folders: the copy is suspended (no worker) and resume()
+            // re-lists right away anyway.
+            std::vector<std::uint32_t> rows;
+            if (filter_listing_rows(entries_, matcher_, types_, nullptr, rows)) {
+                list_identity_ = false;
+                set_listing_rows(std::move(rows), CursorPolicy::Keep, cursor_src, anchor_src);
+            }
+        } else {
+            cursor_ = cursor_src < entries_.size() ? cursor_src : (entries_.empty() ? kNoRow : 0);
+            anchor_ = anchor_src < entries_.size() ? anchor_src : cursor_;
+        }
+        if (!other.listing_shown()) {
+            std::fill(selected_.begin(), selected_.end(), std::uint8_t{0});
+            scroll_ = restored_scroll_ = other.flat_->list_scroll;
+        }
+        recount();
+    }
     if (other.pending_ && (!other.loaded_ || (other.pending_->kind != NavKind::Refresh &&
                                               other.pending_->kind != NavKind::Relist))) {
         Deferred d{other.pending_->kind, other.pending_->target};
@@ -144,6 +207,7 @@ layout::TabState BrowserModel::tab_state(float row_dp) const {
     layout::TabState s;
     s.sort = sort_;
     s.show_hidden = show_hidden_;
+    s.type_filter = types_;
     const Location* unloaded = nullptr;
     if (!loaded_) {
         if (deferred_) {
@@ -165,11 +229,15 @@ layout::TabState BrowserModel::tab_state(float row_dp) const {
         return s;
     }
     s.path = current_.dir;
-    if (cursor_ < entries_.size()) {
-        s.cursor_name = entries_[cursor_].name;
+    // A flattened view is runtime-only: the tab persists the folder listing under it.
+    const float scroll = flat_ ? flat_->list_scroll : scroll_;
+    if (flat_) {
+        s.cursor_name = flat_->list_cursor_name;
+    } else if (cursor_ < row_count()) {
+        s.cursor_name = row_entry(cursor_).name;
     }
     if (row_dp > 0.0F) {
-        s.scroll_rows = static_cast<double>(std::max(scroll_, 0.0F) / row_dp);
+        s.scroll_rows = static_cast<double>(std::max(scroll, 0.0F) / row_dp);
     }
     return s;
 }
@@ -185,6 +253,7 @@ bool BrowserModel::frame_start() {
     if (!lister_) {
         return false; // suspended
     }
+    changed = apply_search_results() || changed;
     for (ListingResult& result : lister_->take()) {
         if (!pending_ || result.generation != pending_->generation) {
             continue; // stale
@@ -235,8 +304,13 @@ bool BrowserModel::wait_watch_ready(std::chrono::milliseconds timeout) {
 Location BrowserModel::here() const {
     Location loc;
     loc.dir = current_.dir;
-    if (cursor_ < entries_.size()) {
-        loc.cursor_name = entries_[cursor_].name;
+    if (flat_) {
+        loc.cursor_name = flat_->list_cursor_name;
+        loc.scroll = flat_->list_scroll;
+        return loc;
+    }
+    if (cursor_ < row_count()) {
+        loc.cursor_name = row_entry(cursor_).name;
     }
     loc.scroll = scroll_;
     return loc;
@@ -316,12 +390,13 @@ void BrowserModel::open_start(const Path& dir) {
 void BrowserModel::navigate_to(const Path& dir) { navigate_to(dir, std::string()); }
 
 void BrowserModel::navigate_to(const Path& dir, std::string cursor_name) {
+    reset_search_view(); // navigation clears the filter text and leaves flatten (keymap.md)
     const Path target = normalize(dir);
     if (loaded_ && target == current_.dir) {
         // Stay here. This must not fold into a pending navigation elsewhere: the newest request
         // wins.
         if (!cursor_name.empty()) {
-            if (const std::size_t row = find(cursor_name); row != kNoRow) {
+            if (const std::size_t row = find_row(cursor_name); row != kNoRow) {
                 set_cursor(row, false);
                 select_only(row);
                 return;
@@ -344,12 +419,14 @@ std::vector<Path> BrowserModel::take_visits() {
 
 void BrowserModel::back() {
     if (!back_.empty()) {
+        reset_search_view();
         request(NavKind::Back, back_.back());
     }
 }
 
 void BrowserModel::forward() {
     if (!forward_.empty()) {
+        reset_search_view();
         request(NavKind::Forward, forward_.back());
     }
 }
@@ -358,6 +435,7 @@ void BrowserModel::up() {
     if (!can_up()) {
         return;
     }
+    reset_search_view();
     Location target;
     target.dir = current_.dir.parent_path();
     target.cursor_name = current_.dir.filename().string();
@@ -365,6 +443,15 @@ void BrowserModel::up() {
 }
 
 void BrowserModel::refresh() {
+    if (flat_) {
+        // F5 re-runs the flattened view (a snapshot, docs/architecture.md "Phase 5").
+        if (flat_->request.index) {
+            post_index_query();
+        } else {
+            start_walk();
+        }
+        return;
+    }
     if (loaded_) {
         request(NavKind::Refresh, here());
     }
@@ -374,6 +461,9 @@ void BrowserModel::toggle_hidden() {
     show_hidden_ = !show_hidden_;
     if (loaded_) {
         request(NavKind::Relist, here());
+    }
+    if (flat_) {
+        refresh(); // the walk (or index query) applies the hidden policy itself
     }
 }
 
@@ -387,16 +477,26 @@ void BrowserModel::sort_by(fs::SortKey key) {
     if (loaded_) {
         request(NavKind::Relist, here());
     }
+    if (flat_) {
+        // A header click sorts by that column instead of relevance until the query changes.
+        flat_->header_sort = true;
+        flat_->reveal = true;
+        if (flat_->request.index) {
+            post_index_query();
+        } else {
+            post_flat_job(true);
+        }
+    }
 }
 
 void BrowserModel::activate() {
-    if (cursor_ >= entries_.size()) {
+    if (cursor_ >= row_count()) {
         return;
     }
-    const fs::DirEntry& entry = entries_[cursor_];
-    const Path path = current_.dir / entry.name;
+    const fs::DirEntry& entry = row_entry(cursor_);
+    const Path path = row_path(cursor_);
     if (fs::is_directory_like(entry)) {
-        navigate_to(path);
+        navigate_to(path); // also leaves a flattened view (navigation)
         return;
     }
     // No launcher, no spawn: tests that forget a fake never run xdg-open on the desktop. The
@@ -413,6 +513,11 @@ void BrowserModel::activate() {
 void BrowserModel::commit(Pending& pending, ListingResult& result) {
     const bool relist = pending.kind == NavKind::Refresh || pending.kind == NavKind::Relist;
     const bool first = !loaded_;
+    if (!relist && flat_) {
+        // A navigation that was already pending when the view flattened: it wins.
+        leave_flatten();
+    }
+    const bool shown = listing_shown();
 
     // Names to carry over (re-list of the same directory only).
     std::string cursor_name;
@@ -420,17 +525,17 @@ void BrowserModel::commit(Pending& pending, ListingResult& result) {
     std::unordered_set<std::string> selected_names;
     const std::size_t old_cursor = cursor_;
     if (relist) {
-        if (cursor_ < entries_.size()) {
-            cursor_name = entries_[cursor_].name;
+        if (!shown) {
+            cursor_name = flat_->list_cursor_name;
+        } else if (cursor_ < row_count()) {
+            cursor_name = row_entry(cursor_).name;
         }
-        if (anchor_ < entries_.size()) {
-            anchor_name = entries_[anchor_].name;
+        if (shown && anchor_ < row_count()) {
+            anchor_name = row_entry(anchor_).name;
         }
-        if (selected_count_ > 0) {
-            for (std::size_t i = 0; i < entries_.size(); ++i) {
-                if (selected_[i] != 0) {
-                    selected_names.insert(entries_[i].name);
-                }
+        for (std::size_t i = 0; i < entries_.size(); ++i) {
+            if (i < selected_.size() && selected_[i] != 0) {
+                selected_names.insert(entries_[i].name);
             }
         }
     } else if (!first) {
@@ -456,6 +561,7 @@ void BrowserModel::commit(Pending& pending, ListingResult& result) {
 
     current_.dir = pending.target.dir;
     entries_ = std::move(*result.entries);
+    ++listing_version_;
     hidden_names_.clear();
     hidden_names_.insert(std::make_move_iterator(result.hidden_names.begin()),
                          std::make_move_iterator(result.hidden_names.end()));
@@ -475,6 +581,12 @@ void BrowserModel::commit(Pending& pending, ListingResult& result) {
     listed_sort_ = sort_;
     listed_hidden_ = show_hidden_;
 
+    const bool filtering = listing_filtering();
+    list_identity_ = true; // entries first; filtered rows are built at the end
+    list_rows_.clear();
+
+    std::size_t cursor_src = kNoRow;
+    std::size_t anchor_src = kNoRow;
     if (relist) {
         if (!selected_names.empty()) {
             for (std::size_t i = 0; i < entries_.size(); ++i) {
@@ -483,20 +595,10 @@ void BrowserModel::commit(Pending& pending, ListingResult& result) {
                 }
             }
         }
-        cursor_ = cursor_name.empty() ? kNoRow : find(cursor_name);
-        if (cursor_ == kNoRow && !entries_.empty()) {
-            cursor_ = old_cursor == kNoRow ? 0 : std::min(old_cursor, entries_.size() - 1);
-        }
-        anchor_ = anchor_name.empty() ? kNoRow : find(anchor_name);
-        if (anchor_ == kNoRow) {
-            anchor_ = cursor_;
-        }
+        cursor_src = cursor_name.empty() ? kNoRow : find(cursor_name);
+        anchor_src = anchor_name.empty() ? kNoRow : find(anchor_name);
     } else {
-        cursor_ = pending.target.cursor_name.empty() ? kNoRow : find(pending.target.cursor_name);
-        if (cursor_ == kNoRow && !entries_.empty()) {
-            cursor_ = 0;
-        }
-        anchor_ = cursor_;
+        cursor_src = pending.target.cursor_name.empty() ? kNoRow : find(pending.target.cursor_name);
         restored_scroll_ = pending.target.scroll;
         scroll_ = pending.target.scroll;
         notice_.reset(); // a successful navigation retires the previous notice
@@ -508,12 +610,47 @@ void BrowserModel::commit(Pending& pending, ListingResult& result) {
         }
         record_start_ = false;
     }
-    if (entries_.empty()) {
-        cursor_ = kNoRow;
-        anchor_ = kNoRow;
+    if (shown) {
+        cursor_ = cursor_src;
+        if (cursor_ == kNoRow && !entries_.empty()) {
+            cursor_ = (!relist || old_cursor == kNoRow || filtering)
+                          ? 0
+                          : std::min(old_cursor, entries_.size() - 1);
+        }
+        anchor_ = anchor_src == kNoRow ? cursor_ : anchor_src;
+        if (entries_.empty()) {
+            cursor_ = kNoRow;
+            anchor_ = kNoRow;
+        }
     }
+    // Watch batches seen while the listing ran (identity rows: cursor and anchor follow).
     for (const WatchBatch& batch : pending.replay) {
         (void)apply_watch_batch(batch);
+    }
+    ++listing_version_;
+
+    if (!shown) {
+        // Flattened: the listing updates underneath; its cursor is restored on leave.
+        if (filtering) {
+            list_stale_ = true;
+            list_identity_ = false;
+        }
+        if (cursor_src != kNoRow && cursor_src < entries_.size()) {
+            flat_->list_cursor_name = entries_[cursor_src].name;
+        }
+        ++content_serial_;
+        return;
+    }
+    if (filtering) {
+        const std::size_t cs = cursor_;
+        const std::size_t as = anchor_;
+        cursor_ = kNoRow;
+        anchor_ = kNoRow;
+        rebuild_listing_rows(CursorPolicy::Keep, cs, as);
+    }
+    if (row_count() == 0) {
+        cursor_ = kNoRow;
+        anchor_ = kNoRow;
     }
     recount();
     ++content_serial_;
@@ -526,6 +663,9 @@ void BrowserModel::fail_request(Pending& pending, ListingResult& result) {
     case NavKind::Start:
         current_.dir = pending.target.dir;
         entries_.clear();
+        ++listing_version_;
+        list_identity_ = true;
+        list_rows_.clear();
         selected_.clear();
         hidden_names_.clear();
         cursor_ = kNoRow;
@@ -573,11 +713,14 @@ void BrowserModel::raise(NoticeKind kind, ErrorCode code, Path path) {
 void BrowserModel::dismiss_notice() noexcept { notice_.reset(); }
 
 void BrowserModel::cursor_to(std::size_t row) {
-    if (row >= entries_.size()) {
+    if (row >= row_count()) {
         return;
     }
     cursor_ = row;
     anchor_ = row;
+    if (flat_) {
+        flat_->cursor_follows_top = false;
+    }
     ++cursor_serial_;
 }
 
@@ -591,15 +734,23 @@ bool BrowserModel::notice_shown() const noexcept {
 }
 
 void BrowserModel::escape() {
-    if (notice_shown()) {
-        dismiss_notice();
-        return;
+    // One step per press, innermost first (docs/keymap.md "Focus scoping (Phase 5)").
+    const bool running =
+        flat_ && (flat_->walking || (flat_->request.index && !flat_->refreshing &&
+                                     (flat_->in_flight || flat_->query_due.has_value())));
+    switch (list_escape_step(notice_shown(), running, selected_count_ > 0, flat_ != nullptr,
+                             filter_active())) {
+    case ListEscape::DismissNotice: dismiss_notice(); return;
+    case ListEscape::CancelSearch: cancel_search(); return;
+    case ListEscape::ClearSelection: clear_selection(); return;
+    case ListEscape::LeaveFlatten: leave_flatten(); return;
+    case ListEscape::ClearFilter: clear_filter(); return;
+    case ListEscape::Nothing: return;
     }
-    clear_selection();
 }
 
 // ---------------------------------------------------------------------------------------------
-// Cursor and selection
+// Cursor and selection (row space)
 // ---------------------------------------------------------------------------------------------
 
 std::size_t BrowserModel::find(std::string_view name) const noexcept {
@@ -611,47 +762,86 @@ std::size_t BrowserModel::find(std::string_view name) const noexcept {
     return kNoRow;
 }
 
+bool BrowserModel::is_selected(std::size_t row) const noexcept {
+    if (flat_) {
+        return row < flat_->rows.size() && flat_->sel[flat_->rows[row]] != 0;
+    }
+    const std::size_t src = list_src(row);
+    return src < selected_.size() && selected_[src] != 0;
+}
+
+std::uint8_t& BrowserModel::flag(std::size_t row) noexcept {
+    if (flat_) {
+        return flat_->sel[flat_->rows[row]];
+    }
+    return selected_[list_src(row)];
+}
+
 void BrowserModel::recount() {
     selected_count_ = 0;
     selected_bytes_ = 0;
-    for (std::size_t i = 0; i < entries_.size(); ++i) {
-        if (selected_[i] != 0) {
+    const std::size_t n = row_count();
+    for (std::size_t i = 0; i < n; ++i) {
+        if (is_selected(i)) {
             ++selected_count_;
-            if (!fs::is_directory_like(entries_[i])) {
-                selected_bytes_ += entries_[i].size;
+            const fs::DirEntry& e = row_entry(i);
+            if (!fs::is_directory_like(e)) {
+                selected_bytes_ += e.size;
             }
         }
     }
 }
 
+namespace {
+
+void clear_flags(std::vector<std::uint8_t>& flags) {
+    std::fill(flags.begin(), flags.end(), std::uint8_t{0});
+}
+
+} // namespace
+
 void BrowserModel::select_only(std::size_t row) {
-    std::fill(selected_.begin(), selected_.end(), std::uint8_t{0});
-    if (row < selected_.size()) {
-        selected_[row] = 1;
+    clear_flags(flat_ ? flat_->sel : selected_);
+    // Every cursor move lands here: no O(rows) recount over a 300k-row flattened view.
+    selected_count_ = 0;
+    selected_bytes_ = 0;
+    if (row < row_count()) {
+        flag(row) = 1;
+        selected_count_ = 1;
+        const fs::DirEntry& e = row_entry(row);
+        selected_bytes_ = fs::is_directory_like(e) ? 0 : e.size;
     }
-    recount();
 }
 
 void BrowserModel::select_range(std::size_t a, std::size_t b, bool add) {
+    const std::size_t n = row_count();
     if (!add) {
-        std::fill(selected_.begin(), selected_.end(), std::uint8_t{0});
+        clear_flags(flat_ ? flat_->sel : selected_);
+    }
+    if (n == 0) {
+        recount();
+        return;
     }
     const std::size_t lo = std::min(a, b);
-    const std::size_t hi = std::min(std::max(a, b), selected_.size() - 1);
-    for (std::size_t i = lo; i <= hi && i < selected_.size(); ++i) {
-        selected_[i] = 1;
+    const std::size_t hi = std::min(std::max(a, b), n - 1);
+    for (std::size_t i = lo; i <= hi && i < n; ++i) {
+        flag(i) = 1;
     }
     recount();
 }
 
 void BrowserModel::set_cursor(std::size_t row, bool extend) {
-    if (entries_.empty()) {
+    const std::size_t n = row_count();
+    if (n == 0) {
         return;
     }
-    row = std::min(row, entries_.size() - 1);
+    if (flat_) {
+        flat_->cursor_follows_top = false;
+    }
+    row = std::min(row, n - 1);
     cursor_ = row;
     if (extend) {
-        if (anchor_ >= entries_.size()) {
+        if (anchor_ >= n) {
             anchor_ = row;
         }
         select_range(anchor_, row, false);
@@ -663,12 +853,13 @@ void BrowserModel::set_cursor(std::size_t row, bool extend) {
 }
 
 void BrowserModel::cursor_by(std::ptrdiff_t delta, bool extend) {
-    if (entries_.empty()) {
+    const std::size_t n = row_count();
+    if (n == 0) {
         return;
     }
-    const auto last = static_cast<std::ptrdiff_t>(entries_.size() - 1);
+    const auto last = static_cast<std::ptrdiff_t>(n - 1);
     std::ptrdiff_t next = 0;
-    if (cursor_ >= entries_.size()) {
+    if (cursor_ >= n) {
         next = delta >= 0 ? 0 : last;
     } else {
         next = std::clamp(static_cast<std::ptrdiff_t>(cursor_) + delta, std::ptrdiff_t{0}, last);
@@ -684,34 +875,44 @@ void BrowserModel::cursor_page(int direction, bool extend) {
 void BrowserModel::cursor_home(bool extend) { set_cursor(0, extend); }
 
 void BrowserModel::cursor_end(bool extend) {
-    if (!entries_.empty()) {
-        set_cursor(entries_.size() - 1, extend);
+    if (const std::size_t n = row_count(); n > 0) {
+        set_cursor(n - 1, extend);
     }
 }
 
 void BrowserModel::select_all() {
-    std::fill(selected_.begin(), selected_.end(), std::uint8_t{1});
+    // Every SHOWN row (docs/keymap.md: Ctrl+A in a filtered list selects the matches).
+    const std::size_t n = row_count();
+    for (std::size_t i = 0; i < n; ++i) {
+        flag(i) = 1;
+    }
     recount();
 }
 
 void BrowserModel::clear_selection() {
-    std::fill(selected_.begin(), selected_.end(), std::uint8_t{0});
-    recount();
+    clear_flags(flat_ ? flat_->sel : selected_);
+    selected_count_ = 0;
+    selected_bytes_ = 0;
 }
 
 void BrowserModel::click_row(std::size_t row, Modifiers mods) {
-    if (row >= entries_.size()) {
+    const std::size_t n = row_count();
+    if (row >= n) {
         return;
+    }
+    if (flat_) {
+        flat_->cursor_follows_top = false;
     }
     const bool ctrl = has(mods, Modifiers::Ctrl);
     const bool shift = has(mods, Modifiers::Shift);
-    if (anchor_ >= entries_.size()) {
+    if (anchor_ >= n) {
         anchor_ = row;
     }
     if (shift) {
         select_range(anchor_, row, ctrl); // Ctrl+Shift adds the range
     } else if (ctrl) {
-        selected_[row] = selected_[row] != 0 ? 0 : 1;
+        std::uint8_t& f = flag(row);
+        f = f != 0 ? 0 : 1;
         anchor_ = row;
         recount();
     } else {
@@ -723,19 +924,28 @@ void BrowserModel::click_row(std::size_t row, Modifiers mods) {
 }
 
 void BrowserModel::band_begin(bool additive) {
+    const std::size_t n = row_count();
     band_active_ = true;
     band_additive_ = additive;
-    band_base_ = additive ? selected_ : std::vector<std::uint8_t>(selected_.size(), 0);
+    band_base_.assign(n, 0);
+    if (additive) {
+        for (std::size_t i = 0; i < n; ++i) {
+            band_base_[i] = is_selected(i) ? 1 : 0;
+        }
+    }
 }
 
 void BrowserModel::band_update(std::size_t first, std::size_t last) {
-    if (!band_active_) {
-        return;
+    const std::size_t n = row_count();
+    if (!band_active_ || band_base_.size() != n) {
+        return; // the rows changed under the band (flatten results, a filtered watch change)
     }
-    selected_ = band_base_;
+    for (std::size_t i = 0; i < n; ++i) {
+        flag(i) = band_base_[i];
+    }
     if (first <= last) {
-        for (std::size_t i = first; i <= last && i < selected_.size(); ++i) {
-            selected_[i] = 1;
+        for (std::size_t i = first; i <= last && i < n; ++i) {
+            flag(i) = 1;
         }
     }
     recount();
@@ -763,6 +973,22 @@ bool BrowserModel::execute(const Command& command) {
     case CommandId::CursorPageDown: cursor_page(1, extend); return true;
     case CommandId::CursorHome: cursor_home(extend); return true;
     case CommandId::CursorEnd: cursor_end(extend); return true;
+    // Phase 5 (tab level). Focus and popups are the shell's (FocusFilter, ToggleTypesPopup);
+    // the volume flatten and the index need the App's volume table and index service.
+    case CommandId::ClearFilter: clear_filter(); return true;
+    case CommandId::ToggleFlatten:
+        if (flat_) {
+            leave_flatten();
+        } else {
+            flatten(FlattenRequest{});
+        }
+        return true;
+    case CommandId::ToggleFuzzy: toggle_match_mode(); return true;
+    case CommandId::CancelSearch: cancel_search(); return true;
+    case CommandId::FocusFilter:
+    case CommandId::FlattenVolume:
+    case CommandId::ToggleTypesPopup:
+    case CommandId::RebuildIndex:
     case CommandId::None:
     case CommandId::Quit:
     case CommandId::ToggleFpsOverlay:
@@ -850,14 +1076,19 @@ std::size_t BrowserModel::insert_sorted(fs::DirEntry entry, bool selected) {
     const auto at = static_cast<std::ptrdiff_t>(lo);
     entries_.insert(entries_.begin() + at, std::move(entry));
     selected_.insert(selected_.begin() + at, selected ? 1 : 0);
-    if (band_active_) {
-        band_base_.insert(band_base_.begin() + at, 0);
-    }
-    if (cursor_ != kNoRow && cursor_ >= lo) {
-        ++cursor_;
-    }
-    if (anchor_ != kNoRow && anchor_ >= lo) {
-        ++anchor_;
+    ++listing_version_;
+    if (!list_identity_) {
+        listing_inserted(lo); // filtered rows shift; the new entry joins them if it matches
+    } else if (listing_shown()) {
+        if (band_active_) {
+            band_base_.insert(band_base_.begin() + at, 0);
+        }
+        if (cursor_ != kNoRow && cursor_ >= lo) {
+            ++cursor_;
+        }
+        if (anchor_ != kNoRow && anchor_ >= lo) {
+            ++anchor_;
+        }
     }
     return lo;
 }
@@ -866,6 +1097,14 @@ void BrowserModel::erase_row(std::size_t row) {
     const auto at = static_cast<std::ptrdiff_t>(row);
     entries_.erase(entries_.begin() + at);
     selected_.erase(selected_.begin() + at);
+    ++listing_version_;
+    if (!list_identity_) {
+        listing_erased(row);
+        return;
+    }
+    if (!listing_shown()) {
+        return;
+    }
     if (band_active_ && row < band_base_.size()) {
         band_base_.erase(band_base_.begin() + at);
     }
@@ -896,7 +1135,7 @@ bool BrowserModel::apply_change(const WatchChange& change) {
             }
         }
     };
-    // Removes `name` if listed; reports its selection/cursor/anchor state.
+    // Removes `name` if listed; reports its selection/cursor/anchor state (row space).
     struct Taken {
         bool found = false;
         bool selected = false;
@@ -905,19 +1144,30 @@ bool BrowserModel::apply_change(const WatchChange& change) {
     };
     const auto take = [this](std::string_view name) {
         Taken t;
-        const std::size_t row = find(name);
-        if (row == kNoRow) {
+        const std::size_t src = find(name);
+        if (src == kNoRow) {
             return t;
         }
         t.found = true;
-        t.selected = selected_[row] != 0;
-        t.cursor = cursor_ == row;
-        t.anchor = anchor_ == row;
-        erase_row(row);
+        t.selected = selected_[src] != 0;
+        if (listing_shown()) {
+            const std::size_t row = list_row_of(src);
+            t.cursor = row != kNoRow && cursor_ == row;
+            t.anchor = row != kNoRow && anchor_ == row;
+        }
+        erase_row(src);
         return t;
     };
     const auto put = [this](fs::DirEntry entry, const Taken& t) {
-        const std::size_t row = insert_sorted(std::move(entry), t.selected);
+        const std::size_t src = insert_sorted(std::move(entry), t.selected);
+        const std::size_t row = list_row_of(src);
+        if (row == kNoRow) {
+            selected_[src] = 0; // hidden by the filter: never selected (invariant)
+            return;
+        }
+        if (!listing_shown()) {
+            return;
+        }
         if (t.cursor) {
             cursor_ = row;
         }
@@ -951,10 +1201,10 @@ bool BrowserModel::apply_change(const WatchChange& change) {
     }
     case WatchChange::Kind::Rename: {
         track_hidden(change.old_name, false);
-        const std::size_t old_row = find(change.old_name);
+        const std::size_t old_src = find(change.old_name);
         std::optional<fs::DirEntry> entry = change.entry;
-        if (!entry && old_row != kNoRow) {
-            entry = entries_[old_row];
+        if (!entry && old_src != kNoRow) {
+            entry = entries_[old_src];
         }
         const Taken t = take(change.old_name);
         if (!entry) {
@@ -1042,10 +1292,17 @@ bool BrowserModel::apply_watch_batch(const WatchBatch& batch) {
             changed = apply_change(change) || changed;
         }
         if (changed) {
-            if (cursor_ >= entries_.size()) {
-                cursor_ = entries_.empty() ? kNoRow : entries_.size() - 1;
+            type_rows_valid_ = false;
+            if (listing_shown()) {
+                const std::size_t n = row_count();
+                if (cursor_ >= n) {
+                    cursor_ = n == 0 ? kNoRow : n - 1;
+                }
+                if (!list_identity_) {
+                    band_active_ = false; // filtered rows moved under the band
+                }
+                recount();
             }
-            recount();
             ++content_serial_;
         }
     }

@@ -336,6 +336,28 @@ void draw_line_icon(Renderer& r, LineIcon icon, float x, float y, float size, fl
         line(3.0F, 13.0F, 13.0F, 3.0F);
         box(2.4F, 5.4F, 8.0F, 6.0F, 1.6F);
         break;
+    case LineIcon::Funnel:
+        // Phase 5 types popup: a filter funnel.
+        line(1.8F, 3.0F, 14.2F, 3.0F);
+        line(1.8F, 3.0F, 6.6F, 8.6F);
+        line(14.2F, 3.0F, 9.4F, 8.6F);
+        line(6.6F, 8.6F, 6.6F, 13.4F);
+        line(9.4F, 8.6F, 9.4F, 12.0F);
+        line(6.6F, 13.4F, 9.4F, 12.0F);
+        break;
+    case LineIcon::Flatten:
+        // Phase 5 flatten: a folder tree whose branches line up into one list.
+        r.fill_rounded_rect(g.rect(1.6F, 1.8F, 4.0F, 3.4F), g.px(0.9F), color);
+        line(3.6F, 5.2F, 3.6F, 12.6F);
+        line(3.6F, 8.4F, 6.6F, 8.4F);
+        line(3.6F, 12.6F, 6.6F, 12.6F);
+        line(8.4F, 3.5F, 14.4F, 3.5F);
+        line(8.4F, 8.4F, 14.4F, 8.4F);
+        line(8.4F, 12.6F, 14.4F, 12.6F);
+        break;
+    case LineIcon::Stop:
+        r.fill_rounded_rect(g.rect(4.0F, 4.0F, 8.0F, 8.0F), g.px(1.4F), color);
+        break;
     }
 }
 

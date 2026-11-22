@@ -62,7 +62,24 @@ int main(int argc, char** argv) {
         setenv("NAVIGATOR_DEBUG_SCRIPT", options->debug_script.c_str(), 1);
     }
     std::optional<navigator::app::BenchFixture> bench;
-    if (options->bench_scroll > 0) {
+    if (options->bench_scroll > 0 || options->bench_flatten > 0) {
+        // Benchmarks run on generated fixtures only: no index of the real volumes, no session.
+        options->config.enable_index = false;
+        options->config.restore_session = false;
+        options->config.save_session = false;
+    }
+    if (options->bench_flatten > 0) {
+        setenv("NAVIGATOR_DEBUG_BENCH_FLATTEN", "1", 1);
+        if (options->start_path.empty()) {
+            auto fx = navigator::app::create_bench_tree(options->bench_flatten);
+            if (!fx) {
+                std::fprintf(stderr, "navigator: bench tree: %s\n", fx.error().message.c_str());
+                return 1;
+            }
+            bench = std::move(*fx);
+            options->start_path = bench->root.string();
+        }
+    } else if (options->bench_scroll > 0) {
         setenv("NAVIGATOR_DEBUG_BENCH_SCROLL", "1", 1);
         if (options->start_path.empty()) {
             auto fx = navigator::app::create_bench_fixture(options->bench_scroll);
@@ -84,6 +101,7 @@ int main(int argc, char** argv) {
     navigator::AppConfig config = options->config;
     config.start_path = options->start_path; // `options` outlives the App
     config.config_dir = options->config_dir;
+    config.cache_dir = options->cache_dir;
     int code = 1;
     {
         auto app = navigator::App::create(config);

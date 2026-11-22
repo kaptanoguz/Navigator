@@ -27,6 +27,15 @@ public:
     [[nodiscard]] ShapedText fit(const Painter& painter, const TextStyle& style,
                                  std::string_view text, float max_px, Elide mode);
 
+    // As fit(), plus the string that was shaped (Phase 5: match highlights are mapped onto the
+    // elided text). `shown` is empty when the full text fits (then it is `text` itself).
+    struct Fitted {
+        ShapedText shaped;
+        std::string shown;
+    };
+    [[nodiscard]] Fitted fit_text(const Painter& painter, const TextStyle& style,
+                                  std::string_view text, float max_px, Elide mode);
+
     // The string fit() would shape (uncached); exposed for tests.
     [[nodiscard]] static std::string elide(const Painter& painter, const TextStyle& style,
                                            std::string_view text, float max_px, Elide mode);
@@ -35,7 +44,7 @@ public:
     void clear() noexcept { cache_.clear(); }
 
 private:
-    text::LruCache<ShapedText> cache_;
+    text::LruCache<Fitted> cache_;
     std::string key_;
 };
 

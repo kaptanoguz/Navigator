@@ -158,6 +158,29 @@ Result<CliOptions> parse_cli(const std::vector<std::string_view>& args) {
                 return fail(ErrorCode::InvalidArgument, "--config-dir must not be empty");
             }
             o.config_dir = std::string(*v);
+        } else if (a == "--cache-dir") {
+            auto v = value(a);
+            if (!v) {
+                return fail(v.error().code, v.error().message);
+            }
+            if (v->empty()) {
+                return fail(ErrorCode::InvalidArgument, "--cache-dir must not be empty");
+            }
+            o.cache_dir = std::string(*v);
+        } else if (a == "--no-index") {
+            o.config.enable_index = false;
+        } else if (a == "--bench-flatten") {
+            auto v = value(a);
+            if (!v) {
+                return fail(v.error().code, v.error().message);
+            }
+            int n = 0;
+            if (!parse_int(*v, n) || n <= 0 || n > 2000000) {
+                return fail(ErrorCode::InvalidArgument,
+                            "--bench-flatten expects an entry count in [1, 2000000], got '" +
+                                std::string(*v) + "'");
+            }
+            o.bench_flatten = n;
         } else if (a == "--fps") {
             o.config.show_fps = true;
         } else if (a == "--no-fps") {
@@ -241,6 +264,9 @@ std::string usage_text(std::string_view program) {
          "  --no-session      do not restore or save the session\n"
          "  --config-dir DIR  keep session.json and layouts/ in DIR\n"
          "                    (default: $XDG_CONFIG_HOME/navigator)\n"
+         "  --cache-dir DIR   keep the file-name index in DIR/index\n"
+         "                    (default: $XDG_CACHE_HOME/navigator)\n"
+         "  --no-index        do not build, load or watch file-name indexes\n"
          "  --fps, --no-fps   show or hide the performance overlay (default: hidden)\n"
          "  --no-animations   turn off UI animations such as smooth scrolling\n"
          "                    (also: NAVIGATOR_NO_ANIMATIONS=1)\n"

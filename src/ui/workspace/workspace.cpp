@@ -115,6 +115,22 @@ bool Workspace::settled() const {
     return true;
 }
 
+bool Workspace::searching() const {
+    for (const TabId t : visible_tabs()) {
+        const BrowserModel* m = model(t);
+        if (m != nullptr && m->searching()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void Workspace::cancel_walks() noexcept {
+    for (auto& [id, m] : models_) {
+        m->cancel_for_quit();
+    }
+}
+
 bool Workspace::frame_start() {
     bool any = false;
     for (auto& [id, m] : models_) {
@@ -137,7 +153,7 @@ bool Workspace::sync() {
             next.path = cur->path;
         }
         if (next.path != cur->path || !(next.sort == cur->sort) ||
-            next.show_hidden != cur->show_hidden) {
+            next.show_hidden != cur->show_hidden || !(next.type_filter == cur->type_filter)) {
             significant = true;
         }
         *cur = std::move(next);
@@ -195,6 +211,7 @@ TabState Workspace::new_tab_state(PaneId pane, bool home) const {
         s.path = src.path.empty() ? t.state.path : src.path;
         s.sort = src.sort;
         s.show_hidden = src.show_hidden;
+        s.type_filter = src.type_filter; // a view setting like show_hidden (layout.hpp)
     }
     if (s.path.empty()) {
         s.path = fallback_dir();
@@ -424,11 +441,21 @@ bool Workspace::execute(const Command& command) {
             m.activate();
             return true;
         }
-        (void)open_tab(m.current_dir() / e->name, false);
+        (void)open_tab(m.row_path(m.cursor()), false); // flattened rows live below the folder
         return true;
     }
     case CommandId::NewWindow:
         return true; // reserved: one window until the multi-window phase
+    // Phase 5: shell level (filter focus, types popup, volume table, index service; ui::App).
+    case CommandId::FocusFilter:
+    case CommandId::FlattenVolume:
+    case CommandId::ToggleTypesPopup:
+    case CommandId::RebuildIndex: return false;
+    // Phase 5: the active tab's view.
+    case CommandId::ClearFilter:
+    case CommandId::ToggleFlatten:
+    case CommandId::ToggleFuzzy:
+    case CommandId::CancelSearch: return active_model().execute(command);
     // Phase 4: shell level (sidebar, GoTo, address bar, bookmarks, clipboard; ui::App).
     case CommandId::FocusAddressBar:
     case CommandId::GoTo:
@@ -483,6 +510,7 @@ bool Workspace::open_tab(const Path& dir, bool activate) {
     s.path = normalize_dir(dir);
     s.sort = m.sort();
     s.show_hidden = m.show_hidden();
+    s.type_filter = m.type_filter();
     bool done = false;
     (void)sync();
     const PaneId pane = l.active_pane();

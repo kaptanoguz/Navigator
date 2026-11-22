@@ -121,9 +121,14 @@ std::string TextFitter::elide(const Painter& painter, const TextStyle& style, st
 
 ShapedText TextFitter::fit(const Painter& painter, const TextStyle& style, std::string_view text,
                            float max_px, Elide mode) {
+    return fit_text(painter, style, text, max_px, mode).shaped;
+}
+
+TextFitter::Fitted TextFitter::fit_text(const Painter& painter, const TextStyle& style,
+                                        std::string_view text, float max_px, Elide mode) {
     ShapedText full = painter.shape(style, text);
     if (!full.layout || full.width() <= max_px) {
-        return full;
+        return Fitted{std::move(full), {}};
     }
     key_.clear();
     key_ += std::to_string(static_cast<int>(style.size * 8.0F));
@@ -139,7 +144,9 @@ ShapedText TextFitter::fit(const Painter& painter, const TextStyle& style, std::
     if (const auto hit = cache_.find(key_)) {
         return *hit;
     }
-    return *cache_.insert(key_, painter.shape(style, elide(painter, style, text, max_px, mode)));
+    std::string shown = elide(painter, style, text, max_px, mode);
+    ShapedText shaped = painter.shape(style, shown);
+    return *cache_.insert(key_, Fitted{std::move(shaped), std::move(shown)});
 }
 
 } // namespace navigator::ui

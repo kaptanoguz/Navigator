@@ -8,9 +8,12 @@ find_package(Threads REQUIRED)
 # Phase 3 workspace (tabs/panes state, pane geometry, tab strip math, drag and drop, Search
 # Tabs filtering, session writer) and the Phase 4 places model (bookmarks, recents, volume and
 # probe workers), sidebar rows, path entry (GoTo / address bar) with its worker, text editing.
+# Phase 5: rows (folder filter, type filter, flattened view), the flatten walk thread, the
+# search worker, the index service and the filter-field key rules (src/ui/search).
 # Unit-tested on fixture directories in tests/ui.
 add_library(navigator_ui_browser STATIC
     browser/browser_model.cpp
+    browser/browser_model_search.cpp
     browser/format.cpp
     browser/listing_worker.cpp
     browser/watch_worker.cpp
@@ -18,6 +21,13 @@ add_library(navigator_ui_browser STATIC
     path/copy_path.cpp
     path/path_entry.cpp
     path/path_worker.cpp
+    search/flatten_walk.cpp
+    search/highlight_map.cpp
+    search/index_service.cpp
+    search/index_status.cpp
+    search/organize.cpp
+    search/search_worker.cpp
+    search/filter_rules.cpp
     sidebar/places_model.cpp
     sidebar/sidebar_model.cpp
     widgets/text_edit.cpp
@@ -35,6 +45,7 @@ target_link_libraries(navigator_ui_browser
         navigator::commands
         navigator::core
         navigator::platform
+        navigator::search
         Threads::Threads
     PRIVATE
         navigator::options
@@ -42,6 +53,7 @@ target_link_libraries(navigator_ui_browser
 
 add_library(navigator_ui STATIC
     browser/browser_chrome.cpp
+    browser/browser_search_view.cpp
     browser/browser_view.cpp
     input/sdl_input.cpp
     render/backend_name.cpp
@@ -61,6 +73,7 @@ add_library(navigator_ui STATIC
     widgets/text_fit.cpp
     workspace/goto_popup.cpp
     workspace/popups.cpp
+    workspace/types_popup.cpp
     workspace/workspace_view.cpp
 )
 add_library(navigator::ui ALIAS navigator_ui)

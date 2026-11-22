@@ -27,9 +27,10 @@ constexpr float kColumnGap = kColumnGapDp; // dp (format.hpp, shared with plan_c
 constexpr float kSizeWidth = kSizeWidthDp;
 constexpr float kTypeWidth = kTypeWidthDp;
 constexpr float kDateWidth = kDateWidthDp;
-constexpr float kTextPad = 10.0F;  // row highlight edge -> content
-constexpr float kGlyphGap = 10.0F; // glyph -> name text
-constexpr float kListPad = 4.0F;   // above the first row
+constexpr float kTextPad = 10.0F;          // row highlight edge -> content
+constexpr float kGlyphGap = 10.0F;         // glyph -> name text
+constexpr float kListPad = 4.0F;           // above the first row
+constexpr float kFolderMinRoomDp = 260.0F; // name room needed before Folder gets a column
 
 } // namespace
 
@@ -98,6 +99,21 @@ BrowserView::Layout BrowserView::compute_layout(const BrowserFrame& f) const {
         l.size_x = l.size_r = edge + gap;
     }
     l.name_r = std::max(edge, l.text_x + p.px(40.0F));
+
+    // Phase 5: a flattened view adds the Folder column (relative parent path) next to Name so
+    // rows with the same name can be told apart; narrow panes show it after the name instead.
+    if (f.model.flattened()) {
+        const float room = l.name_r - l.text_x;
+        if (room >= p.px(kFolderMinRoomDp)) {
+            const float fw = std::round(std::clamp(room * 0.42F, p.px(110.0F), p.px(320.0F)));
+            l.show_folder = true;
+            l.folder_r = l.name_r;
+            l.folder_x = l.folder_r - fw;
+            l.name_r = l.folder_x - gap;
+        } else {
+            l.inline_parent = true;
+        }
+    }
     return l;
 }
 
@@ -128,7 +144,7 @@ std::size_t BrowserView::row_at(float y, const Layout& l, const BrowserFrame& f)
         return kNoRow;
     }
     const auto row = static_cast<std::size_t>(content_y / l.row_h);
-    return row < f.model.entries().size() ? row : kNoRow;
+    return row < f.model.row_count() ? row : kNoRow;
 }
 
 void BrowserView::ensure_visible(std::size_t row, const Layout& l, const BrowserFrame& f) {
@@ -151,7 +167,7 @@ void BrowserView::update(const BrowserFrame& f) {
     const Layout l = compute_layout(f);
     const BrowserModel& m = f.model;
     const float scale = f.painter.scale();
-    const auto n = static_cast<float>(m.entries().size());
+    const auto n = static_cast<float>(m.row_count());
     const float content_dp = (2.0F * l.pad / scale) + (n * (l.row_h / scale));
     max_scroll_ = std::max(0.0F, content_dp - (l.body.h / scale));
     page_rows_ =
@@ -209,6 +225,12 @@ void BrowserView::update(const BrowserFrame& f) {
         target_ = scroll_ = t * max_scroll_;
     }
 
+    // Phase 5: the spinner and the indeterminate progress bar run while a search does.
+    spinning_ = m.searching();
+    if (spinning_) {
+        spin_ms_ += f.animations ? f.dt_ms : 0.0;
+    }
+
     if (f.animations) {
         const double k = 1.0 - std::exp(-f.dt_ms / motion::scroll_settle_ms);
         scroll_ += (target_ - scroll_) * static_cast<float>(k);
@@ -245,14 +267,22 @@ void BrowserView::draw(const BrowserFrame& f) {
     // Rows scroll under the header and stop one list pad above the card's bottom edge.
     r.set_clip(RectF{l.body.x + hair, l.body.y, l.body.w - (2.0F * hair),
                      std::max(l.body.h - l.pad, 0.0F)});
-    if (f.model.entries().empty()) {
-        draw_empty_state(f, l);
+    if (f.model.row_count() == 0) {
+        // An unreadable or truly empty folder says so, whatever filters are set.
+        const BrowserModel& m = f.model;
+        const bool plain = !m.loaded() || m.listing_error().has_value() || m.entries().empty();
+        if (m.flattened() || (!plain && (m.filter_active() || m.type_filter().active()))) {
+            draw_search_empty(f, l);
+        } else {
+            draw_empty_state(f, l);
+        }
     } else {
         draw_rows(f, l);
         draw_band(f, l);
     }
     draw_scrollbar(f, l);
     r.set_clip(std::nullopt);
+    draw_progress(f, l);
     if (f.marked) {
         // Active pane in a split layout: an accent frame, not just a tint (design review B1).
         r.stroke_rounded_rect(l.panel, rad, hair, f.palette.accent.with_alpha(0.62F));
@@ -300,6 +330,17 @@ void BrowserView::draw_header(const BrowserFrame& f, const Layout& l) {
     if (l.show_date) {
         cols.push_back({"column.modified", fs::SortKey::Modified, l.date_x, l.date_r, false});
     }
+    if (l.show_folder) {
+        // Not sortable: drawn as a label only (the flattened order ties on it).
+        const ShapedText label = p.shape(type::column_header, tr("column.folder"));
+        p.draw(label, l.folder_x,
+               std::round(l.header.y + (0.5F * l.header.h) + (0.5F * label.cap_height())),
+               pal.text_secondary);
+    }
+    // A flattened view with a query is in relevance order until a header is clicked: no
+    // column shows the sort chevron then.
+    const bool relevance =
+        f.model.flattened() && !f.model.query().empty() && !f.model.header_sorted();
 
     const float baseline_mid = l.header.y + (0.5F * l.header.h);
     for (std::size_t i = 0; i < cols.size(); ++i) {
@@ -323,7 +364,7 @@ void BrowserView::draw_header(const BrowserFrame& f, const Layout& l) {
             r.fill_rounded_rect(snap(cell), p.px(radius::sm),
                                 pressed ? pal.control_pressed : pal.control_hover);
         }
-        const bool sorted = sort.key == c.sort;
+        const bool sorted = sort.key == c.sort && !relevance;
         const ShapedText label = p.shape(type::column_header, tr(c.key));
         const float baseline = std::round(baseline_mid + (0.5F * label.cap_height()));
         const Color ink = sorted ? pal.text_primary : pal.text_secondary;
@@ -360,7 +401,7 @@ void BrowserView::handle_list_pointer(const BrowserFrame& f, const Layout& l) {
         !(scrollable && contains(scroll_hit, ptr.x, ptr.y))) {
         // Middle-click on a folder row: cursor to it (selection unchanged), open in a new tab.
         const std::size_t row = row_at(ptr.y, l, f);
-        if (row != kNoRow && fs::is_directory_like(m.entries()[row])) {
+        if (row != kNoRow && fs::is_directory_like(m.row_entry(row))) {
             Intent in;
             in.kind = Intent::Kind::CursorTo;
             in.row = row;
@@ -410,7 +451,7 @@ void BrowserView::handle_list_pointer(const BrowserFrame& f, const Layout& l) {
         }
         bool on_name = false;
         if (row != kNoRow) {
-            const ShapedText name = f.painter.shape(type::row, display_name(m.entries()[row].name));
+            const ShapedText name = f.painter.shape(type::row, display_name(m.row_entry(row).name));
             const float name_end =
                 std::min(l.text_x + name.width(), l.name_r) + f.painter.px(kGlyphGap);
             on_name = ptr.x >= l.name_x - f.painter.px(4.0F) && ptr.x <= name_end;
@@ -451,7 +492,7 @@ void BrowserView::handle_list_pointer(const BrowserFrame& f, const Layout& l) {
         band_cy_ = std::clamp(ptr.y, l.body.y, l.body.bottom()) - l.body.y + sp;
         const float y0 = std::min(press_y_, band_cy_) - l.pad;
         const float y1 = std::max(press_y_, band_cy_) - l.pad;
-        const std::size_t n = m.entries().size();
+        const std::size_t n = m.row_count();
         std::size_t first = 1;
         std::size_t last = 0;
         if (n > 0 && y1 >= 0.0F && y0 < static_cast<float>(n) * l.row_h) {
@@ -491,8 +532,7 @@ void BrowserView::draw_rows(const BrowserFrame& f, const Layout& l) {
     Renderer& r = p.renderer();
     const Palette& pal = f.palette;
     const BrowserModel& m = f.model;
-    const auto& entries = m.entries();
-    const std::size_t n = entries.size();
+    const std::size_t n = m.row_count();
     const float sp = scroll_px(f);
     if (l.row_h <= 0.0F || n == 0) {
         return;
@@ -576,8 +616,10 @@ void BrowserView::draw_rows(const BrowserFrame& f, const Layout& l) {
     }
     unit_slot = std::ceil(unit_slot);
     const float unit_gap = std::round(p.px(3.5F));
+    const bool highlight = !m.query().empty();
+    const float parent_gap = std::round(p.px(8.0F));
     for (std::size_t i = first; i <= last; ++i) {
-        const fs::DirEntry& e = entries[i];
+        const fs::DirEntry& e = m.row_entry(i);
         const float y = row_y(i);
         const float mid = std::round(y + (0.5F * l.row_h));
         const bool dir = fs::is_directory_like(e);
@@ -586,12 +628,44 @@ void BrowserView::draw_rows(const BrowserFrame& f, const Layout& l) {
                          p.scale());
 
         const std::string name = display_name(e.name);
-        const ShapedText name_text =
-            fitter_.fit(p, type::row, name, l.name_r - l.text_x, dir ? Elide::End : Elide::Middle);
+        // Narrow flattened panes: the parent path follows the name, muted, when there is room.
+        float name_room = l.name_r - l.text_x;
+        std::string parent;
+        if (l.inline_parent) {
+            // Relative to the root here: repeating the root on every row would be noise.
+            parent = m.flatten_is_volume() ? folder_text(f, i) : display_name(m.row_parent(i));
+            const float natural = p.shape(type::row, name).width();
+            name_room = std::min(name_room, std::max(natural, name_room * 0.6F));
+        }
+        const TextFitter::Fitted fitted =
+            fitter_.fit_text(p, type::row, name, name_room, dir ? Elide::End : Elide::Middle);
+        const ShapedText& name_text = fitted.shaped;
         const float baseline = std::round(mid + (0.5F * name_text.cap_height()));
         const Color name_ink =
             e.hidden && !m.is_selected(i) ? pal.text_secondary : pal.text_primary;
-        p.draw(name_text, l.text_x, baseline, name_ink);
+        if (highlight) {
+            const std::vector<std::pair<std::uint32_t, std::uint32_t>> ranges =
+                name_highlights(f, e.name, name, fitted.shown);
+            p.draw_highlighted(name_text, l.text_x, baseline, name_ink, pal.match,
+                               pal.match.with_alpha(0.55F), ranges,
+                               fitted.shown.empty() ? name.size() : fitted.shown.size());
+        } else {
+            p.draw(name_text, l.text_x, baseline, name_ink);
+        }
+        if (l.inline_parent && !parent.empty()) {
+            const float px0 = l.text_x + name_text.width() + parent_gap;
+            const float room = l.name_r - px0;
+            // Never a stub like "R…ch": the whole path, or at least 72dp of it.
+            if (room >= std::min(p.px(72.0F), p.shape(type::row, parent).width())) {
+                const ShapedText pt = fitter_.fit(p, type::row, parent, room, Elide::Middle);
+                p.draw(pt, px0, baseline, pal.text_muted);
+            }
+        }
+        if (l.show_folder) {
+            const ShapedText ft = fitter_.fit(p, type::row, folder_text(f, i),
+                                              l.folder_r - l.folder_x, Elide::Middle);
+            p.draw(ft, l.folder_x, baseline, e.hidden ? pal.text_muted : pal.text_secondary);
+        }
 
         if (l.show_size && !dir && !e.metadata_error) {
             // Numbers right-aligned in one slot, units left-aligned in the next, so "980 B"

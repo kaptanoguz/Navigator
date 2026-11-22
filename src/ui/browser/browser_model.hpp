@@ -27,6 +27,22 @@
 //     history, cursor and scroll. A navigation requested while suspended (session restore,
 //     duplicate of a tab that was still loading) is deferred and issued by resume(); resuming a
 //     loaded model re-lists its folder (selection and cursor carried by name, scroll kept).
+//   - Phase 5 view rows (docs/architecture.md "Phase 5", "View model per tab"): the view shows
+//     ROWS, not entries: listing (or the flattened entries) -> hidden policy (listing / walk)
+//     -> type filter (TabState::type_filter, persisted) -> query (filter text, runtime only).
+//     Without a filter the rows are the listing itself (identity: no index vector, the Phase 2
+//     cost). The folder filter keeps the listing order; up to Options::ui_filter_limit entries
+//     it runs inline, above it on the SearchWorker (old rows stay until the newest result).
+//     Cursor, anchor, selection and the band work in row space; selection flags belong to the
+//     source entries, and entries the filter hides are deselected. Watch changes patch the
+//     filtered rows in place (an inserted entry is matched once).
+//   - Flatten (search.flatten / search.flatten_volume): a FlattenWalk streams the subtree of a
+//     folder (or the volume root; or an IIndex answers queries when the App hands one over),
+//     and the SearchWorker orders it: relevance with a query, the tab's sort otherwise, a
+//     column-header click switches to that sort until the query changes. Runtime only: never
+//     persisted, never a Recents visit; navigation leaves it, F5 re-runs the walk.
+//   - Escape (list.clear_selection) undoes one step: notice, running search, selection,
+//     flattened view, filter text (docs/keymap.md "Focus scoping (Phase 5)").
 //
 // Thread-safety: UI thread only (the workers it owns have their own threads and mailboxes).
 #pragma once
@@ -43,13 +59,20 @@
 
 #include <navigator/commands.hpp>
 #include <navigator/fs.hpp>
+#include <navigator/index.hpp>
 #include <navigator/layout.hpp>
 #include <navigator/platform.hpp>
+#include <navigator/search.hpp>
 #include <navigator/types.hpp>
+#include <navigator/walk.hpp>
 #include <navigator/watch.hpp>
 
 #include "browser/listing_worker.hpp"
 #include "browser/watch_worker.hpp"
+#include "search/flatten_walk.hpp"
+#include "search/organize.hpp"
+#include "search/search_worker.hpp"
+#include "widgets/text_edit.hpp"
 
 namespace navigator::ui {
 
@@ -76,6 +99,31 @@ struct Location {
     float scroll = 0.0F;     // view scroll offset in dp when we left
 };
 
+// Phase 5: what a flattened view is built from (BrowserModel::flatten).
+struct FlattenRequest {
+    Path root;           // absolute folder (search.flatten) or volume mount point
+    bool volume = false; // search.flatten_volume ("whole drive")
+    // A Ready or Verifying index of the volume: queries are answered from it instead of a walk.
+    std::shared_ptr<search::IIndex> index;
+};
+
+// Phase 5: progress of the flattened view, for the status bar and the progress bar.
+struct FlattenProgress {
+    Path root;
+    bool volume = false;
+    bool from_index = false;
+    bool walking = false;    // the walk thread is delivering (not cancelled, not finished)
+    bool organizing = false; // a match/order or index job is outstanding
+    bool cancelled = false;  // stopped by search.cancel / Escape / suspension
+    bool truncated = false;  // the walk hit fs::kDefaultWalkMaxEntries
+    std::optional<Error> error;
+    fs::WalkStats stats;         // walk source
+    std::uint64_t found = 0;     // walked entries (walk) or index matches (index)
+    std::uint64_t skipped = 0;   // unreadable + vanished + failing folders
+    bool index_complete = false; // index source: the index was Ready for the last query
+    bool limited = false;        // index source: more matches than rows shown
+};
+
 class BrowserModel {
 public:
     struct Options {
@@ -91,6 +139,15 @@ public:
         std::size_t max_incremental_changes = 256;
         // Phase 3: construct suspended (no threads until resume()). Background tabs.
         bool start_suspended = false;
+        // Phase 5. Folder filter: listings up to this many entries filter on the UI thread
+        // (search::kUiThreadFilterLimit); tests lower it to exercise the worker path.
+        std::size_t ui_filter_limit = search::kUiThreadFilterLimit;
+        // Walks for flatten; empty: fs::Walker. Tests stream fake batches.
+        WalkFactory walk_factory;
+        // Index-backed flatten: a query change waits this long before it runs (typing).
+        std::chrono::milliseconds index_debounce{50};
+        // Index-backed flatten: rows per query (index.hpp kDefaultIndexQueryLimit).
+        std::size_t index_limit = search::kDefaultIndexQueryLimit;
     };
 
     explicit BrowserModel(Options options);
@@ -159,14 +216,71 @@ public:
     void cursor_end(bool extend);
     void select_all();
     void clear_selection(); // cursor stays
-    // Escape (list.clear_selection): dismisses a visible banner first; with no banner, clears
-    // the selection.
+    // Escape (list.clear_selection), one step per call: dismiss a visible notice, else stop a
+    // running search, else clear a non-empty selection, else leave the flattened view, else
+    // clear the filter text (docs/keymap.md). The type filter is never cleared here.
     void escape();
     // Executes a list/navigation/view command handled by the model (see CommandId). Returns
     // false for ids the model does not handle (app-level ones such as Quit).
     bool execute(const Command& command);
 
-    // Pointer gestures (docs/keymap.md, "Mouse"). `row` must be < entries().size().
+    // ---- Phase 5: filter, type filter, flatten (frame end) ----------------------------------
+    // The filter field's text state. Edit it (App: field keys, type-to-filter), then call
+    // filter_edited(); the rows update at once (inline) or when the worker answers.
+    [[nodiscard]] TextEdit& filter_edit() noexcept { return filter_; }
+    [[nodiscard]] const TextEdit& filter_edit() const noexcept { return filter_; }
+    void filter_edited();
+    void set_filter_text(std::string_view text); // tests and scripts: replace and apply
+    void clear_filter();                         // list.clear_filter
+    [[nodiscard]] bool filter_active() const noexcept { return !filter_.empty(); }
+    // Match mode of the current view (folder: Substring by default, flattened: Fuzzy).
+    [[nodiscard]] search::MatchMode match_mode() const noexcept;
+    void toggle_match_mode(); // search.toggle_fuzzy
+    // The compiled query the rows reflect (highlights use it).
+    [[nodiscard]] const search::Query& query() const noexcept;
+    // Bumps whenever the query or the type filter changes (view caches key on it).
+    [[nodiscard]] std::uint64_t filter_generation() const noexcept { return filter_gen_; }
+    // A worker result for the folder filter is outstanding and the old rows are not valid for
+    // the current listing (the view shows a quiet "filtering" state, not "no matches").
+    [[nodiscard]] bool rows_pending() const noexcept;
+
+    [[nodiscard]] const search::TypeFilter& type_filter() const noexcept { return types_; }
+    void set_type_filter(search::TypeFilter filter);
+    // Types popup rows for the current view (listing or flattened entries; the hidden policy is
+    // already applied). Cached per content and filter change.
+    [[nodiscard]] const std::vector<search::TypeCount>& type_summary() const;
+
+    void flatten(FlattenRequest request);
+    void leave_flatten();
+    void cancel_search();            // search.cancel: stop the walk / index query, keep the rows
+    void cancel_for_quit() noexcept; // asks a running walk to stop; never waits
+    [[nodiscard]] bool flattened() const noexcept { return flat_ != nullptr; }
+    // Root of the flattened view (empty when not flattened).
+    [[nodiscard]] const Path& flatten_root() const noexcept;
+    [[nodiscard]] bool flatten_is_volume() const noexcept; // search.flatten_volume
+    [[nodiscard]] FlattenProgress flatten_progress() const;
+    // A walk, an organize job, a folder-filter job or a debounced index query is outstanding.
+    [[nodiscard]] bool searching() const noexcept;
+    // Tests: frame_start() in a loop until !searching() or the timeout.
+    [[nodiscard]] bool settle_search(std::chrono::milliseconds timeout);
+    // Flattened view: a column header click sorted by that column instead of relevance.
+    [[nodiscard]] bool header_sorted() const noexcept;
+
+    // ---- Rows (what the view shows) --------------------------------------------------------
+    [[nodiscard]] std::size_t row_count() const noexcept;
+    [[nodiscard]] const fs::DirEntry& row_entry(std::size_t row) const noexcept;
+    // Relative parent path of a flattened row ("" for children of the root and listings).
+    [[nodiscard]] std::string_view row_parent(std::size_t row) const noexcept;
+    [[nodiscard]] std::uint32_t row_depth(std::size_t row) const noexcept;
+    // Absolute path of a row.
+    [[nodiscard]] Path row_path(std::size_t row) const;
+    // Rows the hidden policy shows before the type filter and the query ("12 of N"): the
+    // listing size, the walked entries, or the index matches.
+    [[nodiscard]] std::size_t source_count() const noexcept;
+    // Row of the entry named `name` (raw bytes) in the current view, or kNoRow.
+    [[nodiscard]] std::size_t find_row(std::string_view name) const noexcept;
+
+    // Pointer gestures (docs/keymap.md, "Mouse"). `row` must be < row_count().
     void click_row(std::size_t row, Modifiers mods);
     void band_begin(bool additive);
     // Rows [first, last] (inclusive) are touched by the band; first > last: none.
@@ -191,9 +305,8 @@ public:
     // ---- Read-only state for the view -------------------------------------------------------
     [[nodiscard]] const Path& current_dir() const noexcept { return current_.dir; }
     [[nodiscard]] const std::vector<fs::DirEntry>& entries() const noexcept { return entries_; }
-    [[nodiscard]] bool is_selected(std::size_t row) const noexcept {
-        return row < selected_.size() && selected_[row] != 0;
-    }
+    // Row-space selection (Phase 5: rows may be filtered or flattened).
+    [[nodiscard]] bool is_selected(std::size_t row) const noexcept;
     [[nodiscard]] std::size_t cursor() const noexcept { return cursor_; }
     [[nodiscard]] std::size_t anchor() const noexcept { return anchor_; }
     [[nodiscard]] std::size_t selected_count() const noexcept { return selected_count_; }
@@ -217,13 +330,13 @@ public:
     [[nodiscard]] bool loaded() const noexcept { return loaded_; } // first listing committed
     [[nodiscard]] std::size_t page_rows() const noexcept { return page_rows_; }
     [[nodiscard]] float scroll() const noexcept { return scroll_; }
-    // The entry under the cursor, or nullptr.
+    // The row entry under the cursor, or nullptr.
     [[nodiscard]] const fs::DirEntry* cursor_entry() const noexcept {
-        return cursor_ < entries_.size() ? &entries_[cursor_] : nullptr;
+        return cursor_ < row_count() ? &row_entry(cursor_) : nullptr;
     }
     [[nodiscard]] const std::vector<Location>& back_stack() const noexcept { return back_; }
     [[nodiscard]] const std::vector<Location>& forward_stack() const noexcept { return forward_; }
-    // Index of the entry named `name` (raw bytes), or kNoRow.
+    // Index of the LISTING entry named `name` (raw bytes), or kNoRow.
     [[nodiscard]] std::size_t find(std::string_view name) const noexcept;
 
     // Change counters the view uses to react (scroll to cursor, restore scroll, ...).
@@ -267,6 +380,50 @@ private:
         Location target;
     };
     void start_workers();
+
+    // ---- Phase 5 (browser_model_search.cpp) --------------------------------------------------
+    enum class CursorPolicy : std::uint8_t { Top, Keep };
+    struct ListingFilterResult {
+        std::uint64_t job = 0;
+        std::uint64_t version = 0;
+        Result<std::vector<std::uint32_t>> rows = std::vector<std::uint32_t>{};
+    };
+    struct FlatResult {
+        std::uint64_t config = 0;
+        Result<OrganizeOutput> out = OrganizeOutput{};
+        FlatChunkPtr chunk; // index source: the new rows' data (replaces the tables)
+        std::uint64_t matched = 0;
+        bool complete = false;
+        std::uint64_t index_generation = 0;
+    };
+    struct Flat;
+    [[nodiscard]] bool listing_identity() const noexcept { return list_identity_; }
+    [[nodiscard]] bool listing_shown() const noexcept { return flat_ == nullptr; }
+    [[nodiscard]] std::uint8_t& flag(std::size_t row) noexcept;
+    [[nodiscard]] std::size_t list_src(std::size_t row) const noexcept;
+    [[nodiscard]] std::size_t list_row_of(std::size_t src) const noexcept;
+    [[nodiscard]] std::size_t flat_row_of(std::uint32_t id) const noexcept;
+    [[nodiscard]] bool listing_filtering() const noexcept;
+    [[nodiscard]] bool entry_shown(const fs::DirEntry& e);
+    void compile_query();
+    // The filter text, the match mode or the type filter changed. text: the query text or mode
+    // changed (a flattened view goes back to relevance order).
+    void query_changed(bool text);
+    // Recomputes the listing rows; `cursor_src` / `anchor_src` are listing indices to keep.
+    void rebuild_listing_rows(CursorPolicy policy, std::size_t cursor_src, std::size_t anchor_src);
+    void set_listing_rows(std::vector<std::uint32_t> rows, CursorPolicy policy,
+                          std::size_t cursor_src, std::size_t anchor_src);
+    void listing_inserted(std::size_t src);
+    void listing_erased(std::size_t src);
+    [[nodiscard]] std::shared_ptr<const std::vector<fs::DirEntry>> listing_snapshot();
+    void reset_search_view(); // navigation: clear the filter text, leave the flattened view
+    bool apply_search_results();
+    void start_walk();
+    void post_flat_job(bool reset);
+    void post_index_query();
+    void apply_flat_result(FlatResult& result);
+    void place_flat_cursor(std::uint32_t cursor_id, std::uint32_t anchor_id);
+    [[nodiscard]] SearchWorker& worker();
 
     Options options_;
     // Destroyed after lister_ (whose thread may call into it through before_read). Both are
@@ -318,6 +475,73 @@ private:
     std::uint64_t location_serial_ = 0;
     std::uint64_t cursor_serial_ = 0;
     std::uint64_t content_serial_ = 0;
+
+    // ---- Phase 5 ------------------------------------------------------------------------------
+    TextEdit filter_{search::kMaxQueryBytes};
+    search::MatchMode list_mode_ = search::MatchMode::Substring;
+    search::Query query_;     // the filter text compiled for the LISTING (list_mode_)
+    search::Matcher matcher_; // UI-thread matcher of query_ (inline filtering, watch inserts)
+    search::TypeFilter types_;
+    std::uint64_t filter_gen_ = 0;
+    // Listing rows: identity (rows == entries) while nothing filters.
+    bool list_identity_ = true;
+    std::vector<std::uint32_t> list_rows_;
+    search::Query list_rows_query_;       // the query list_rows_ were computed for (narrows)
+    search::TypeFilter list_rows_types_;  // and the type filter
+    std::uint64_t list_rows_version_ = 0; // listing_version_ list_rows_ are valid for
+    bool list_stale_ = false;             // the query changed while flattened: rebuild on leave
+    bool listing_job_out_ = false;        // a folder-filter job is outstanding
+    bool pending_top_ = false;            // its result puts the cursor on the first row
+    std::string pending_cursor_name_;     // else on this entry (and anchor)
+    std::string pending_anchor_name_;
+    std::uint64_t listing_job_ = 0;
+    std::uint64_t listing_version_ = 0; // bumps on every change of entries_
+    std::shared_ptr<const std::vector<fs::DirEntry>> snapshot_;
+    std::uint64_t snapshot_version_ = 0;
+    std::shared_ptr<ResultBox<ListingFilterResult>> listing_box_ =
+        std::make_shared<ResultBox<ListingFilterResult>>();
+    std::shared_ptr<ResultBox<FlatResult>> flat_box_ = std::make_shared<ResultBox<FlatResult>>();
+    std::unique_ptr<SearchWorker> worker_;
+    std::unique_ptr<Flat> flat_;
+    mutable std::vector<search::TypeCount> type_rows_;
+    mutable std::uint64_t type_rows_key_ = 0;
+    mutable bool type_rows_valid_ = false;
+};
+
+// The flattened view's state (UI thread). Defined here so both browser_model*.cpp see it.
+struct BrowserModel::Flat {
+    FlattenRequest request;
+    search::MatchMode mode = search::MatchMode::Fuzzy;
+    search::Query query;             // filter text compiled with `mode`
+    FlatTables tables;               // every delivered entry (walk) or the last index result
+    std::vector<std::uint8_t> sel;   // selection flag per entry id
+    std::vector<std::uint32_t> rows; // ids in display order
+    std::unique_ptr<FlattenWalk> walk;
+    fs::WalkStats stats;
+    bool walking = false;
+    bool cancelled = false;
+    bool walk_done = false;
+    bool interrupted = false; // suspension stopped the walk: resume() walks again
+    bool refreshing = false;  // the job re-runs an index query because the index moved on
+    bool reveal = false;      // the next result scrolls to the cursor (new query or sort)
+    std::optional<Error> error;
+    // Organize / index jobs.
+    std::uint64_t config = 0;             // bumps on query, type filter, sort or mode changes
+    std::shared_ptr<OrganizeState> state; // worker-side incremental state of `config`
+    std::size_t sent_chunks = 0;          // chunks handed to the worker for `config`
+    bool in_flight = false;               // a job of `config` is outstanding
+    bool header_sort = false;             // column header clicked since the query changed
+    bool cursor_follows_top = true;       // the user has not moved the cursor yet
+    std::vector<search::TypeCount> types; // types popup rows (last result)
+    // Index source.
+    std::optional<std::chrono::steady_clock::time_point> query_due;
+    std::chrono::steady_clock::time_point status_checked{};
+    std::uint64_t index_generation = 0;
+    std::uint64_t matched = 0;
+    bool index_complete = false;
+    // Listing state to restore when the view leaves flatten.
+    std::string list_cursor_name;
+    float list_scroll = 0.0F;
 };
 
 } // namespace navigator::ui

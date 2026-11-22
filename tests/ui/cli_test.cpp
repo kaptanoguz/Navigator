@@ -161,3 +161,29 @@ TEST_CASE("Session flags (Phase 3)", "[cli]") {
     CHECK(help.find("--no-session") != std::string::npos);
     CHECK(help.find("--config-dir") != std::string::npos);
 }
+
+TEST_CASE("Index and cache flags (Phase 5)", "[cli]") {
+    auto d = parse_cli({});
+    REQUIRE(d);
+    CHECK(d->config.enable_index);
+    CHECK(d->cache_dir.empty());
+    CHECK(d->bench_flatten == 0);
+
+    auto o = parse_cli({"--no-index", "--cache-dir", "/tmp/nav cache", "/data"});
+    REQUIRE(o);
+    CHECK_FALSE(o->config.enable_index);
+    CHECK(o->cache_dir == "/tmp/nav cache");
+    CHECK(o->config.cache_dir.empty()); // main() points the view at cache_dir
+    CHECK(o->start_path == "/data");
+
+    auto b = parse_cli({"--bench-flatten", "300000"});
+    REQUIRE(b);
+    CHECK(b->bench_flatten == 300000);
+    CHECK_FALSE(parse_cli({"--cache-dir"}));
+    CHECK_FALSE(parse_cli({"--cache-dir", ""}));
+    CHECK_FALSE(parse_cli({"--bench-flatten", "0"}));
+    const std::string help = navigator::app::usage_text("navigator");
+    CHECK(help.find("--no-index") != std::string::npos);
+    CHECK(help.find("--cache-dir") != std::string::npos);
+    CHECK(help.find("--bench-flatten") == std::string::npos);
+}

@@ -190,3 +190,32 @@ TEST_CASE("Inactive panes differ visibly from the active one in both themes", "[
         CHECK(std::abs(lightness(p.text_primary) - lightness(d.text_primary)) >= 3.0);
     }
 }
+
+TEST_CASE("Phase 5 match highlight and filter chip stay AA everywhere they are drawn", "[theme]") {
+    const auto over = [](const Color& base, const Color& overlay) {
+        const float a = overlay.a;
+        return Color{(base.r * (1.0F - a)) + (overlay.r * a),
+                     (base.g * (1.0F - a)) + (overlay.g * a),
+                     (base.b * (1.0F - a)) + (overlay.b * a), 1.0F};
+    };
+    for (const Theme t : {Theme::Dark, Theme::Light}) {
+        const Palette& p = palette(t);
+        const Palette d = dimmed(p, t);
+        INFO((t == Theme::Dark ? "dark" : "light"));
+        // Matched characters on the list surface, its stripes, hover and both selection fills
+        // (the selection fill already uses the accent: design review Phase 4 notes).
+        for (const Palette* pal : {&p, &d}) {
+            CHECK(contrast_ratio(pal->match, pal->surface) >= 4.5F);
+            for (const Color& o :
+                 {pal->row_alt, pal->row_hover, pal->selection, pal->selection_inactive}) {
+                CHECK(contrast_ratio(pal->match, over(pal->surface, o)) >= 4.5F);
+            }
+        }
+        // The match reads differently from plain names (it is not just primary text).
+        CHECK(contrast_ratio(p.match, p.text_primary) >= 1.3F);
+        // The count chip on the chrome background (active and dimmed panes).
+        CHECK(contrast_ratio(p.chip_text, over(p.background, p.chip)) >= 4.5F);
+        CHECK(contrast_ratio(d.chip_text, over(d.background, d.chip)) >= 4.5F);
+        CHECK(contrast_ratio(p.chip_text, over(p.surface, p.chip)) >= 4.5F);
+    }
+}

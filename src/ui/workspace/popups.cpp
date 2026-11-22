@@ -85,7 +85,8 @@ TextEdit* WorkspaceView::active_field() noexcept {
     case PopupKind::GoTo: return &goto_.edit();
     case PopupKind::TabMenu:
     case PopupKind::TabList:
-    case PopupKind::Menu: return nullptr;
+    case PopupKind::Menu:
+    case PopupKind::Types: return nullptr;
     case PopupKind::None: break;
     }
     return address_.is_open() ? &address_.edit() : nullptr;
@@ -103,7 +104,8 @@ void WorkspaceView::field_changed(double now_ms) {
     case PopupKind::GoTo: goto_.changed(now_ms); return;
     case PopupKind::TabMenu:
     case PopupKind::TabList:
-    case PopupKind::Menu: return;
+    case PopupKind::Menu:
+    case PopupKind::Types: return;
     case PopupKind::None: break;
     }
     if (address_.is_open()) {
@@ -354,6 +356,7 @@ std::size_t WorkspaceView::popup_rows() const noexcept {
     case PopupKind::TabMenu:
     case PopupKind::TabList:
     case PopupKind::Menu: return popup_.menu.size();
+    case PopupKind::Types: return popup_.type_rows.size() + 1; // + "All types"
     case PopupKind::GoTo: return goto_.items().size();
     case PopupKind::SaveLayout:
     case PopupKind::None: break;
@@ -420,6 +423,11 @@ bool WorkspaceView::route_command(const Command& command, CommandQueue& queue,
     case CommandId::CursorHome: move_highlight(-static_cast<std::ptrdiff_t>(popup_rows())); break;
     case CommandId::CursorEnd: move_highlight(static_cast<std::ptrdiff_t>(popup_rows())); break;
     case CommandId::Activate: confirm_popup(queue, out); break;
+    case CommandId::ToggleTypesPopup:
+        if (popup_.kind == PopupKind::Types) {
+            close_popup(); // Ctrl+Shift+F again closes it
+        }
+        break;
     case CommandId::ClearSelection:
         if (!popup_.confirm.empty()) {
             popup_.confirm.clear();
@@ -519,6 +527,7 @@ void WorkspaceView::confirm_popup(CommandQueue& queue, std::vector<Intent>& out)
         return;
     }
     case PopupKind::GoTo: goto_.submit(false); return;
+    case PopupKind::Types: toggle_type_row(popup_.highlight, out); return;
     case PopupKind::TabList: {
         if (popup_.highlight < popup_.menu.size()) {
             Intent in;
@@ -718,6 +727,7 @@ void WorkspaceView::draw_popup(const ShellFrame& f) {
     case PopupKind::TabMenu:
     case PopupKind::TabList:
     case PopupKind::Menu: draw_menu(f); break;
+    case PopupKind::Types: draw_types(f); break;
     case PopupKind::GoTo: draw_goto(f); break;
     case PopupKind::None: break;
     }

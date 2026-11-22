@@ -4,8 +4,11 @@ add_executable(navigator_ui_tests
     backend_name_test.cpp
     browser_model_test.cpp
     cli_test.cpp
+    filter_test.cpp
+    flatten_test.cpp
     format_test.cpp
     i18n_test.cpp
+    index_ui_test.cpp
     lru_cache_test.cpp
     path_entry_test.cpp
     sdl_input_test.cpp
@@ -42,4 +45,11 @@ if(TARGET navigator)
         COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/goto_smoke.sh $<TARGET_FILE:navigator>)
     set_tests_properties(ui.smoke_goto_downloads_and_root PROPERTIES
         TIMEOUT 90 LABELS "smoke;app")
+    # Phase 5 acceptance: flatten of a generated 300k-entry tree streams, cancels within a
+    # bound and keeps rendering (temporary HOME, config and cache; no index). Frame times are
+    # measured, so it runs on its own.
+    add_test(NAME ui.smoke_flatten_cancels_without_freezing
+        COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/flatten_smoke.sh $<TARGET_FILE:navigator>)
+    set_tests_properties(ui.smoke_flatten_cancels_without_freezing PROPERTIES
+        TIMEOUT 300 RUN_SERIAL TRUE LABELS "smoke;app")
 endif()
