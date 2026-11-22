@@ -5,6 +5,7 @@ add_executable(navigator_core_tests
     fold_into_test.cpp
     layout_files_test.cpp
     layout_json_test.cpp
+    layout_json_types_test.cpp
     layout_test.cpp
     listing_test.cpp
     names_test.cpp

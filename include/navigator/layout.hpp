@@ -474,9 +474,10 @@ struct Session {
 //            { "hex": "<lowercase hex of the raw bytes>" }  (paths need not be UTF-8)
 // "x"/"y" are written only when has_position; "cursor" only when non-empty; "scroll" only when
 // set; "hidden_types" only when type_filter.active(), and inside it "folders" / "no_extension"
-// only when true and "extensions" only when non-empty (sorted, as stored). Ids are never written.
-// Output is UTF-8, 2-space indented, keys in the order shown, and deterministic: equal sessions
-// serialize to identical text.
+// only when true and "extensions" only when non-empty (normalized: folded, sorted, deduplicated;
+// written only when the normalized filter still hides something). Ids are never written. Output is
+// UTF-8, 2-space indented, keys in the order shown, and deterministic: equal sessions serialize to
+// identical text.
 //
 // Loading is lenient and never crashes (features.md: unknown fields ignored):
 //   - The text must be a JSON object, else InvalidArgument. Everything below is repair, not
