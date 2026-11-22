@@ -427,10 +427,12 @@ frame start (UI thread)
   to the best 100k and say so), update progress; stale generations are dropped
 ```
 
-- Source choice: Index when an `IIndex` whose root is the mount point of the volume holding the
-  flatten root is Ready or Verifying, else Walk. `search.flatten_volume` on a volume without a
-  ready index walks the disk (progress shown); the ui may start the index for it only if
-  `should_index_by_default` allows.
+- Source choice (as implemented): `search.flatten` (folder subtree) always walks the disk, so
+  results are complete and carry full metadata. Only `search.flatten_volume` uses the index: when
+  an `IIndex` whose root is that volume's mount point is Ready or Verifying it queries the index
+  (hits capped, one stat per shown hit), otherwise it walks the volume root with progress. The
+  index of `/` is never used for a volume mounted below it. The ui may start an index only for
+  volumes `should_index_by_default` allows.
 - Query edits during a Walk flatten re-run the match over the flat entries already collected
   (inline below 20k, else the filter worker) while the walk keeps appending; the walk is never
   restarted for a query change. `ToggleHidden` and `nav.refresh` restart the walk.
@@ -634,3 +636,4 @@ stubs: `fs::EntryKind`, `fs::DirEntry`, `fs::SortKey`, `fs::ListOptions`, `fs::l
   - **ui** (`ui.hpp`): `AppConfig::cache_dir`, `AppConfig::enable_index` (`--no-index`).
   - **commands** (commands): ids 1300-1307 and names listed under "Commands"; new range 1300-1319. Default chords `Ctrl+F`, `Ctrl+E`, `Ctrl+Shift+E`, `Ctrl+Shift+F` (`docs/keymap.md` "Phase 5 defaults"); type-to-filter, filter-field focus scoping and the Escape cascade documented there and in `commands.hpp`.
   - Known breakage until the parallel agents land: exhaustive `switch` over `CommandId` fails `-Werror=switch` (GCC 13 and Clang 18) in `src/commands/builtin_commands.cpp` (`to_string`, line 78), `src/ui/browser/browser_model.cpp` (line 751) and `src/ui/workspace/workspace.cpp` (line 258): 8 new enumerators each. Everything else in the tree compiles unchanged. Runtime tests that need updates by their owners once commands binds the rows: `tests/commands/keymap_test.cpp` (`read_keymap_doc` must also read `## Phase 5 defaults` and `phase_rows` grows to index 5; counts 3 + 25 + 21 + 5 + 4; the expected `(unbound)` sets gain `list.clear_filter`, `search.toggle_fuzzy`, `search.cancel`, `search.rebuild_index`; `Ctrl+E` leaves the "reserved chords stay free" list) and `tests/integration/keymap_e2e_test.cpp` (line ~881: `per_phase.size()` 4 -> 5 with `per_phase.at(5) == 4`, `bound.size()` 54 -> 58; the `(unbound)` set and its size 10 -> 14; `Ctrl+E` leaves the near-miss list at line 969). Until commands lands, the doc-vs-keymap tests fail because the doc has 4 rows the keymap does not bind yet. `tests/core/layout_json_test.cpp` golden text is unaffected (`"hidden_types"` is only written when active).
+- Phase 5 integration: `search.flatten` always walks; the index serves only `search.flatten_volume`. Headless `--frames`/`--bench-*` runs without `--cache-dir`/`--config-dir` never index and never read or write session, config or cache files.
