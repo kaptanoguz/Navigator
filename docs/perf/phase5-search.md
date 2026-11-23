@@ -141,5 +141,12 @@ highlights and absolute paths.
 - Save frequency: the index ignores changes in its own cache directory when deciding whether it
   is dirty. Otherwise indexing the volume that holds `~/.cache` would save every
   `save_interval` forever, each save reporting itself through inotify.
+- Symlinks (BUG-P5-1 fix, 2026-11-23): when a folder is listed (scan, verify, live
+  re-listing), each symlink entry gets one follow `statx` (DONT_SYNC, NO_AUTOMOUNT, never
+  entered), so a link to a folder is a Folder for the type filter, as in a walk. Cost measured
+  on one folder, median of 7 scans: 20k regular files 6.2 ms, 20k links to a folder 29.3 ms,
+  i.e. about 1.2 us per link. The generated 300k tree above has no symlinks, so its numbers are
+  unchanged. Limit: a link whose target changes between file and folder without its parent
+  folder changing is picked up only by a Rebuild.
 - Not measured here: cold page cache, network or slow disks, inotify throughput under bulk
   changes, UI frame times while results stream in (ui).

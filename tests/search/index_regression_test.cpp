@@ -1,5 +1,6 @@
 // Edge cases of the name index: entry accounting, directory moves, stale event paths, hostile
 // offsets, permission skips and self-induced saves (navigator/index.hpp).
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -53,6 +54,12 @@ void verify_now(IIndex& index) {
         const IndexStatus s = index.status();
         return s.state == IndexState::Ready && s.last_complete_scan != last;
     }));
+}
+
+bool index_has_typed(const IIndex& index, const stdfs::path& p, const TypeFilter& types) {
+    const IndexResult r = run_query(index, "", MatchMode::Fuzzy, true, {}, types);
+    return std::any_of(r.hits.begin(), r.hits.end(),
+                       [&](const IndexHit& h) { return h.path == p; });
 }
 
 void put_u64(std::string& bytes, std::size_t at, std::uint64_t value) {
@@ -279,4 +286,46 @@ TEST_CASE("an unmounted mount point becomes an ordinary directory again",
     const auto index = started(o);
     CHECK(index->status().loaded_from_file);
     CHECK(index_has(*index, t / "mnt/underneath"));
+}
+
+TEST_CASE("a symlink to a folder is directory-like in the index (BUG-P5-1)",
+          "[search][index][regression]") {
+    const TempDir t;
+    const TempDir cache;
+    stdfs::create_directory(t / "pics");
+    touch(t / "pics/a.jpg");
+    touch(t / "file.txt");
+    stdfs::create_directory_symlink("pics", t / "linkdir");
+    stdfs::create_symlink("file.txt", t / "linkfile");
+    stdfs::create_symlink("missing", t / "dangling");
+    const Path file = cache / "l.idx";
+    const auto check = [&](const IIndex& index) {
+        const IndexResult all = run_query(index, "", MatchMode::Fuzzy, true);
+        // Links are not entered: nothing below linkdir (the reference does not follow links).
+        CHECK(all.hits.size() == reference_entries(t.path()).size());
+        for (const IndexHit& h : all.hits) {
+            INFO(h.path.native());
+            const std::string name = h.path.filename().native();
+            CHECK(h.directory_like == (name == "pics" || name == "linkdir"));
+            if (name == "linkdir") {
+                CHECK(h.kind == fs::EntryKind::Symlink);
+            }
+        }
+        TypeFilter no_ext;
+        no_ext.hide_no_extension = true;
+        CHECK(index_has_typed(index, t / "linkdir", no_ext));
+        TypeFilter no_folders;
+        no_folders.hide_folders = true;
+        CHECK_FALSE(index_has_typed(index, t / "linkdir", no_folders));
+    };
+    {
+        const auto index = started(options_at(t.path(), file)); // scan
+        check(*index);
+    }
+    const auto index = started(options_at(t.path(), file)); // restart: flag from the file
+    CHECK(index->status().loaded_from_file);
+    check(*index);
+    touch(t / "added"); // a verify pass re-lists the root
+    verify_now(*index);
+    check(*index);
 }

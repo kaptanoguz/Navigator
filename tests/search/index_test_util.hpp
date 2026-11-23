@@ -134,6 +134,7 @@ struct RefEntry {
     std::uint32_t depth = 1;
     bool hidden_chain = false; // the entry or a directory between it and the root is hidden
     bool directory = false;
+    bool link_to_directory = false; // a symlink whose target is a folder: a Folder for types
 };
 
 inline std::vector<RefEntry> reference_entries(const std::filesystem::path& root) {
@@ -156,7 +157,10 @@ inline std::vector<RefEntry> reference_entries(const std::filesystem::path& root
             e.depth = it.depth + 1;
             e.hidden_chain = it.hidden || fs::is_hidden_name(e.name);
             std::error_code ec2;
-            e.directory = de.is_directory(ec2) && !de.is_symlink(ec2);
+            const bool link = de.is_symlink(ec2);
+            e.directory = !link && de.is_directory(ec2);
+            e.link_to_directory = link && de.is_directory(ec2); // follows the link
+
             if (e.directory) {
                 stack.push_back(Item{de.path(), it.rel.empty() ? e.name : it.rel + "/" + e.name,
                                      e.depth, e.hidden_chain});
@@ -188,7 +192,10 @@ inline std::vector<RefHit> reference_query(const std::filesystem::path& root,
         }
         fs::DirEntry de;
         de.name = e.name;
-        de.kind = e.directory ? fs::EntryKind::Directory : fs::EntryKind::File;
+        de.kind = e.directory           ? fs::EntryKind::Directory
+                  : e.link_to_directory ? fs::EntryKind::Symlink
+                                        : fs::EntryKind::File;
+        de.target_kind = e.link_to_directory ? fs::EntryKind::Directory : fs::EntryKind::Unknown;
         if (!search::allows(types, de)) {
             continue;
         }

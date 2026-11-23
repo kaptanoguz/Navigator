@@ -322,7 +322,7 @@ TEST_CASE("Walk- and index-backed views agree on the type filter (links to folde
     search::TypeFilter f;
     f.hide_folders = true;
     filters.push_back(f);
-    // hide_no_extension alone is BUG-P5-1 (the [!mayfail] case below).
+    // hide_no_extension alone is covered by the BUG-P5-1 regression case below.
     for (const char* ext : {"jpg", "png", "txt", "lnk"}) {
         f = {};
         f.hidden_extensions = {ext};
@@ -356,7 +356,7 @@ TEST_CASE("Walk- and index-backed views agree on the type filter (links to folde
 }
 
 TEST_CASE("Walk- and index-backed views agree on a link to a folder hidden by its type",
-          "[flatten][types][index][e2e][!mayfail]") {
+          "[flatten][types][index][e2e]") {
     // BUG-P5-1 (see docs/qa-phase5.md): the index scans with metadata = false, so a symlink to
     // a folder is never directory-like in the index (kEntryLinkToDir stays clear); its query
     // applies the type filter with "NoExtension" for "linkdir" and drops it when "No extension"

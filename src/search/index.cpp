@@ -843,6 +843,17 @@ void NameIndex::apply_listing(std::uint32_t d, std::vector<fs::DirEntry>& listed
     const bool own = is_own_dir(d);
     const Path dir_path = tree_.path_of(d, options_.root);
     for (fs::DirEntry& e : listed) {
+        if (e.kind == fs::EntryKind::Symlink && e.target_kind == fs::EntryKind::Unknown) {
+            // metadata = false leaves target_kind unknown. One follow-stat per link (never
+            // entered) makes a link to a folder a Folder for the type filter, as in a walk.
+            // statx with DONT_SYNC / NO_AUTOMOUNT: no automount, no server round trip for
+            // cached attributes.
+            const DirStat target = stat_dir(join(dir_path.native(), e.name), true);
+            if (target.error == 0 && target.directory) {
+                e.target_kind = fs::EntryKind::Directory;
+            }
+            continue;
+        }
         if (e.kind != fs::EntryKind::Directory) {
             continue;
         }
