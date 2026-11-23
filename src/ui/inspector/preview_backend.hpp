@@ -66,7 +66,10 @@ struct UiPreviewKeyHash {
     }
 };
 
-// Thumbnails are worth asking for: image/* and video/* regular files (or links to files).
+// Thumbnails are worth asking for: image/*, video/* and page documents (is_page_mime) that are
+// regular files (or links to files). A document without a system thumbnailer keeps its icon.
 [[nodiscard]] bool wants_thumbnail(std::string_view mime, const fs::DirEntry& entry) noexcept;
+// PDF, PostScript, EPUB, DjVu, OpenDocument / OOXML / legacy Office documents.
+[[nodiscard]] bool is_page_mime(std::string_view mime) noexcept;
 
 } // namespace navigator::ui

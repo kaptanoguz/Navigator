@@ -11,7 +11,10 @@
 //
 // Rules:
 //   - Fit (the default) never upscales: zoom = min(view / image, 1) per axis, the image centred.
-//     Fit stays fit when the view resizes.
+//     Fit stays fit when the view resizes. Exception (design review Phase 6): an image whose
+//     longer side is at most kTinyImagePx gets the largest INTEGER upscale that keeps it within
+//     the tiny target (about 128 dp, set_tiny_target) and the view, so icons are not specks; the
+//     view samples it nearest-neighbour.
 //   - Free zoom ranges over [fit_zoom(), kMaxZoom] (fit for small images is 1, so they can still
 //     be magnified with the wheel up to 16:1).
 //   - The centre is clamped so an image larger than the view always covers it on that axis, and a
@@ -19,6 +22,7 @@
 // Thread-safety: plain value; UI thread in practice.
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 
 namespace navigator::ui::inspector {
@@ -46,6 +50,7 @@ enum class ZoomMode : std::uint8_t {
 };
 
 inline constexpr double kMaxZoom = 16.0;
+inline constexpr double kTinyImagePx = 64.0;
 // Wheel: one notch multiplies the zoom by this (smoothly animated).
 inline constexpr double kWheelZoomStep = 1.25;
 // The pixel grid appears from this zoom (inspector.toggle_grid).
@@ -59,6 +64,8 @@ public:
     void set_image(double width, double height) noexcept;
     // The view size in device px. Fit recomputes its zoom; other modes keep zoom and re-clamp.
     void set_view(double width, double height) noexcept;
+    // Device px a tiny image grows to in fit (0: never upscale). Fit re-applies.
+    void set_tiny_target(double px) noexcept;
 
     [[nodiscard]] double image_width() const noexcept { return iw_; }
     [[nodiscard]] double image_height() const noexcept { return ih_; }
@@ -71,7 +78,7 @@ public:
     // Zoom the animation is heading to (== zoom() when settled).
     [[nodiscard]] double target_zoom() const noexcept { return target_; }
     [[nodiscard]] double fit_zoom() const noexcept;
-    [[nodiscard]] double min_zoom() const noexcept { return fit_zoom(); }
+    [[nodiscard]] double min_zoom() const noexcept { return std::min(fit_zoom(), 1.0); }
     // Image point at the centre of the view.
     [[nodiscard]] Vec2 center() const noexcept { return center_; }
 
@@ -120,6 +127,7 @@ private:
     double ih_ = 0.0;
     double vw_ = 0.0;
     double vh_ = 0.0;
+    double tiny_ = 0.0;
     double zoom_ = 1.0;
     double target_ = 1.0;
     Vec2 center_{};

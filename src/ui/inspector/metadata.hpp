@@ -48,7 +48,16 @@ build_metadata(const fs::DirEntry& entry, const preview::PreviewResult* result, 
 [[nodiscard]] std::string format_exif_date(const preview::ExifDateTime& when);
 [[nodiscard]] std::string format_sample_rate(std::uint32_t hz); // "48 kHz"
 
-// Header subtitle: "JPEG image · 4.2 MB" (type label and size; folders: item count when known).
+// B1 (design review Phase 6): the image came from a system thumbnailer or the shared thumbnail
+// cache for a file that is not an image (PDF, office, e-book, ...): a "page preview", a Navigator
+// extra. The Inspector labels it so and lists no Image group (the thumbnail's pixel size is not
+// the document's).
+[[nodiscard]] bool is_page_preview(const fs::DirEntry& entry,
+                                   const preview::PreviewResult& result) noexcept;
+
+// Header subtitle, the most useful one-liner per kind: image "4000 × 3000 · 719 kB", video
+// "0:08 · 1280 × 720 · 3.2 MB", text "312 lines · 7.8 kB"; otherwise "JPEG image · 4.2 MB"
+// (folders: item count when known).
 [[nodiscard]] std::string header_subtitle(const fs::DirEntry& entry,
                                           const preview::PreviewResult* result);
 

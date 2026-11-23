@@ -536,3 +536,87 @@ TEST_CASE("Metadata groups skip empty ones and follow the language", "[inspector
     CHECK(g[1].rows[2].value == "H264");
     CHECK(g[2].rows[1].value == "Stereo");
 }
+
+TEST_CASE("Thumbnailer page previews of documents list no image facts", "[inspector][metadata]") {
+    // A fake thumbnailer result: the page of a PDF as a 768 x 1024 image.
+    auto page = image_result(768, 1024);
+    auto res = std::make_shared<preview::PreviewResult>(*page);
+    std::get<preview::ImagePreview>(res->content).origin =
+        preview::ImageOrigin::ExternalThumbnailer;
+    const fs::DirEntry pdf = file_entry("manual.pdf", 2'000'000);
+    CHECK(is_page_preview(pdf, *res));
+    const Timestamp now = pdf.mtime + std::chrono::hours{1};
+    const std::vector<MetaGroup> g = build_metadata(pdf, res.get(), now);
+    REQUIRE(g.size() == 1);
+    CHECK(g[0].title == "File");
+    for (const MetaRow& r : g[0].rows) {
+        CHECK(r.value.find("768") == std::string::npos);
+    }
+    CHECK(header_subtitle(pdf, res.get()).find("768") == std::string::npos);
+    // The disk thumbnail cache counts too; a decoded image of an image file does not.
+    std::get<preview::ImagePreview>(res->content).origin = preview::ImageOrigin::ThumbnailCache;
+    CHECK(is_page_preview(pdf, *res));
+    CHECK_FALSE(is_page_preview(file_entry("photo.jpg"), *image_result(4, 4)));
+    auto cached_photo = std::make_shared<preview::PreviewResult>(*image_result(4, 4));
+    std::get<preview::ImagePreview>(cached_photo->content).origin =
+        preview::ImageOrigin::ThumbnailCache;
+    CHECK_FALSE(is_page_preview(file_entry("photo.jpg"), *cached_photo));
+    // The list asks for document thumbnails as well, so row and Inspector agree.
+    CHECK(wants_thumbnail("application/pdf", pdf));
+    CHECK(wants_thumbnail("application/vnd.oasis.opendocument.text", file_entry("a.odt")));
+    CHECK_FALSE(wants_thumbnail("application/zip", file_entry("a.zip")));
+}
+
+TEST_CASE("Header subtitles per kind; video kinds and containers", "[inspector][metadata]") {
+    const fs::DirEntry jpg = file_entry("a.jpg", 719'000);
+    auto img = image_result(64, 48);
+    std::get<preview::ImagePreview>(std::const_pointer_cast<preview::PreviewResult>(img)->content)
+        .info.display = {4000, 3000};
+    CHECK(header_subtitle(jpg, img.get()) == "4000 × 3000  ·  719 kB");
+    CHECK(header_subtitle(jpg, nullptr) == "JPEG image  ·  719 kB");
+
+    auto vid = std::make_shared<preview::PreviewResult>();
+    preview::VideoPreview v;
+    v.info.source = preview::MetadataSource::FFmpeg;
+    v.info.duration_ms = 8'000;
+    v.info.frame = {1280, 720};
+    v.info.container = "mov,mp4,m4a,3gp,3g2,mj2";
+    v.info.container_long = "QuickTime / MOV";
+    vid->content = v;
+    const fs::DirEntry mp4 = file_entry("Trailer.mp4", 3'200'000);
+    CHECK(header_subtitle(mp4, vid.get()) == "0:08  ·  1280 × 720  ·  3.2 MB");
+    const Timestamp now = mp4.mtime + std::chrono::hours{1};
+    const std::vector<MetaGroup> g = build_metadata(mp4, vid.get(), now);
+    REQUIRE(g.size() >= 2);
+    CHECK(g[0].rows[0].value == "MP4 video");
+    bool container = false;
+    for (const MetaRow& r : g[1].rows) {
+        if (r.label == "Container") {
+            container = true;
+            CHECK(r.value == "MPEG-4 (MP4)");
+        }
+    }
+    CHECK(container);
+    CHECK(header_subtitle(file_entry("clip.mkv"), nullptr).starts_with("Matroska video"));
+    {
+        const LanguageGuard tr_lang(Language::Turkish);
+        CHECK(header_subtitle(file_entry("clip.mp4", 10), nullptr).starts_with("MP4 videosu"));
+    }
+
+    auto txt = std::make_shared<preview::PreviewResult>();
+    preview::TextPreview t;
+    t.line_count = 312;
+    txt->content = t;
+    CHECK(header_subtitle(file_entry("notes.txt", 7'800), txt.get()) == "312 lines  ·  7.8 kB");
+}
+
+TEST_CASE("Inspector-local keys", "[inspector][keys]") {
+    CHECK(inspector_local_key(KeyChord{Key::Digit0, Modifiers::None}) == LocalKey::Fit);
+    CHECK(inspector_local_key(KeyChord{Key::Digit1, Modifiers::None}) == LocalKey::OneToOne);
+    CHECK(inspector_local_key(KeyChord{Key::Equals, Modifiers::Shift}) == LocalKey::ZoomIn);
+    CHECK(inspector_local_key(KeyChord{Key::Minus, Modifiers::None}) == LocalKey::ZoomOut);
+    CHECK(inspector_local_key(KeyChord{Key::G, Modifiers::None}) == LocalKey::Grid);
+    CHECK(inspector_local_key(KeyChord{Key::M, Modifiers::None}) == LocalKey::Minimap);
+    CHECK_FALSE(inspector_local_key(KeyChord{Key::G, Modifiers::Ctrl}).has_value());
+    CHECK_FALSE(inspector_local_key(KeyChord{Key::Space, Modifiers::None}).has_value());
+}

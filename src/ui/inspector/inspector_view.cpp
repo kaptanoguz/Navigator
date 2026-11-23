@@ -11,7 +11,9 @@
 
 #include "browser/format.hpp"
 #include "i18n/catalog.hpp"
+#include "inspector/inspector_style.hpp"
 #include "widgets/icons.hpp"
+#include "widgets/tooltip.hpp"
 
 namespace navigator::ui::inspector {
 
@@ -95,6 +97,12 @@ RectF inset(const RectF& r, float dx, float dy) {
 void InspectorView::zoom_fit() noexcept { viewport_.fit(); }
 
 void InspectorView::zoom_1to1() noexcept { viewport_.one_to_one(); }
+
+void InspectorView::zoom_step(int steps) noexcept {
+    viewport_.zoom_smooth(std::pow(kWheelZoomStep, static_cast<double>(steps)),
+                          Vec2{viewport_.view_width() * 0.5, viewport_.view_height() * 0.5});
+    animating_ = true;
+}
 
 void InspectorView::cursor(CommandId id) noexcept {
     const bool image = !viewport_.empty() && media_.w > 0.0F && viewport_.pannable();
@@ -263,6 +271,11 @@ void InspectorView::draw(const InspectorFrame& f, InspectorOutput& out) {
     if (resizing_) {
         animating_ = true;
     }
+    // B2: tooltips of the header and toolbar buttons, last so they cover the content.
+    if (!tooltip_.empty()) {
+        draw_tooltip_bubble(p, pal, tooltip_, tooltip_anchor_, card);
+        tooltip_.clear();
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -270,7 +283,7 @@ void InspectorView::draw(const InspectorFrame& f, InspectorOutput& out) {
 // ---------------------------------------------------------------------------------------------
 
 bool InspectorView::icon_button(const InspectorFrame& f, const RectF& rect, Hot id, int glyph,
-                                bool on, bool enabled) {
+                                bool on, std::string_view tip, bool enabled) {
     const Painter& p = f.painter;
     Renderer& r = p.renderer();
     const Palette& pal = f.palette;
@@ -281,6 +294,10 @@ bool InspectorView::icon_button(const InspectorFrame& f, const RectF& rect, Hot 
     }
     const bool hover = inside && (active_ == Hot::None || active_ == id);
     const bool fired = active_ == id && ptr.released && inside;
+    if (hover && !ptr.down && !tip.empty()) {
+        tooltip_ = std::string(tip);
+        tooltip_anchor_ = rect;
+    }
     const float rad = std::round(p.px(radius::md - 1.0F));
     if (on) {
         r.fill_rounded_rect(rect, rad, pal.chip);
@@ -381,13 +398,14 @@ void InspectorView::draw_header(const InspectorFrame& f, const RectF& area) {
                             : f.state.placement == layout::InspectorPlacement::Right ? GPlaceRight
                                                                                      : GPlaceBottom;
     RectF br{right - b, by, b, b};
-    if (icon_button(f, br, Hot::Placement, place_glyph, false)) {
+    if (icon_button(f, br, Hot::Placement, place_glyph, false, tr("inspector.tip.placement"))) {
         f.queue.enqueue(CommandId::CycleInspectorPlacement);
     }
     right = br.x - gap;
     br = RectF{right - b, by, b, b};
     const bool can_lock = c.locked() || (c.item() != nullptr && c.status() != Status::Multi);
-    if (icon_button(f, br, Hot::Lock, GLock, c.locked(), can_lock)) {
+    if (icon_button(f, br, Hot::Lock, GLock, c.locked(),
+                    tr(c.locked() ? "inspector.tip.unlock" : "inspector.tip.lock"), can_lock)) {
         f.queue.enqueue(CommandId::ToggleInspectorLock);
     }
     right = br.x - gap;
@@ -399,18 +417,28 @@ void InspectorView::draw_header(const InspectorFrame& f, const RectF& area) {
         item != nullptr ? mime::guess_for_entry(item->entry) : std::string_view();
     if (item != nullptr && !multi && mime.starts_with("video/")) {
         const ShapedText lbl = p.shape(type::button, tr("inspector.play"));
-        const float w = std::round(lbl.width() + p.px(34.0F));
+        // B2: "Play" hands the file to another app: an external-open arrow after the label.
+        const float w = std::round(lbl.width() + p.px(48.0F));
         const RectF pr{right - w - p.px(4.0F), by, w, b};
         const PointerInput& ptr = f.pointer;
         const bool inside = ptr.inside && contains(pr, ptr.x, ptr.y);
         if (inside && ptr.pressed && active_ == Hot::None) {
             active_ = Hot::Play;
         }
-        const bool hover = inside && (active_ == Hot::None || active_ == Hot::Play);
+        const bool hover =
+            force_play_hover_ || (inside && (active_ == Hot::None || active_ == Hot::Play));
         if (active_ == Hot::Play && ptr.released && inside) {
             f.queue.enqueue(CommandId::InspectorPlay);
         }
-        const Color fill = hover ? mix(pal.accent, rgb(0xFFFFFF), 0.10F) : pal.accent;
+        if (hover && !ptr.down) {
+            // No platform API names the default application yet: the generic wording.
+            tooltip_ = std::string(tr("inspector.tip.play"));
+            tooltip_anchor_ = pr;
+        }
+        // Hover never weakens the label's contrast: lighter in dark, darker in light.
+        const Color fill =
+            hover ? mix(pal.accent, rgb(f.theme == Theme::Dark ? 0xFFFFFF : 0x000000), 0.10F)
+                  : pal.accent;
         r.fill_rounded_rect(pr, std::round(p.px(radius::md - 1.0F)), fill);
         const float tx = pr.x + p.px(11.0F);
         const float cy = pr.center_y();
@@ -418,8 +446,16 @@ void InspectorView::draw_header(const InspectorFrame& f, const RectF& area) {
         r.fill_polygon(
             {SDL_FPoint{tx, cy - th}, SDL_FPoint{tx + (1.65F * th), cy}, SDL_FPoint{tx, cy + th}},
             pal.on_accent);
-        p.draw(lbl, std::round(tx + p.px(13.0F)), std::round(cy + (0.5F * lbl.cap_height())),
-               pal.on_accent);
+        const float lx = std::round(tx + p.px(13.0F));
+        p.draw(lbl, lx, std::round(cy + (0.5F * lbl.cap_height())), pal.on_accent);
+        // The arrow: a short diagonal with a corner, up and to the right.
+        const float ax = lx + lbl.width() + p.px(5.0F);
+        const float as = p.px(6.5F);
+        const float at = std::max(1.0F, p.px(1.4F));
+        r.stroke_line(ax, cy + (0.5F * as), ax + as, cy - (0.5F * as), at, pal.on_accent);
+        r.stroke_line(ax + (0.35F * as), cy - (0.5F * as), ax + as, cy - (0.5F * as), at,
+                      pal.on_accent);
+        r.stroke_line(ax + as, cy - (0.5F * as), ax + as, cy + (0.15F * as), at, pal.on_accent);
         right = pr.x - gap;
     }
 
@@ -790,14 +826,7 @@ void InspectorView::draw_media(const InspectorFrame& f, const RectF& area,
                    std::round(view.bottom() - p.px(14.0F)), pal.text_secondary);
         }
         if (vid->info.source == preview::MetadataSource::None) {
-            const ShapedText t = fitter_.fit(p, type::caption, tr("inspector.video_no_metadata"),
-                                             view.w, Elide::End);
-            const float tw = t.width() + p.px(16.0F);
-            const RectF chip{std::round(view.center_x() - (0.5F * tw)), std::round(view.y),
-                             std::round(tw), std::round(p.px(22.0F))};
-            r.fill_rounded_rect(chip, 0.5F * chip.h, pal.surface_raised.with_alpha(0.92F));
-            p.draw(t, chip.x + p.px(8.0F), std::round(chip.center_y() + (0.5F * t.cap_height())),
-                   pal.text_secondary);
+            draw_chip(f, view, tr("inspector.video_no_metadata"));
         }
         draw_play_disc(f, view);
         return;
@@ -816,6 +845,24 @@ void InspectorView::draw_media(const InspectorFrame& f, const RectF& area,
         return;
     }
     draw_image(f, view, tex, info);
+    // B1: a thumbnailer's page of a document is labelled as such (a Navigator extra).
+    if (const Item* item = c.item();
+        item != nullptr && res != nullptr && is_page_preview(item->entry, *res)) {
+        draw_chip(f, view, tr("inspector.page_preview"));
+    }
+}
+
+void InspectorView::draw_chip(const InspectorFrame& f, const RectF& view, std::string_view text) {
+    const Painter& p = f.painter;
+    Renderer& r = p.renderer();
+    const ShapedText t = fitter_.fit(p, type::caption, text, view.w - p.px(16.0F), Elide::End);
+    const float tw = t.width() + p.px(16.0F);
+    const RectF chip{std::round(view.center_x() - (0.5F * tw)), std::round(view.y + p.px(4.0F)),
+                     std::round(tw), std::round(p.px(22.0F))};
+    r.drop_shadow(chip, 0.5F * chip.h, p.px(8.0F), p.px(1.0F), f.palette.shadow);
+    r.fill_rounded_rect(chip, 0.5F * chip.h, f.palette.surface_raised.with_alpha(0.95F));
+    p.draw(t, chip.x + p.px(8.0F), std::round(chip.center_y() + (0.5F * t.cap_height())),
+           f.palette.text_secondary);
 }
 
 void InspectorView::draw_image(const InspectorFrame& f, const RectF& view,
@@ -833,6 +880,7 @@ void InspectorView::draw_image(const InspectorFrame& f, const RectF& view,
         viewport_.set_image(iw, ih);
     }
     viewport_.set_view(view.w, view.h);
+    viewport_.set_tiny_target(std::round(p.px(128.0F)));
     if (viewport_.animate(f.dt_ms, f.animations)) {
         animating_ = true;
     }
@@ -987,22 +1035,25 @@ void InspectorView::draw_toolbar(const InspectorFrame& f, const RectF& view) {
     const float y = bar.y + std::round(p.px(3.0F));
     const bool fit = viewport_.mode() == ZoomMode::Fit;
     const bool one = viewport_.mode() == ZoomMode::OneToOne;
-    if (icon_button(f, RectF{x, y, b, b}, Hot::Fit, GFit, fit)) {
+    if (icon_button(f, RectF{x, y, b, b}, Hot::Fit, GFit, fit, tr("cmd.inspector.zoom_fit"))) {
         f.queue.enqueue(CommandId::InspectorZoomFit);
     }
     x += b + gap;
-    if (icon_button(f, RectF{x, y, b, b}, Hot::OneToOne, GOne, one)) {
+    if (icon_button(f, RectF{x, y, b, b}, Hot::OneToOne, GOne, one,
+                    tr("cmd.inspector.zoom_1to1"))) {
         f.queue.enqueue(CommandId::InspectorZoom1to1);
     }
     x += b + gap;
     p.draw(pct, std::round(x + (0.5F * (label_w - pct.width()))),
            std::round(bar.center_y() + (0.5F * pct.cap_height())), pal.text_secondary);
     x += label_w + gap;
-    if (icon_button(f, RectF{x, y, b, b}, Hot::Grid, GGrid, f.state.show_grid)) {
+    if (icon_button(f, RectF{x, y, b, b}, Hot::Grid, GGrid, f.state.show_grid,
+                    tr("cmd.inspector.toggle_grid"))) {
         f.queue.enqueue(CommandId::ToggleInspectorGrid);
     }
     x += b + gap;
-    if (icon_button(f, RectF{x, y, b, b}, Hot::Minimap2, GMinimap, f.state.show_minimap)) {
+    if (icon_button(f, RectF{x, y, b, b}, Hot::Minimap2, GMinimap, f.state.show_minimap,
+                    tr("cmd.inspector.toggle_minimap"))) {
         f.queue.enqueue(CommandId::ToggleInspectorMinimap);
     }
 }
@@ -1056,7 +1107,7 @@ void InspectorView::draw_text(const InspectorFrame& f, const RectF& area,
     text_scroll_ = std::clamp(text_scroll_, 0.0, text_max_);
 
     // Gutter: a quieter band with line numbers.
-    r.fill_rect(RectF{view.x, view.y, gutter, view.h}, pal.text_muted.with_alpha(0.055F));
+    r.fill_rect(RectF{view.x, view.y, gutter, view.h}, gutter_fill(pal));
     r.fill_rect(RectF{view.x + gutter, view.y, std::max(1.0F, std::round(p.px(1.0F))), view.h},
                 pal.border.with_alpha(0.6F));
     const LineRange range = visible_lines(text_scroll_, view.h, line_h, lines);
@@ -1069,7 +1120,7 @@ void InspectorView::draw_text(const InspectorFrame& f, const RectF& area,
         if (vl.first_of_line) {
             const ShapedText num = p.shape(type::code_gutter, std::to_string(vl.line + 1));
             p.draw(num, std::round(view.x + gutter - p.px(10.0F) - num.width()), base,
-                   pal.text_muted);
+                   gutter_ink(pal));
         }
         const std::string_view seg =
             text.row_text(vl.row).substr(vl.byte_begin, vl.byte_end - vl.byte_begin);

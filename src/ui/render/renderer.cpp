@@ -316,8 +316,8 @@ void Renderer::draw_image(SDL_Texture* texture, const RectF& dst, float alpha, b
     SDL_SetTextureAlphaModFloat(texture, 1.0F);
 }
 
-void Renderer::draw_image_rounded(SDL_Texture* texture, const RectF& dst, float radius,
-                                  float alpha) {
+void Renderer::draw_image_rounded(SDL_Texture* texture, const RectF& dst, float radius, float alpha,
+                                  const RectF& uv) {
     if (texture == nullptr || alpha <= 0.0F || dst.w <= 1.0F || dst.h <= 1.0F) {
         return;
     }
@@ -326,12 +326,12 @@ void Renderer::draw_image_rounded(SDL_Texture* texture, const RectF& dst, float 
     contour(dst, rad, 0.5F, seg, ring_a_);  // opaque edge
     contour(dst, rad, -0.5F, seg, ring_b_); // transparent fringe
     const float a = std::min(alpha, 1.0F);
-    const auto vertex = [&dst](const SDL_FPoint& pt, float k) {
+    const auto vertex = [&dst, &uv](const SDL_FPoint& pt, float k) {
         SDL_Vertex v{};
         v.position = pt;
         v.color = SDL_FColor{k, k, k, k}; // premultiplied: colour and alpha scale together
-        v.tex_coord = SDL_FPoint{std::clamp((pt.x - dst.x) / dst.w, 0.0F, 1.0F),
-                                 std::clamp((pt.y - dst.y) / dst.h, 0.0F, 1.0F)};
+        v.tex_coord = SDL_FPoint{uv.x + (uv.w * std::clamp((pt.x - dst.x) / dst.w, 0.0F, 1.0F)),
+                                 uv.y + (uv.h * std::clamp((pt.y - dst.y) / dst.h, 0.0F, 1.0F))};
         return v;
     };
     vertices_.clear();

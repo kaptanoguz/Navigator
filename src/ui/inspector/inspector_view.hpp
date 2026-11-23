@@ -80,6 +80,8 @@ public:
     // Commands routed by the App (docs/keymap.md "Focus scoping (Phase 6)").
     void zoom_fit() noexcept;
     void zoom_1to1() noexcept;
+    // + / - while the Inspector has focus: one wheel step about the view centre.
+    void zoom_step(int steps) noexcept;
     // list.cursor_* while the Inspector has focus: pan an image, scroll text / folder / metadata.
     void cursor(CommandId id) noexcept;
 
@@ -94,6 +96,8 @@ public:
     [[nodiscard]] const RectF& card() const noexcept { return card_; }
     [[nodiscard]] const ImageViewport& viewport() const noexcept { return viewport_; }
     void clear_caches() noexcept { fitter_.clear(); }
+    // Development (screenshots): draw the Play button hovered, with its tooltip.
+    void debug_hover_play() noexcept { force_play_hover_ = true; }
 
 private:
     enum class Hot : std::uint8_t {
@@ -117,7 +121,8 @@ private:
     void handle_splitter(const InspectorFrame& f, InspectorOutput& out);
     void draw_header(const InspectorFrame& f, const RectF& area);
     bool icon_button(const InspectorFrame& f, const RectF& r, Hot id, int glyph, bool on,
-                     bool enabled = true);
+                     std::string_view tip, bool enabled = true);
+    void draw_chip(const InspectorFrame& f, const RectF& view, std::string_view text);
     void draw_body(const InspectorFrame& f, const RectF& area, InspectorOutput& out);
     void draw_media(const InspectorFrame& f, const RectF& area, const preview::PreviewResult* res);
     void draw_image(const InspectorFrame& f, const RectF& view, const TextureCache::Texture* tex,
@@ -165,7 +170,9 @@ private:
     std::uint64_t meta_serial_ = 0;
     std::string meta_language_;
     TextFitter fitter_;
-    std::string tooltip_;
+    std::string tooltip_; // set while drawing a hovered button; drawn last (B2)
+    RectF tooltip_anchor_;
+    bool force_play_hover_ = false;
 };
 
 } // namespace navigator::ui::inspector

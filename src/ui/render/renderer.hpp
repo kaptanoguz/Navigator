@@ -64,8 +64,10 @@ public:
     void draw_image(SDL_Texture* texture, const RectF& dst, float alpha, bool nearest,
                     const std::optional<RectF>& src = std::nullopt);
     // The whole image texture clipped to a rounded rectangle with an anti-aliased edge
-    // (thumbnails). `dst` is where the texture lands; the rounded shape is `dst` itself.
-    void draw_image_rounded(SDL_Texture* texture, const RectF& dst, float radius, float alpha);
+    // (thumbnails). `dst` is where the texture lands; the rounded shape is `dst` itself. `uv`
+    // selects the part of the texture (0..1 coordinates; a centre crop for extreme aspects).
+    void draw_image_rounded(SDL_Texture* texture, const RectF& dst, float radius, float alpha,
+                            const RectF& uv = RectF{0.0F, 0.0F, 1.0F, 1.0F});
 
     // Anti-aliased line segment from (x0, y0) to (x1, y1), `thickness` px, round caps.
     void stroke_line(float x0, float y0, float x1, float y1, float thickness, const Color& color);

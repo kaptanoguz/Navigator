@@ -18,6 +18,7 @@
 #include "search/index_status.hpp"
 #include "widgets/icons.hpp"
 #include "widgets/text_field.hpp"
+#include "widgets/tooltip.hpp"
 
 namespace navigator::ui {
 namespace {
@@ -587,20 +588,7 @@ void BrowserView::draw_tooltip(const BrowserFrame& f) {
     if (tooltip_text_.empty()) {
         return;
     }
-    const Painter& p = f.painter;
-    Renderer& r = p.renderer();
-    const ShapedText t = p.shape(type::caption, tooltip_text_);
-    const float h = std::round(p.px(26.0F));
-    const float w = std::round(t.width() + p.px(20.0F));
-    float x = std::round(tooltip_anchor_.center_x() - (0.5F * w));
-    x = std::clamp(x, f.bounds.x + p.px(4.0F), f.bounds.right() - w - p.px(4.0F));
-    const RectF tip = snap(RectF{x, std::round(tooltip_anchor_.bottom() + p.px(8.0F)), w, h});
-    const float rad = std::round(p.px(radius::md - 2.0F));
-    r.drop_shadow(tip, rad, p.px(12.0F), p.px(3.0F), f.palette.shadow);
-    r.fill_rounded_rect(tip, rad, f.palette.surface_raised);
-    r.stroke_rounded_rect(tip, rad, std::max(1.0F, std::round(p.px(1.0F))), f.palette.border);
-    p.draw(t, tip.x + std::round(p.px(10.0F)), std::round(tip.center_y() + (0.5F * t.cap_height())),
-           f.palette.text_primary);
+    draw_tooltip_bubble(f.painter, f.palette, tooltip_text_, tooltip_anchor_, f.bounds);
     tooltip_text_.clear();
 }
 

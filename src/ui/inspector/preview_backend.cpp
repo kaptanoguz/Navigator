@@ -175,7 +175,18 @@ bool wants_thumbnail(std::string_view mime, const fs::DirEntry& entry) noexcept 
     if (!file || entry.metadata_error || entry.size == 0) {
         return false;
     }
-    return mime.starts_with("image/") || mime.starts_with("video/");
+    return mime.starts_with("image/") || mime.starts_with("video/") || is_page_mime(mime);
+}
+
+bool is_page_mime(std::string_view mime) noexcept {
+    // Documents the common system thumbnailers render a page of (evince, gnome-epub, libgsf,
+    // LibreOffice): previews of them are "page previews", a Navigator extra (features.md).
+    return mime == "application/pdf" || mime == "application/postscript" ||
+           mime == "application/epub+zip" || mime == "application/x-mobipocket-ebook" ||
+           mime == "image/vnd.djvu" || mime == "application/msword" ||
+           mime.starts_with("application/vnd.oasis.opendocument.") ||
+           mime.starts_with("application/vnd.openxmlformats-officedocument.") ||
+           mime.starts_with("application/vnd.ms-");
 }
 
 } // namespace navigator::ui

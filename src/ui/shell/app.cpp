@@ -901,6 +901,29 @@ void App::Impl::handle_key(const KeyChord& chord, bool repeat) {
     if (chord == KeyChord{Key::Delete, Modifiers::None} && !repeat && view.delete_key(intents)) {
         return;
     }
+    // Phase 6: keys local to a focused Inspector (fit, 1:1, zoom, grid, minimap).
+    if (inspector_focus && inspector.visible() && !view.popup_open() && text_field() == nullptr) {
+        if (const std::optional<ui::inspector::LocalKey> k =
+                ui::inspector::inspector_local_key(chord);
+            k) {
+            dirty = true;
+            switch (*k) {
+            case ui::inspector::LocalKey::Fit: queue.enqueue(CommandId::InspectorZoomFit); break;
+            case ui::inspector::LocalKey::OneToOne:
+                queue.enqueue(CommandId::InspectorZoom1to1);
+                break;
+            case ui::inspector::LocalKey::ZoomIn: inspector_view.zoom_step(1); break;
+            case ui::inspector::LocalKey::ZoomOut: inspector_view.zoom_step(-1); break;
+            case ui::inspector::LocalKey::Grid:
+                queue.enqueue(CommandId::ToggleInspectorGrid);
+                break;
+            case ui::inspector::LocalKey::Minimap:
+                queue.enqueue(CommandId::ToggleInspectorMinimap);
+                break;
+            }
+            return;
+        }
+    }
     // Phase 6: a focused text field takes Space / Shift+Space as text (the character comes as
     // SDL text input), so typing a space never toggles the Inspector.
     if (ui::field_consumes_as_text(chord) &&
@@ -1040,6 +1063,10 @@ void App::Impl::handle_text(std::string_view typed) {
     const ui::KeyboardOwner owner = ui::keyboard_owner(
         view.popup_open(), view.address_open() || sidebar.renaming(), sidebar_focus);
     const Modifiers held = ui::translate_modifiers(SDL_GetModState());
+    // The Inspector's local keys (G, M, 0, 1, ...) never start type-to-filter.
+    if (inspector_focus && inspector.visible()) {
+        return;
+    }
     if (ui::starts_type_to_filter(owner, held, typed)) {
         ui::BrowserModel& m = workspace->active_model();
         if (!m.loaded()) {
@@ -2020,6 +2047,8 @@ void App::Impl::run_script_step() {
         }
     } else if (op == "inspectorfocus") {
         inspector_focus = true;
+    } else if (op == "hoverplay") {
+        inspector_view.debug_hover_play(); // screenshots: the Play button's tooltip
     } else if (op == "waitsearch" || op == "waitfound" || op == "waitindex" ||
                op == "waitpreview" || op == "waitthumbs") {
         // Held before the step was taken (above).

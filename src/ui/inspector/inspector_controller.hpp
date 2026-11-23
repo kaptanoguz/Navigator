@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include <navigator/commands.hpp>
 #include <navigator/fs.hpp>
 #include <navigator/layout.hpp>
 #include <navigator/preview.hpp>
@@ -148,6 +149,13 @@ private:
     std::vector<preview::Ticket> prefetch_;
     bool prefetched_ = false;
 };
+
+// ---- Keys local to a focused Inspector (pure) ------------------------------------------------
+// While the Inspector has the keyboard (after a click), these plain keys act on the image; they
+// never fire while the list has focus and have no keymap rows (Navigator's choice, design review
+// Phase 6 optional 2): 0 fit, 1 1:1, + / = zoom in, - zoom out, G grid, M minimap.
+enum class LocalKey : std::uint8_t { Fit, OneToOne, ZoomIn, ZoomOut, Grid, Minimap };
+[[nodiscard]] std::optional<LocalKey> inspector_local_key(const KeyChord& chord) noexcept;
 
 // ---- Dock geometry (pure) -------------------------------------------------------------------
 

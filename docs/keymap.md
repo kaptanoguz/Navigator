@@ -390,6 +390,10 @@ close the Inspector; `Space` toggles it.
   | `list.clear_selection` (`Escape`) | Focus back to the active pane |
   | `view.inspect` (`Space`) | Hide the Inspector; focus back to the active pane |
 
+  Inspector-local keys (only while the Inspector has focus; not keymap rows, never start
+  type-to-filter, rebinding arrives with the Phase 8 palette): `0` fit, `1` 1:1, `+` / `=` zoom
+  in, `-` zoom out, `G` pixel grid, `M` minimap.
+
   Every other chord resolves as usual (`Ctrl+Q`, `F6`, `Ctrl+W`, ...).
 
 ### Mouse (Phase 6)

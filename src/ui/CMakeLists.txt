@@ -88,6 +88,7 @@ add_library(navigator_ui STATIC
     widgets/icons.cpp
     widgets/text_field.cpp
     widgets/text_fit.cpp
+    widgets/tooltip.cpp
     workspace/goto_popup.cpp
     workspace/popups.cpp
     workspace/types_popup.cpp

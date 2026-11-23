@@ -20,6 +20,17 @@
 namespace navigator::ui::inspector {
 
 inline constexpr double kThumbnailFadeMs = 160.0;
+// Thumbnails wider (or taller) than this ratio are centre-cropped to kCroppedAspect instead of
+// shrinking to a hairline (design review Phase 6 optional 4).
+inline constexpr float kMaxThumbnailAspect = 3.0F;
+inline constexpr float kCroppedAspect = 2.0F;
+
+struct ThumbPlacement {
+    RectF dst;                        // px, whole pixels, inside the box
+    RectF uv{0.0F, 0.0F, 1.0F, 1.0F}; // part of the texture shown
+};
+// Contain in `box`, or a centre crop for extreme aspect ratios. Pure.
+[[nodiscard]] ThumbPlacement place_thumbnail(float tex_w, float tex_h, const RectF& box) noexcept;
 
 class ListThumbnails final : public RowThumbnailSource {
 public:

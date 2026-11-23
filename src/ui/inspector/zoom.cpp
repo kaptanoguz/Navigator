@@ -26,11 +26,29 @@ void ImageViewport::set_view(double width, double height) noexcept {
     update_mode();
 }
 
+void ImageViewport::set_tiny_target(double px) noexcept {
+    if (px == tiny_) {
+        return;
+    }
+    tiny_ = std::max(0.0, px);
+    if (mode_ == ZoomMode::Fit && !animating()) {
+        fit();
+    }
+}
+
 double ImageViewport::fit_zoom() const noexcept {
     if (empty() || vw_ <= 0.0 || vh_ <= 0.0) {
         return 1.0;
     }
-    return std::min({vw_ / iw_, vh_ / ih_, 1.0});
+    const double fit = std::min({vw_ / iw_, vh_ / ih_, 1.0});
+    const double side = std::max(iw_, ih_);
+    if (tiny_ > 0.0 && side <= kTinyImagePx) {
+        const double up = std::floor(std::min({tiny_ / side, vw_ / iw_, vh_ / ih_}));
+        if (up > 1.0) {
+            return up;
+        }
+    }
+    return fit;
 }
 
 void ImageViewport::fit() noexcept {

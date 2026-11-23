@@ -8,6 +8,7 @@
 #include <variant>
 
 #include <navigator/i18n.hpp>
+#include <navigator/mime.hpp>
 
 #include "browser/format.hpp"
 #include "i18n/catalog.hpp"
@@ -181,7 +182,36 @@ void image_groups(std::vector<MetaGroup>& out, const preview::ImageInfo& info) {
     push_group(out, "meta.group.location", std::move(gps));
 }
 
-void video_groups(std::vector<MetaGroup>& out, const preview::VideoInfo& v) {
+// The container name: FFmpeg reports the whole ISO-BMFF family as "QuickTime / MOV"; the
+// file's extension says which member it is.
+std::string container_name(const preview::VideoInfo& v, std::string_view ext) {
+    const bool bmff = v.container.find("mp4") != std::string::npos ||
+                      v.container.find("mov") != std::string::npos;
+    if (bmff) {
+        if (ext == "mp4" || ext == "m4v") {
+            return "MPEG-4 (MP4)";
+        }
+        if (ext == "3gp" || ext == "3g2") {
+            return "3GPP";
+        }
+        if (ext == "mov" || ext == "qt") {
+            return "QuickTime (MOV)";
+        }
+    }
+    return v.container_long.empty() ? v.container : v.container_long;
+}
+
+std::string lower_ext(const fs::DirEntry& entry) {
+    std::string ext(fs::extension(entry.name));
+    for (char& c : ext) {
+        if (c >= 'A' && c <= 'Z') {
+            c = static_cast<char>(c - 'A' + 'a');
+        }
+    }
+    return ext;
+}
+
+void video_groups(std::vector<MetaGroup>& out, const preview::VideoInfo& v, std::string_view ext) {
     if (v.source == preview::MetadataSource::None) {
         return;
     }
@@ -196,7 +226,7 @@ void video_groups(std::vector<MetaGroup>& out, const preview::VideoInfo& v) {
         add(vid, "meta.frame_rate", format_frame_rate(v.frame_rate));
     }
     add(vid, "meta.video_codec", upper(v.video_codec));
-    add(vid, "meta.container", v.container_long.empty() ? v.container : v.container_long);
+    add(vid, "meta.container", container_name(v, ext));
     if (v.bit_rate > 0) {
         add(vid, "meta.bit_rate", format_bit_rate(v.bit_rate));
     }
@@ -335,7 +365,44 @@ std::string format_exif_date(const preview::ExifDateTime& when) {
     return out;
 }
 
+bool is_page_preview(const fs::DirEntry& entry, const preview::PreviewResult& result) noexcept {
+    const auto* img = std::get_if<preview::ImagePreview>(&result.content);
+    if (img == nullptr || img->origin == preview::ImageOrigin::Decoded ||
+        img->origin == preview::ImageOrigin::EmbeddedThumbnail) {
+        return false;
+    }
+    return !mime::guess_for_entry(entry).starts_with("image/");
+}
+
 std::string header_subtitle(const fs::DirEntry& entry, const preview::PreviewResult* result) {
+    const std::string size = entry.metadata_error ? std::string() : format_size(entry.size);
+    const auto with_size = [&size](const std::string& head) {
+        return size.empty() ? head : head + "  ·  " + size;
+    };
+    // The most useful one-liner per kind (the File group below has kind, size and dates).
+    if (result != nullptr && !fs::is_directory_like(entry)) {
+        if (const auto* img = std::get_if<preview::ImagePreview>(&result->content);
+            img != nullptr && !is_page_preview(entry, *result) && !img->info.display.empty()) {
+            return with_size(format_dimensions(img->info.display));
+        }
+        if (const auto* vid = std::get_if<preview::VideoPreview>(&result->content);
+            vid != nullptr && vid->info.source != preview::MetadataSource::None) {
+            std::string head;
+            if (vid->info.duration_ms) {
+                head = format_duration(*vid->info.duration_ms);
+            }
+            if (!vid->info.frame.empty()) {
+                head += (head.empty() ? "" : "  ·  ") + format_dimensions(vid->info.frame);
+            }
+            if (!head.empty()) {
+                return with_size(head);
+            }
+        }
+        if (const auto* txt = std::get_if<preview::TextPreview>(&result->content)) {
+            return with_size(tr_count("inspector.lines", txt->line_count) +
+                             (txt->truncated ? "+" : ""));
+        }
+    }
     std::string out = type_label(entry);
     if (fs::is_directory_like(entry)) {
         if (result != nullptr) {
@@ -356,9 +423,13 @@ std::vector<MetaGroup> build_metadata(const fs::DirEntry& entry,
     std::vector<MetaGroup> out;
     if (result != nullptr) {
         if (const auto* img = std::get_if<preview::ImagePreview>(&result->content)) {
-            image_groups(out, img->info);
+            // A thumbnailer's page of a document is not an image of the file: its pixel size
+            // says nothing about the document, so only the file's own facts are listed.
+            if (!is_page_preview(entry, *result)) {
+                image_groups(out, img->info);
+            }
         } else if (const auto* vid = std::get_if<preview::VideoPreview>(&result->content)) {
-            video_groups(out, vid->info);
+            video_groups(out, vid->info, lower_ext(entry));
         } else if (const auto* txt = std::get_if<preview::TextPreview>(&result->content)) {
             std::vector<MetaRow> rows;
             add(rows, "meta.encoding", encoding_name(txt->encoding));

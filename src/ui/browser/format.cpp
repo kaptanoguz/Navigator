@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdio>
 #include <ctime>
+#include <utility>
 
 #include <navigator/i18n.hpp>
 #include <navigator/mime.hpp>
@@ -179,6 +180,26 @@ std::string type_label(const fs::DirEntry& entry) {
         return std::string(tr("type.link_broken"));
     }
     const std::string_view key = mime::type_label_key(mime::guess_for_entry(entry));
+    if (key == "type.video") {
+        // Phase 6 design review: "MP4 video" / "MP4 videosu", like "JPEG image".
+        std::string ext(fs::extension(entry.name));
+        for (char& c : ext) {
+            if (c >= 'A' && c <= 'Z') {
+                c = static_cast<char>(c - 'A' + 'a');
+            }
+        }
+        static constexpr std::pair<std::string_view, std::string_view> kNames[] = {
+            {"mp4", "MP4"},       {"m4v", "MP4"},   {"mkv", "Matroska"}, {"webm", "WebM"},
+            {"mov", "QuickTime"}, {"avi", "AVI"},   {"wmv", "WMV"},      {"flv", "Flash"},
+            {"mpg", "MPEG"},      {"mpeg", "MPEG"}, {"ts", "MPEG-TS"},   {"mts", "AVCHD"},
+            {"m2ts", "AVCHD"},    {"3gp", "3GPP"},  {"ogv", "Ogg"},
+        };
+        for (const auto& [e, name] : kNames) {
+            if (ext == e) {
+                return substitute(tr("type.video_named"), "name", name);
+            }
+        }
+    }
     if (key == "type.file") {
         const std::string_view ext = fs::extension(entry.name);
         if (!ext.empty() && ext.size() <= 8) {

@@ -296,6 +296,20 @@ Status Controller::status() const noexcept {
     return Status::Loading;
 }
 
+std::optional<LocalKey> inspector_local_key(const KeyChord& chord) noexcept {
+    const bool plain = chord.mods == Modifiers::None;
+    const bool shift = chord.mods == Modifiers::Shift;
+    switch (chord.key) {
+    case Key::Digit0: return plain ? std::optional{LocalKey::Fit} : std::nullopt;
+    case Key::Digit1: return plain ? std::optional{LocalKey::OneToOne} : std::nullopt;
+    case Key::Equals: return plain || shift ? std::optional{LocalKey::ZoomIn} : std::nullopt;
+    case Key::Minus: return plain ? std::optional{LocalKey::ZoomOut} : std::nullopt;
+    case Key::G: return plain ? std::optional{LocalKey::Grid} : std::nullopt;
+    case Key::M: return plain ? std::optional{LocalKey::Minimap} : std::nullopt;
+    default: return std::nullopt;
+    }
+}
+
 // ---- Dock geometry --------------------------------------------------------------------------
 
 layout::InspectorState clamped(layout::InspectorState state) noexcept {

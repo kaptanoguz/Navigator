@@ -10,6 +10,8 @@
 #include <navigator/commands.hpp>
 #include <navigator/preview.hpp>
 
+#include "inspector/inspector_style.hpp"
+#include "inspector/list_thumbnails.hpp"
 #include "inspector/text_layout.hpp"
 #include "inspector/upload_queue.hpp"
 #include "inspector/zoom.hpp"
@@ -19,6 +21,7 @@ using namespace navigator;
 using namespace navigator::ui;
 using namespace navigator::ui::inspector;
 using Catch::Approx;
+using navigator::Theme;
 
 TEST_CASE("Fit never upscales and centres the image", "[inspector][zoom]") {
     ImageViewport v;
@@ -291,4 +294,51 @@ TEST_CASE("Text fields consume Space and Shift+Space as text", "[inspector][keys
     // With the list focused, a leading Space never starts type-to-filter (Phase 5 rule), so it
     // reaches the keymap as view.inspect.
     CHECK_FALSE(starts_type_to_filter(KeyboardOwner::List, Modifiers::None, " "));
+}
+
+TEST_CASE("Tiny images grow by an integer factor in fit; 1:1 stays reachable",
+          "[inspector][zoom]") {
+    ImageViewport v;
+    v.set_view(600.0, 400.0);
+    v.set_tiny_target(256.0); // 128 dp at 2x
+    v.set_image(16.0, 16.0);
+    CHECK(v.zoom() == Approx(16.0));
+    CHECK(v.mode() == ZoomMode::Fit);
+    v.set_image(48.0, 40.0);
+    CHECK(v.zoom() == Approx(5.0)); // floor(256 / 48)
+    v.one_to_one();
+    CHECK(v.zoom() == Approx(1.0));
+    v.fit();
+    CHECK(v.zoom() == Approx(5.0));
+    // Larger than the threshold: never upscaled.
+    v.set_image(65.0, 65.0);
+    CHECK(v.zoom() == Approx(1.0));
+    // The view limits the upscale too.
+    v.set_view(40.0, 40.0);
+    v.set_image(16.0, 16.0);
+    CHECK(v.zoom() == Approx(2.0));
+}
+
+TEST_CASE("Extreme thumbnails are centre-cropped, others contained", "[inspector][thumbnails]") {
+    const RectF box{0.0F, 0.0F, 36.0F, 36.0F};
+    ThumbPlacement p = place_thumbnail(256.0F, 192.0F, box);
+    CHECK(p.dst.w == Approx(36.0F));
+    CHECK(p.dst.h == Approx(27.0F));
+    CHECK(p.uv == RectF{0.0F, 0.0F, 1.0F, 1.0F});
+    p = place_thumbnail(1000.0F, 200.0F, box); // 5:1 banner
+    CHECK(p.dst.w == Approx(36.0F));
+    CHECK(p.dst.h == Approx(18.0F)); // shown at 2:1, never a hairline
+    CHECK(p.uv.w == Approx(0.4F));
+    CHECK(p.uv.x == Approx(0.3F));
+    p = place_thumbnail(100.0F, 800.0F, box); // 1:8 strip
+    CHECK(p.dst.h == Approx(36.0F));
+    CHECK(p.dst.w == Approx(18.0F));
+    CHECK(p.uv.h == Approx(0.25F));
+}
+
+TEST_CASE("Text view line numbers meet AA contrast in both themes", "[inspector][theme]") {
+    for (const Theme t : {Theme::Dark, Theme::Light}) {
+        const Palette& pal = palette(t);
+        CHECK(contrast_ratio(gutter_ink(pal), gutter_background(pal)) >= 4.5F);
+    }
 }
