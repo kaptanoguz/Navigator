@@ -22,6 +22,8 @@ set(NAVIGATOR_CONTRACT_HEADERS
     search
     ops
     preview
+    thumbnail
+    preview_service
     commands
     ui
     platform
@@ -97,6 +99,14 @@ foreach(std IN ITEMS 20 23)
     _navigator_header_object(navigator_contract_phase5_cxx${std}
                              "${CMAKE_CURRENT_SOURCE_DIR}/phase5_usage.cpp" CXX ${std})
     list(APPEND _nav_check_targets navigator_contract_phase5_cxx${std})
+
+    # Phase 6 preview values and helpers, a fake provider and registry, Freedesktop thumbnail
+    # keys / read / write / policy, thumbnailer parsing and running through a fake
+    # IProcessRunner, a fake IPreviewService, InspectorState, AppConfig preview fields,
+    # Inspector command ids (compile only).
+    _navigator_header_object(navigator_contract_phase6_cxx${std}
+                             "${CMAKE_CURRENT_SOURCE_DIR}/phase6_usage.cpp" CXX ${std})
+    list(APPEND _nav_check_targets navigator_contract_phase6_cxx${std})
 endforeach()
 
 # plugin.h from C11

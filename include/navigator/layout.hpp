@@ -3,17 +3,17 @@
 // Purpose: the headless tab / split-pane model (Phase 3): strong ids, per-tab persisted state,
 //          the layout tree with its invariants and edit operations, the recently-closed-tabs
 //          ring, the Session (window geometry + layout + closed tabs + Phase 4 sidebar state;
-//          Phase 5 adds the per-tab type filter),
+//          Phase 5 adds the per-tab type filter, Phase 6 the Inspector state),
 //          JSON (de)serialization and the on-disk session / named-layout files. No SDL, no
 //          renderer, no JSON library types: the ui draws and drives this model; src/core
 //          implements it.
 // Owner:   contracts (header); implementation in src/core (role: core-fs), tests in tests/core.
-// Thread-safety: TabState, LayoutNode, Layout, ClosedTabs, WindowGeometry, SidebarState and
-//                Session are plain values (see types.hpp): distinct objects may be used from
-//                different threads, one object must not be mutated concurrently. In the app the
-//                live Session is owned by the UI thread. Layout and ClosedTabs member functions
-//                and the JSON functions are pure CPU work (no I/O) and may run on the UI thread.
-//                The file functions (load_session, save_session, *_named_layout) perform
+// Thread-safety: TabState, LayoutNode, Layout, ClosedTabs, WindowGeometry, SidebarState,
+//                InspectorState and Session are plain values (see types.hpp): distinct objects may
+//                be used from different threads, one object must not be mutated concurrently. In
+//                the app the live Session is owned by the UI thread. Layout and ClosedTabs member
+//                functions and the JSON functions are pure CPU work (no I/O) and may run on the UI
+//                thread. The file functions (load_session, save_session, *_named_layout) perform
 //                blocking file I/O; see docs/architecture.md "Phase 3" for where the ui may call
 //                them. All functions are reentrant: concurrent calls on distinct objects / files
 //                are safe, and two concurrent saves to the same file never produce a torn file
@@ -435,6 +435,62 @@ struct SidebarState {
     friend constexpr bool operator==(const SidebarState&, const SidebarState&) = default;
 };
 
+// Phase 6. One Inspector per window, docked on the right of or below the whole pane tree (not a
+// layout node, like the sidebar); stored in the session only, never in named layouts. The lock
+// and the zoom mode are runtime-only: a lock names one runtime item, and restoring it after a
+// restart (when the file may have changed or vanished) would surprise more than help.
+enum class InspectorPlacement : std::uint8_t {
+    Auto = 0, // resolve_inspector_placement() decides from the window size every frame
+    Right = 1,
+    Bottom = 2,
+};
+
+// Logical pixels (dp) at scale 1.0. The ui additionally keeps the list area at least
+// kInspectorMinListExtent wide (Right) or tall (Bottom), shrinking the Inspector first.
+inline constexpr double kInspectorDefaultWidth = 360.0; // Right placement
+inline constexpr double kInspectorMinWidth = 240.0;
+inline constexpr double kInspectorMaxWidth = 1200.0;
+inline constexpr double kInspectorDefaultHeight = 280.0; // Bottom placement
+inline constexpr double kInspectorMinHeight = 160.0;
+inline constexpr double kInspectorMaxHeight = 900.0;
+inline constexpr double kInspectorMinListExtent = 320.0;
+// Auto: Right when the window is at least this wide AND at least as wide as tall, else Bottom.
+inline constexpr double kInspectorAutoRightMinWidth = 960.0;
+
+struct InspectorState {
+    bool visible = false;
+    InspectorPlacement placement = InspectorPlacement::Auto;
+    double width = kInspectorDefaultWidth; // clamped to [kInspectorMinWidth, kInspectorMaxWidth]
+    double height =
+        kInspectorDefaultHeight; // clamped to [kInspectorMinHeight, kInspectorMaxHeight]
+    bool show_grid = false;      // inspector.toggle_grid
+    bool show_minimap = true;    // inspector.toggle_minimap
+
+    friend constexpr bool operator==(const InspectorState&, const InspectorState&) = default;
+};
+
+// Right or Bottom (never Auto) for a window of the given logical size. Pure.
+[[nodiscard]] constexpr InspectorPlacement
+resolve_inspector_placement(InspectorPlacement placement, double window_width,
+                            double window_height) noexcept {
+    if (placement != InspectorPlacement::Auto) {
+        return placement;
+    }
+    return window_width >= kInspectorAutoRightMinWidth && window_width >= window_height
+               ? InspectorPlacement::Right
+               : InspectorPlacement::Bottom;
+}
+
+// inspector.cycle_placement: Auto -> Right -> Bottom -> Auto. Pure.
+[[nodiscard]] constexpr InspectorPlacement next_placement(InspectorPlacement placement) noexcept {
+    switch (placement) {
+    case InspectorPlacement::Auto: return InspectorPlacement::Right;
+    case InspectorPlacement::Right: return InspectorPlacement::Bottom;
+    case InspectorPlacement::Bottom: return InspectorPlacement::Auto;
+    }
+    return InspectorPlacement::Auto;
+}
+
 struct Session {
     // Format version written by to_json(). See "JSON format" below for the load rules.
     static constexpr int kVersion = 1;
@@ -443,7 +499,8 @@ struct Session {
     WindowGeometry window;
     Layout layout; // includes the active pane
     ClosedTabs closed_tabs;
-    SidebarState sidebar; // Phase 4 (additive "sidebar" field, still version 1)
+    SidebarState sidebar;     // Phase 4 (additive "sidebar" field, still version 1)
+    InspectorState inspector; // Phase 6 (additive "inspector" field, still version 1)
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -456,8 +513,12 @@ struct Session {
 //     "layout": <layout>,
 //     "closed_tabs": [ <tab>, ... ],                        oldest first
 //     "sidebar": { "visible": true, "width": 220,
-//                  "collapsed": [ "recents", "storage" ] } }  Phase 4; collapsed sections in
+//                  "collapsed": [ "recents", "storage" ] },   Phase 4; collapsed sections in
 //                                                             SidebarSection order
+//     "inspector": { "visible": true, "placement": "auto" | "right" | "bottom",
+//                    "width": 360, "height": 280, "grid": false, "minimap": true } }
+//                                                             Phase 6; written only when it
+//                                                             differs from InspectorState{}
 // Named layout file:
 //   { "version": 1, "layout": <layout> }
 // <layout> = { "active_pane": 0, "root": <node> }          active_pane: index in pane_order()
@@ -499,6 +560,12 @@ struct Session {
 //     items; others are ignored; then normalized as search::normalize(TypeFilter) specifies
 //     (folded with fs::fold_name, empty or '/'- or NUL-containing items dropped, sorted by
 //     bytes, unique). Older Navigator versions ignore the field.
+//   - "inspector" (Phase 6, additive, version stays 1): missing or not an object ->
+//     InspectorState{}. "visible" / "grid" / "minimap" not a bool -> their defaults;
+//     "placement" not one of the three strings -> Auto; "width" / "height" not a finite number
+//     -> the default, else clamped to their [min, max]. Written with every field, in the order
+//     shown, numbers as for "sidebar", and only when the state != InspectorState{} (so files of
+//     users who never open the Inspector are unchanged). Older Navigator versions ignore it.
 //   - "sidebar" (Phase 4): missing (older files) or not an object -> SidebarState{}. "width"
 //     not a finite number -> kSidebarDefaultWidth, else clamped to [kSidebarMinWidth,
 //     kSidebarMaxWidth]; "visible" not a bool -> true; "collapsed": strings "bookmarks",

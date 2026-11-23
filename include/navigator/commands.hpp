@@ -41,7 +41,8 @@ namespace navigator {
 //   1260-1279  sidebar, bookmarks, recents (Phase 4)
 //   1280-1299  edit / clipboard (Phase 4: copy path; file operations add copy/cut/paste here)
 //   1300-1319  filter, flatten, name search, index (Phase 5)
-//   1320+      reserved for later phases (file operations, ...)
+//   1320-1339  Inspector and previews (Phase 6)
+//   1340+      reserved for later phases (file operations, ...)
 // Every id except None is registered by register_builtin_commands() and appears in the palette.
 // `arg` meanings are listed per id; "arg: 0" means the command ignores it.
 enum class CommandId : std::uint32_t {
@@ -201,6 +202,36 @@ enum class CommandId : std::uint32_t {
                              //   (cascade in docs/keymap.md).
     RebuildIndex = 1307,     // "search.rebuild_index"  RescanKind::Rebuild for the index of the
                              //   volume holding the tab's folder; no-op when it is not indexed.
+
+    // Inspector (Phase 6). One Inspector per window, docked right or bottom of the pane tree
+    // (layout::InspectorState, persisted in the session). Unless locked it shows the cursor
+    // entry of the active tab of the active pane (a multi-selection: count and total size) and
+    // follows the cursor; it never takes keyboard focus unless clicked (docs/keymap.md "Phase 6
+    // defaults"). The image commands act on the Inspector's current image and are no-ops for
+    // other content. docs/architecture.md "Phase 6" has the data flow. arg: 0 for all.
+    Inspect = 1320,                 // "view.inspect"  shows the Inspector on the cursor entry,
+                                    //   or hides it when visible (Space, Alt+KeypadEnter;
+                                    //   docs/features.md). Hiding it while it has keyboard focus
+                                    //   returns focus to the active pane.
+    ToggleInspectorLock = 1321,     // "inspector.toggle_lock"  lock: keep showing the current
+                                    //   item while the cursor moves (and across folder changes)
+                                    //   until unlocked or the item is deleted; runtime only.
+    InspectorZoomFit = 1322,        // "inspector.zoom_fit"   image fits the view (default; never
+                                    //   upscaled past 1:1 for small images)
+    InspectorZoom1to1 = 1323,       // "inspector.zoom_1to1"  one image pixel per DEVICE pixel
+                                    //   (docs/review/phase-5.md); pan by drag / arrows when the
+                                    //   Inspector has focus
+    InspectorPlay = 1324,           // "inspector.play"  opens the inspected item with the default
+                                    //   application (platform::open_with_default), exactly like
+                                    //   list.activate on a file. The video "Play" button (a
+                                    //   Navigator extra; no in-app playback). Folders: no-op.
+    CycleInspectorPlacement = 1325, // "inspector.cycle_placement"  Auto -> Right -> Bottom ->
+                                    //   Auto (layout::InspectorPlacement; persisted)
+    ToggleInspectorGrid = 1326,     // "inspector.toggle_grid"  pixel grid over the image at
+                                    //   zoom >= 4:1 device pixels (persisted)
+    ToggleInspectorMinimap = 1327,  // "inspector.toggle_minimap"  overview with the visible
+                                    //   rectangle while the image is larger than the view
+                                    //   (persisted)
 };
 
 // Bit flags for the `arg` of CopyPath. Unknown bits are ignored (reserved).
@@ -340,6 +371,13 @@ Result<void> register_builtin_commands(CommandRegistry& registry);
 //     the active pane as usual: Up/Down/PageUp/PageDown (with Shift) move the list cursor,
 //     Enter / Ctrl+Enter activate the cursor row, Ctrl+A selects all shown rows, Ctrl+E
 //     flattens. Details: docs/keymap.md "Focus scoping (Phase 5)".
+//   - Phase 6: every focused text field (Phase 4 fields and the Phase 5 filter field) also
+//     consumes Space and Shift+Space as text, so typing "a b" never fires view.inspect. With
+//     the list focused, Space resolves through the keymap (view.inspect); type-to-filter never
+//     starts with a Space. When the Inspector has focus (it was clicked), the ui routes the
+//     resolved list.cursor_* commands to it (scroll text, pan an image at 1:1),
+//     list.activate to inspector.play, and list.clear_selection (Escape) returns focus to the
+//     active pane; view.inspect (Space) hides it.
 // Multi-key sequences ("g g") and command aliases arrive in Phase 8 as an addition (e.g. a
 // KeySequence type and Keymap::bind_sequence); the single-chord API below stays.
 

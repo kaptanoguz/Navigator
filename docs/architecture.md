@@ -28,6 +28,12 @@ index.hpp -> search.hpp, volume.hpp (VolumeInfo/VolumeIdentity values, inline po
              watch.hpp (WatcherFactory), fs.hpp, types       (Phase 5; src/search)
 layout.hpp -> search.hpp (TypeFilter value only; src/core calls nothing in src/search)
 src/search -> navigator_core (fold_name_into, compare_names, Walker); never src/platform
+preview.hpp -> fs.hpp, types                                 (Phase 6; src/preview)
+thumbnail.hpp -> preview.hpp, platform.hpp (IProcessRunner seam only), fs.hpp, types
+preview_service.hpp -> preview.hpp, thumbnail.hpp, platform.hpp (IProcessRunner), types
+layout.hpp (InspectorState) and ui.hpp (AppConfig) do not include the preview headers
+src/preview -> navigator_core (list_directory, sort_entries) + decoder libs PRIVATE; never
+               src/platform (runner, cache root, data dirs injected; MIME filled by the ui)
 ```
 
 `src/core` implements `places.hpp` and `path_input.hpp` without calling any `src/platform`
@@ -503,6 +509,153 @@ link `navigator_search`, `--no-index`, `--cache-dir`) -> **qa** (ranking gold te
 index corruption/rebuild, restart timing) -> **design-reviewer** (filter field, chip, flatten
 view, types popup, highlight contrast).
 
+## Phase 6: Inspector, thumbnails, previews
+
+Goal (roadmap "Faz 6"): `Space` opens the Inspector for images (EXIF orientation, fit / 1:1,
+grid, minimap, metadata), text (virtualized long lines) and folders (inner listing without
+navigating); list thumbnails through the Freedesktop thumbnail cache; a configurable cache
+size. The owner also asked for video: poster frame, metadata and a "Play" hand-off to the
+default player. Video is a **Navigator extra** (`docs/features.md`: File Pilot does not claim
+video playback); there is no in-app playback in Phase 6. PDF has an interface and a "coming
+soon" state; SVG renders only when built with librsvg.
+
+### Ownership
+
+| Piece | Where | Role |
+|-------|-------|------|
+| Value types, `make_image`, `sniff_image_format`, `decode_text`, `looks_binary`, `fit_size`, `select_jpeg_scale_denom`, `apply_exif_orientation`, `downscale`, `make_key`/`hash_value`, `approx_bytes`, `ProviderRegistry` | `preview.hpp`, `src/preview` (new module, library `navigator_preview`), `tests/preview` | preview |
+| Decoders (JPEG with DCT scaling, PNG streaming, WebP, GIF first frame, BMP, HEIF/AVIF, SVG), EXIF parser, FFmpeg poster + `VideoInfo`, text and folder providers, placeholders, `register_builtin_providers`, `build_features` | `preview_service.hpp`, `src/preview` | preview |
+| Freedesktop cache: `file_uri`, `md5_hex`, paths, `read_thumbnail`/`lookup_thumbnail`, `write_thumbnail`, failure markers, `decide` | `thumbnail.hpp`, `src/preview` | preview |
+| `.thumbnailer` parsing, `split_exec`/`expand_exec`, `load_thumbnailers`, `choose_thumbnailer`, `run_thumbnailer` (temp dir, output checks) | `thumbnail.hpp`, `src/preview` | preview |
+| `IPreviewService` (workers, priorities, coalescing, cancellation, LRU memory cache) | `preview_service.hpp`, `src/preview` | preview |
+| `thumbnail_cache_dir`, `data_dirs`, `find_program`, `IProcessRunner` / `create_default_process_runner` (no shell, process group, timeout, rlimits, optional bubblewrap) | `platform.hpp`, `src/platform`, `tests/platform` | platform |
+| `InspectorState` in `Session` (JSON `"inspector"`) | `layout.hpp`, `src/core/layout_json.cpp`, `tests/core` | core-fs |
+| Ids 1320-1327, names, `to_string`, chords `Space`, `Alt+KeypadEnter` | `src/commands`, `tests/commands` | commands |
+| Inspector pane (placement, resize, lock, header buttons, image view with zoom/pan/grid/minimap/checkerboard, metadata list, text view, folder view, video poster + play disc, states), list thumbnails (row icon replacement, fade), service wiring, GPU upload and texture budget, `Space` in text fields, i18n (`cmd.*`, `inspector.*`, `meta.*`), `AppConfig` fields | `src/ui`, `src/app` | ui |
+| `--thumbnail-dir DIR`, `--no-thumbnails`, `--no-external-thumbnailers`, `--preview-cache-mb N`; `add_subdirectory(src/preview)` and `tests/preview`; link `navigator_preview` into ui | root `CMakeLists.txt`, `src/app/main.cpp` | integration |
+| Optional decoder dependencies (libpng, libjpeg-turbo, libwebp, libexif, libheif, FFmpeg, librsvg), feature macros, CI matrix with and without the optional ones | `packaging/`, CI, CMake glue | packaging |
+
+Split rationale: everything that reads untrusted file bytes (decoders, EXIF, thumbnail PNGs,
+thumbnailer output) lives in one module with one hardening rule set and one test suite.
+Platform owns only what touches the OS process model and XDG environment; preview receives
+them as values (`Path` roots, data dirs) and an injected `IProcessRunner`, so `tests/preview`
+never spawns a process or touches `~/.cache`. The ui owns every pixel on screen: it uploads
+`ImageBuffer`s to textures on the UI thread and never decodes.
+
+`src/preview` links `navigator_core` (folder listing, sort, `fs::is_directory_like`) and its
+decoder libraries, nothing else. It does not link `navigator_platform`: the ui fills
+`PreviewRequest::mime` with `mime::guess_for_entry` (already computed for the Type column), and
+the cache root, data dirs and process runner come in as values and an injected object.
+
+### Data flow
+
+```
+UI thread, every frame                                preview workers (IPreviewService)
+  frame start: service.poll(completions)                pick highest priority job:
+    for each completion: keep the shared result,          Inspector > Visible > Prefetch,
+    upload pixels to a texture (budgeted, LRU),           newest epoch first
+    start the fade (none with animations off)           Thumbnail purpose:
+  build UI:                                               decide() -> Skip / ReadOnly / Generate
+    visible rows needing a thumbnail:                     stat target -> SourceInfo
+      key = make_key(request)                             lookup_thumbnail (wanted class, larger)
+      texture? draw : lookup(key)? upload : submit        has_failure -> placeholder
+        (Visible, epoch) and draw the type icon           produce at class size (registry:
+    Inspector item (cursor or locked):                      native decoder | thumbnailer)
+      submit(Inspector) on change; prefetch               write_thumbnail / write_failure
+      neighbours (Prefetch, cursor +-2)                   downscale to the requested target
+  on scroll / navigation / tab switch:                  Inspector purpose: produce directly
+    ++epoch, resubmit visible, cancel_older()           memory LRU insert, Completion,
+  watch events / F5: invalidate(path, Memory)             on_completion -> SDL user event
+```
+
+- Decoding never runs on the UI thread. The UI thread does: key computation, `lookup()` (a hash
+  probe under a mutex), texture uploads of finished buffers (at most a per-frame byte budget,
+  e.g. 8 MiB, the rest next frame so a burst of thumbnails cannot stall a frame), and drawing.
+- The type icon stays until the thumbnail lands; the row height never changes; thumbnails keep
+  the 1px `icon_page_border` frame (design review). The fade-in is skipped with
+  `AppConfig::animations == false`.
+- Inspector: a skeleton with the right aspect ratio appears at once when the size is known
+  (cached `ImageInfo`, or the list thumbnail), then the image crossfades in. Fit is the default;
+  1:1 is one image pixel per device pixel; images smaller than the view are not upscaled in fit
+  mode. The Inspector requests `target` = view size in device pixels for fit and `{0, 0}` for
+  1:1 (capped at `kMaxOutputPixels`, then labelled scaled). Window resizes request a new decode
+  only when the view grows past the decoded size (bucketed by the ui; shrinking scales on the
+  GPU).
+- File changed while shown: a watch event with a new mtime/size makes a new key; the old
+  texture stays until the new result arrives (refresh in place, no flash).
+- Lock: the ui keeps the locked `PreviewRequest` and ignores cursor changes; deleting or
+  renaming the item away unlocks with a notice.
+- Multi-selection: the Inspector shows count and total size (ui only, no preview request).
+
+### Memory and performance budgets
+
+| Budget | Default | Where |
+|--------|---------|-------|
+| Result cache (CPU memory) | 256 MiB (`AppConfig::preview_cache_bytes`, min 16 MiB) | `IPreviewService` LRU by `approx_bytes` |
+| Texture cache (GPU memory) | ui's choice, about the same; LRU of textures not drawn this frame | `src/ui` |
+| One decode | 256 MiB peak (`kDefaultDecodeMemoryBytes`) | providers |
+| Source limits | sides <= 65535, <= 1 GP; full-decode formats <= 64 MP | `preview.hpp` |
+| Output buffer | <= 32 MP (128 MiB) | `preview.hpp` |
+| Text | first 4 MiB, rows <= 1 KiB, <= 500k rows | `TextOptions` |
+| Folder preview | 2000 entries | `FolderOptions` |
+| Workers | clamp(cores / 2, 2, 6); at most 2 thumbnailer processes | service, `ThumbnailerLimits` |
+| Thumbnailer | 15 s wall, 30 s CPU, 2 GiB address space, 32 MiB output | `ThumbnailerLimits` |
+
+A 100 MP JPEG decodes at 1/8 scale (DCT) straight into a small buffer; a 100 MP PNG streams
+rows and averages them into the target, never holding the full image. Formats that cannot
+stream refuse above 64 MP (after trying an embedded thumbnail) instead of allocating 400 MB.
+Acceptance "100 MP never crashes" and "no UI freeze on a large text file" are qa gates.
+
+### Thumbnail cache rules
+
+- Location: `AppConfig::thumbnail_dir`, else `<cache_dir>/thumbnails` when `cache_dir` is set,
+  else `platform::thumbnail_cache_dir()` (`$XDG_CACHE_HOME/thumbnails`). Headless rule (same as
+  session and index): `max_frames > 0` without `thumbnail_dir`/`cache_dir` disables the disk
+  cache and external thumbnailers; `--no-thumbnails` disables both everywhere.
+- Spec compliance: URI as GLib writes it, MD5 name, classes normal/large/x-large/xx-large,
+  `Thumb::URI` + `Thumb::MTime` validation (and `Thumb::Size` when present), our failure
+  markers in `fail/navigator-1/`, files 0600 and new directories 0700, atomic rename. Other
+  programs' thumbnails are reused; ours are readable by them.
+- Policy (`thumbnail::decide`): never for files inside the cache, folders, devices or dangling
+  links; on network and removable volumes only existing thumbnails are used by default
+  (`thumbnail::Policy`); the Inspector always decodes the inspected file.
+- Size class from the device-pixel icon box (`size_for`); a valid larger class is used and
+  downscaled when the wanted one is missing.
+- Shared removable-media caches (`.sh_thumbnails`) and cache cleanup of old entries are
+  deferred.
+
+### Security (untrusted files)
+
+- Every decoder bounds dimensions before allocating, checks the stop token, and maps library
+  errors to `Result` (libjpeg `longjmp` and libpng `setjmp` contained in their TU). Fixtures in
+  `tests/preview`: truncated, bit-flipped and huge-declared-size files of every format must
+  return an error or a partial image, never crash; run under ASan/UBSan in CI.
+- EXIF / tEXt parsing bounds-checks every offset, rejects IFD loops, and caps string lengths.
+- External thumbnailers: argv only (`expand_exec`, field values never re-split, no shell),
+  absolute input paths (never parsed as options), private 0700 temp dir per run, timeout and
+  rlimits, process-group kill on timeout or cancel, output size and image checks, bubblewrap
+  sandbox when `bwrap` exists (no network, read-only system, only the input and the temp dir
+  visible), our own tEXt keys written after decoding their output.
+- Nothing is fetched from the network (GPS is shown as numbers only).
+
+### Deferred
+
+PDF rendering (poppler/pdfium, after Phase 6), in-app video/audio playback, audio metadata and
+cover art, tiled 1:1 decode for images above 32 MP, colour management (ICC), animated image
+playback in the Inspector, `.sh_thumbnails`, thumbnail cache cleanup, grid view thumbnails if
+the grid view does not land in Phase 6 (the list path is the gate), user settings for the
+policy, timing and fit/fill (Phase 9), MIME subclass matching for thumbnailers.
+
+Work split for Phase 6: **contracts** (this diff) -> **preview** (`src/preview`,
+`tests/preview`), **platform** (`IProcessRunner`, data dirs, `find_program`, cache dir,
+`tests/platform`), **core-fs** (`"inspector"` JSON, `tests/core`) and **commands** (ids,
+names, chords, `tests/commands`) in parallel with **ui** (against the headers and a fake
+`IPreviewService`) and **packaging** (decoder dependencies) -> integration (`src/preview` /
+`tests/preview` subdirs, link, CLI flags) -> **qa** (cache key and EXIF
+orientation tests, Freedesktop interop with a GLib-made thumbnail, 100 MP and corrupt
+fixtures, large-text frame time, headless never writes `~/.cache/thumbnails`) ->
+**design-reviewer** (Inspector, thumbnails, states).
+
 ## Error policy
 
 - One policy: fallible functions return `navigator::Result<T>` (`types.hpp`). No exceptions across module boundaries.
@@ -520,7 +673,8 @@ view, types popup, highlight contrast).
 - Pure functions (`mime::*`, `fs::compare_names`/`sort_entries`, `to_string`/`parse_key_chord`, `layout::Layout`/`ClosedTabs` members, `layout::to_json`/`*_from_json`) are callable from any thread, including the UI thread.
 - Pure Phase 4 helpers (`places::*` store members, resolution and JSON functions, `path_input::expand_user_path` / `parse_completion_input` / `match_completions` / `format_paths_for_copy`, `platform::parse_user_dirs`, volume identity/usage helpers) are callable from any thread. `path_input::fix_path_case` / `resolve_input` / `complete_path`, `places::load_*` / `save_*`, `platform::read_user_dirs` / `user_home` block (worker threads; the startup load and save on quit are the UI-thread exceptions, as for the session).
 - `layout::Session` is a value owned by the UI thread; the background session writer receives a copy. `layout::load_session`/`save_session`/`*_named_layout` block on file I/O; Phase 3's exceptions on the UI thread are the startup load and the save on quit.
-- Interfaces (`IWatcher`, `IVolumeMonitor`, `IMountSource`, `IAppLauncher`, `IIndex`, `IPreviewProvider`) document their own threading. `IWatcher`/`IVolumeMonitor` are single-thread-at-a-time objects with no internal thread (drained with `poll()`, optional blocking `wait()` / pollable `native_handle()`).
+- Interfaces (`IWatcher`, `IVolumeMonitor`, `IMountSource`, `IAppLauncher`, `IIndex`, `IPreviewProvider`, `IPreviewService`, `IProcessRunner`) document their own threading. `IWatcher`/`IVolumeMonitor` are single-thread-at-a-time objects with no internal thread (drained with `poll()`, optional blocking `wait()` / pollable `native_handle()`).
+- Phase 6: `preview::*` and `thumbnail::*` pure helpers (marked Pure in the headers) are callable from any thread, including the UI thread for key computation. `IPreviewProvider::produce` is called concurrently on preview workers (providers are reentrant); `ProviderRegistry` is built on one thread and then shared read-only. `IPreviewService` owns its workers, is internally synchronized, never blocks the caller (except `shutdown`), and is drained by one consumer (`poll`, UI thread); results are shared immutable `std::shared_ptr<const PreviewResult>`. Thumbnail file functions and `platform::IProcessRunner::run` block (workers only). Textures are created on the UI thread only.
 - Phase 5: `search::*` free functions, `Query`, `TypeFilter` and the inline `index.hpp` helpers are pure (any thread, including the UI thread for the folder filter up to `kUiThreadFilterLimit` entries). A `search::Matcher` and an `fs::Walker` are single-thread-at-a-time objects; `Walker` blocks on I/O (workers only). An `IIndex` owns one service thread; `query()`/`status()` are callable from any thread concurrently, `start()`/`stop()`/`request_rescan()` from the owning (UI) thread.
 - Cancellation uses `std::stop_token`; a cancelled call fails with `ErrorCode::Cancelled`.
 
@@ -531,28 +685,31 @@ view, types popup, highlight contrast).
 | `types.hpp` | `Path`, `FileId`, `Timestamp`, `Span`, `Arena` (decl), `ErrorCode`, `Error`, `Result`, `fail`, `ok` | Phase 0, concrete (`Timestamp` Phase 1) |
 | `detail/expected.hpp` | `std::expected` fallback used by `Result` | Phase 0, concrete |
 | `commands.hpp` | `CommandId`, `CursorArg`, `Command`, `CommandQueue`, `CommandInfo`, `CommandRegistry`; keymap: `Key`, `Modifiers` (+ operators, `has`), `KeyChord`, `to_string(Key/KeyChord)`, `parse_key_chord`, `KeyBinding`, `Keymap`, `load_default_keymap`, `resolve_command` | Phase 0; keymap + Phase 2 ids are a Phase 2 contract, implemented in `src/commands` (commands) |
-| `ui.hpp` | `AppConfig` (Phase 2: `animations`, `start_path`; Phase 3: `config_dir`, `restore_session`, `restore_window_geometry`, `save_session`; Phase 5: `cache_dir`, `enable_index`), `Theme`, `FrameStats`, `App` (pimpl) | Phase 0, implemented in `src/ui`/`src/app` |
+| `ui.hpp` | `AppConfig` (Phase 2: `animations`, `start_path`; Phase 3: `config_dir`, `restore_session`, `restore_window_geometry`, `save_session`; Phase 5: `cache_dir`, `enable_index`; Phase 6: `thumbnail_dir`, `preview_cache_bytes`, `enable_thumbnails`, `enable_external_thumbnailers`), `Theme`, `FrameStats`, `App` (pimpl) | Phase 0, implemented in `src/ui`/`src/app` |
 | `places.hpp` | `places::LocationStatus`, `ResolvedLocation`, `is_tracked_volume`, `containing_volume`, `identity_for`, `resolve_location`, `deepest_containing`, `default_label`, `PlaceKind`, `label_key`, `Place`, `build_places`, `BookmarkId`, `Bookmark`, `BookmarkStore`, `RecentEntry`, `RecentsOptions`, `RecentsStore`, `bookmarks_to_json`/`_from_json`, `recents_to_json`/`_from_json`, `bookmarks_file`, `recents_file`, `load/save_bookmarks`, `load/save_recents`, constants | Phase 4 contract, implemented in `src/core` (core-fs) |
 | `path_input.hpp` | `path_input::normalize_absolute`, `EnvLookup`, `UserHomeLookup`, `ExpandContext`, `ExpandedPath`, `expand_user_path`, `CaseFix`, `fix_path_case`, `ResolvedInput`, `resolve_input`, `CompletionQuery`, `parse_completion_input`, `CompletionMatch`, `CompletionOptions`, `Completion`, `match_completions`, `complete_path`, `PathQuoting`, `quote_for_shell`, `format_paths_for_copy` | Phase 4 contract, implemented in `src/core` (core-fs) |
-| `layout.hpp` | `layout::PaneId`/`TabId`/`SplitId`, `TabState`, `SplitAxis`, `SplitEdge`, `axis_of`, `Tab`, `PaneNode`, `SplitNode`, `LayoutNode`, `TabLocation`, `SplitResult`, `Layout`, `ClosedTab`, `ClosedTabs`, `WindowGeometry`, `Session`, Phase 4 `SidebarSection`/`SidebarState` (+ width constants), Phase 5 `TabState::type_filter` (JSON `"hidden_types"`), `to_json`, `session_from_json`, `layout_to_json`, `layout_from_json`, `session_file`, `layouts_dir`, `load_session`, `save_session`, `is_valid_layout_name`, `save/load/list/delete_named_layout`, constants | Phase 3 contract, implemented in `src/core` (core-fs) |
+| `layout.hpp` | `layout::PaneId`/`TabId`/`SplitId`, `TabState`, `SplitAxis`, `SplitEdge`, `axis_of`, `Tab`, `PaneNode`, `SplitNode`, `LayoutNode`, `TabLocation`, `SplitResult`, `Layout`, `ClosedTab`, `ClosedTabs`, `WindowGeometry`, `Session`, Phase 4 `SidebarSection`/`SidebarState` (+ width constants), Phase 5 `TabState::type_filter` (JSON `"hidden_types"`), Phase 6 `InspectorPlacement`/`InspectorState` (+ constants, `resolve_inspector_placement`, `next_placement`, JSON `"inspector"`), `to_json`, `session_from_json`, `layout_to_json`, `layout_from_json`, `session_file`, `layouts_dir`, `load_session`, `save_session`, `is_valid_layout_name`, `save/load/list/delete_named_layout`, constants | Phase 3 contract, implemented in `src/core` (core-fs) |
 | `i18n.hpp` | `Language`, `set_language`, `language`, `tr` | Phase 0, implemented in `src/ui` |
 | `fs.hpp` | `fs::DirEntry`, `EntryKind`, `ListOptions`, `list_directory` (+ `std::stop_token` overload), `stat`, `SortKey`, `SortOptions`, `sort_entries`, `compare_names`, `fold_name`, Phase 5 `fold_name_into`, `to_display_name`, inline `is_hidden_name`/`extension`/`is_directory_like` | Phase 1 contract, implemented in `src/core` (core-fs) |
 | `watch.hpp` | `WatchHandle`, `WatchEventKind`, `WatchEvent`, `IWatcher`, `create_inotify_watcher`, `WatcherFactory` | Phase 1 contract, implemented in `src/platform` (platform) |
 | `volume.hpp` | `MountEntry`, `parse_mountinfo`, `is_pseudo_filesystem`, `is_network_filesystem`, `VolumeKind`, `SpaceInfo`, `VolumeInfo`, `IMountSource`, `create_proc_mount_source`, `VolumeQuery`, `list_volumes`, `volume_for`, `VolumeEvent(Kind)`, `IVolumeMonitor`, `create_volume_monitor`; Phase 4 inline `used_fraction`, `VolumeIdentity`, `identity_of`, `volume_matches` | Phase 1 contract, implemented in `src/platform` (platform) |
-| `platform.hpp` | `platform::LaunchRequest`, `IAppLauncher`, `create_default_launcher`, `open_with_default` (+ launcher overload), `mime_type`, `UserDir`, `user_dir`; Phase 4 `UserDirs`, `parse_user_dirs`, `read_user_dirs`, `user_home`; stubs `move_to_trash`, `open_terminal` | Phase 2 contract (launcher, open, mime_type, user_dir Home/Config/Cache), Phase 4 (XDG user dirs, `user_home`), implemented in `src/platform` (platform) |
+| `platform.hpp` | `platform::LaunchRequest`, `IAppLauncher`, `create_default_launcher`, `open_with_default` (+ launcher overload), `mime_type`, `UserDir`, `user_dir`; Phase 4 `UserDirs`, `parse_user_dirs`, `read_user_dirs`, `user_home`; Phase 6 `thumbnail_cache_dir`, `data_dirs`, `find_program`, `ProcessRequest`, `ProcessResult`, `IProcessRunner`, `create_default_process_runner`; stubs `move_to_trash`, `open_terminal` | Phase 2 contract (launcher, open, mime_type, user_dir Home/Config/Cache), Phase 4 (XDG user dirs, `user_home`), Phase 6 (process runner, data dirs), implemented in `src/platform` (platform) |
 | `mime.hpp` | `mime::k*` constants, `guess_from_name`, `guess_for_entry`, `type_label_key` (name table + Type-column i18n keys) | Phase 2 contract, implemented in `src/platform` (platform); label texts in the ui i18n catalogs |
 | `walk.hpp` | `fs::WalkOptions`, `WalkEntry`, `WalkSkip`, `WalkStats`, `WalkBatch`, `Walker`, constants | Phase 5 contract, implemented in `src/core` (core-fs) |
 | `search.hpp` | `search::MatchMode` (+ `to_string`), scoring constants, `Query`, `compile_query`, `narrows`, `HighlightRange`, `Match`, `Matcher`, `match`, `RankInfo`, `ranks_before`, `TypeKind`, `TypeKey`, `TypeFilter`, `TypeCount`, `type_key_of`, `allows`, `is_visible`, `set_visible`, `toggle_all`, `normalize`, `summarize_types`, `FilterHit`, `filter_entries` | Phase 5 contract, implemented in `src/search` (search) |
 | `index.hpp` | `search::IndexState` (+ `to_string`), `IndexStatus`, `RescanKind`, `IndexQuery`, `IndexHit`, `IndexResult`, `IIndex`, `NameIndexOptions`, `create_name_index`; inline `should_index_by_default`, `fnv1a64`, `index_stable_id`, `index_dir`, `index_file`; file format v1 | Phase 5 contract, implemented in `src/search` (search) |
 | `ops.hpp` | `OpKind`, `ConflictPolicy`, `OpRequest`, `OpProgress`, `OpId` | stub, ops phase |
-| `preview.hpp` | `PreviewRequest`, `PreviewResult`, `IPreviewProvider` | stub, preview phase |
+| `preview.hpp` | `preview::PixelSize`, limits, `ImageBuffer`, `make_image`, `ExifOrientation` (+ `orientation_from_tag`, `swaps_axes`, `oriented_size`), `Rational`, `ExifDateTime`, `ExifInfo`, `ImageFormat` (+ `to_string`), `sniff_image_format`, `ImageInfo`, `MetadataSource`, `VideoInfo`, `TextEncoding`, `TextOptions`, `TextRow`, `TextPreview`, `looks_binary`, `decode_text`, `FolderOptions`, `FolderPreview`, `PreviewPurpose`, `ImageOrigin`, `PlaceholderReason`, `PlaceholderPreview`, `ImagePreview`, `VideoPreview`, `PreviewContent`, `PreviewKind`, `PreviewResult`, `approx_bytes`, `SourceLocation`, `PreviewRequest`, `PreviewKey`, `make_key`, `hash_value`, `PreviewKeyHash`, `fit_size`, `select_jpeg_scale_denom`, `apply_exif_orientation`, `downscale`, priorities, `IPreviewProvider`, `ProviderRegistry` | Phase 6 contract, implemented in `src/preview` (preview) |
+| `thumbnail.hpp` | `thumbnail::ThumbnailSize` (+ `pixels`, `dir_name`, `size_for`), constants, `cache_root_for`, `file_uri`, `md5_hex`, `thumbnail_file_name`, `thumbnail_path`, `failure_path`, `is_inside_cache`, `mtime_seconds`, `SourceInfo`, `LookupStatus`, `ThumbnailRead`, `read_thumbnail`, `lookup_thumbnail`, `WriteOptions`, `write_thumbnail`, `write_failure`, `has_failure`, `Policy`, `Decision`, `decide`, `Thumbnailer`, `parse_thumbnailer`, `split_exec`, `ExecInputs`, `expand_exec`, `thumbnailer_dirs`, `ProgramExists`, `load_thumbnailers`, `choose_thumbnailer`, `ThumbnailerLimits`, `run_thumbnailer` | Phase 6 contract, implemented in `src/preview` (preview) |
+| `preview_service.hpp` | `preview::BuildFeatures`, `build_features`, `BuiltinProviderOptions`, `register_builtin_providers`, `RequestPriority`, `Ticket`, `Completion`, `ThumbnailCacheOptions`, `PreviewServiceOptions`, `InvalidateMode`, `ServiceStats`, `IPreviewService`, `create_preview_service`, constants | Phase 6 contract, implemented in `src/preview` (preview) |
 | `plugin.h` | C ABI: `NAVIGATOR_PLUGIN_ABI_VERSION`, `NavigatorPluginInfo`, entry symbol | stub |
 
-Stub functions are declared only; nothing may call them until their phase lands. Public headers never include SDL, GIO, ImGui, FreeType or HarfBuzz. `tests/contracts` compiles each header alone (C++20 and C++23, `-Wall -Wextra -Wpedantic -Werror`) plus `plugin.h` as C11, and compiles (never links) `result_usage.cpp`, `phase1_usage.cpp` (fake `IWatcher`/`IMountSource` implementations prove the interfaces are injectable) `phase2_usage.cpp` (keymap, fake `IAppLauncher`, mime, `AppConfig`) and `phase3_usage.cpp` (layout operations, closed tabs, session JSON/files, tab/pane command ids, `AppConfig` session fields) and `phase4_usage.cpp` (bookmarks offline/resync, recents, places, user dirs, GoTo expansion/completion, copy path, sidebar session state, Phase 4 command ids) and `phase5_usage.cpp` (walker batches, matcher/ranking, types popup helpers, a fake `IIndex`, default index policy and file location, `TabState::type_filter`, `AppConfig` index fields, Phase 5 command ids); target `navigator_header_check`.
+Stub functions are declared only; nothing may call them until their phase lands. Public headers never include SDL, GIO, ImGui, FreeType or HarfBuzz. `tests/contracts` compiles each header alone (C++20 and C++23, `-Wall -Wextra -Wpedantic -Werror`) plus `plugin.h` as C11, and compiles (never links) `result_usage.cpp`, `phase1_usage.cpp` (fake `IWatcher`/`IMountSource` implementations prove the interfaces are injectable) `phase2_usage.cpp` (keymap, fake `IAppLauncher`, mime, `AppConfig`) and `phase3_usage.cpp` (layout operations, closed tabs, session JSON/files, tab/pane command ids, `AppConfig` session fields) and `phase4_usage.cpp` (bookmarks offline/resync, recents, places, user dirs, GoTo expansion/completion, copy path, sidebar session state, Phase 4 command ids) and `phase5_usage.cpp` (walker batches, matcher/ranking, types popup helpers, a fake `IIndex`, default index policy and file location, `TabState::type_filter`, `AppConfig` index fields, Phase 5 command ids) and `phase6_usage.cpp` (preview helpers, a fake provider and the registry, thumbnail keys/read/write/policy, thumbnailers through a fake `IProcessRunner`, a fake `IPreviewService`, `InspectorState`, `AppConfig` preview fields, Phase 6 command ids); target `navigator_header_check`.
 
 ## Commands
 
-- `CommandId` values are stable and never renumbered. Ranges: 1-999 app/view, 1000-1099 navigation, 1100-1199 list (activation, cursor, selection), 1200-1219 tabs, 1220-1239 panes, 1240-1249 named layouts, 1250-1259 windows, 1260-1279 sidebar/bookmarks/recents, 1280-1299 edit/clipboard, 1300-1319 filter/flatten/search/index, 1320+ later phases.
+- `CommandId` values are stable and never renumbered. Ranges: 1-999 app/view, 1000-1099 navigation, 1100-1199 list (activation, cursor, selection), 1200-1219 tabs, 1220-1239 panes, 1240-1249 named layouts, 1250-1259 windows, 1260-1279 sidebar/bookmarks/recents, 1280-1299 edit/clipboard, 1300-1319 filter/flatten/search/index, 1320-1339 Inspector/previews, 1340+ later phases.
+  - Phase 6: `Inspect = 1320` (`view.inspect`, `Space`, `Alt+KeypadEnter`), `ToggleInspectorLock = 1321` (`inspector.toggle_lock`), `InspectorZoomFit = 1322` (`inspector.zoom_fit`), `InspectorZoom1to1 = 1323` (`inspector.zoom_1to1`), `InspectorPlay = 1324` (`inspector.play`), `CycleInspectorPlacement = 1325` (`inspector.cycle_placement`), `ToggleInspectorGrid = 1326` (`inspector.toggle_grid`), `ToggleInspectorMinimap = 1327` (`inspector.toggle_minimap`). All arg 0. Space in text fields and Inspector focus routing: `docs/keymap.md` "Phase 6 defaults".
   - Phase 5: `FocusFilter = 1300` (`list.filter`, `Ctrl+F`), `ClearFilter = 1301` (`list.clear_filter`), `ToggleFlatten = 1302` (`search.flatten`, `Ctrl+E`), `FlattenVolume = 1303` (`search.flatten_volume`, `Ctrl+Shift+E`), `ToggleTypesPopup = 1304` (`search.types`, `Ctrl+Shift+F`), `ToggleFuzzy = 1305` (`search.toggle_fuzzy`), `CancelSearch = 1306` (`search.cancel`), `RebuildIndex = 1307` (`search.rebuild_index`). All arg 0. Filter-field focus scoping, type-to-filter and the Escape cascade: `docs/keymap.md` "Phase 5 defaults".
   - Phase 4: `ToggleSidebar = 5` (`view.toggle_sidebar`), `ToggleViewLock = 6` (`view.toggle_view_lock`, stub), `GoTo = 1005` (`nav.goto`), `FocusAddressBar = 1004` now defined (inline path edit, `Ctrl+L`); `FocusSidebar = 1260` (`sidebar.focus`), `ToggleBookmark = 1261` (`bookmarks.toggle`), `RenameBookmark = 1262` (`bookmarks.rename`), `MoveBookmarkUp = 1263` (`bookmarks.move_up`), `MoveBookmarkDown = 1264` (`bookmarks.move_down`), `ClearRecents = 1270` (`recents.clear`), `ToggleRecentsTracking = 1271` (`recents.toggle_tracking`), `CopyPath = 1280` (`edit.copy_path`, arg `CopyPathArg`). Bookmark commands take 0 (focused row / active folder) or a `places::BookmarkId` value. `pane.focus_next/previous` include the visible sidebar in their cycle.
   - Phase 0: `None = 0`, `Quit = 1` (`app.quit`), `ToggleFpsOverlay = 2` (`view.toggle_fps_overlay`), `ToggleTheme = 3` (`view.toggle_theme`).
@@ -637,3 +794,13 @@ stubs: `fs::EntryKind`, `fs::DirEntry`, `fs::SortKey`, `fs::ListOptions`, `fs::l
   - **commands** (commands): ids 1300-1307 and names listed under "Commands"; new range 1300-1319. Default chords `Ctrl+F`, `Ctrl+E`, `Ctrl+Shift+E`, `Ctrl+Shift+F` (`docs/keymap.md` "Phase 5 defaults"); type-to-filter, filter-field focus scoping and the Escape cascade documented there and in `commands.hpp`.
   - Known breakage until the parallel agents land: exhaustive `switch` over `CommandId` fails `-Werror=switch` (GCC 13 and Clang 18) in `src/commands/builtin_commands.cpp` (`to_string`, line 78), `src/ui/browser/browser_model.cpp` (line 751) and `src/ui/workspace/workspace.cpp` (line 258): 8 new enumerators each. Everything else in the tree compiles unchanged. Runtime tests that need updates by their owners once commands binds the rows: `tests/commands/keymap_test.cpp` (`read_keymap_doc` must also read `## Phase 5 defaults` and `phase_rows` grows to index 5; counts 3 + 25 + 21 + 5 + 4; the expected `(unbound)` sets gain `list.clear_filter`, `search.toggle_fuzzy`, `search.cancel`, `search.rebuild_index`; `Ctrl+E` leaves the "reserved chords stay free" list) and `tests/integration/keymap_e2e_test.cpp` (line ~881: `per_phase.size()` 4 -> 5 with `per_phase.at(5) == 4`, `bound.size()` 54 -> 58; the `(unbound)` set and its size 10 -> 14; `Ctrl+E` leaves the near-miss list at line 969). Until commands lands, the doc-vs-keymap tests fail because the doc has 4 rows the keymap does not bind yet. `tests/core/layout_json_test.cpp` golden text is unaffected (`"hidden_types"` is only written when active).
 - Phase 5 integration: `search.flatten` always walks; the index serves only `search.flatten_volume`. Headless `--frames`/`--bench-*` runs without `--cache-dir`/`--config-dir` never index and never read or write session, config or cache files.
+- Phase 6 (contracts): Inspector, thumbnails, previews. `preview.hpp` turned from a stub into a contract (no caller existed, so the breaking change is free: the old `navigator::PreviewRequest` / `PreviewResult` / `IPreviewProvider` with `render(request, atomic<bool>)` and straight-alpha `rgba` are replaced by the `navigator::preview` types below). Otherwise additions only.
+  - **preview** (preview, new `src/preview`, library `navigator_preview`): one pixel format (`ImageBuffer`, RGBA8 premultiplied, stride, owned bytes, display orientation); `ImageInfo` reports the EXIF orientation and the stored and display sizes, pixels already have it applied; `ExifInfo` (camera, lens, exposure, ISO, focal length, date taken with offset, GPS presence and coordinates), `VideoInfo` (duration, display size, rotation, frame rate, codecs, audio, streams; `MetadataSource::None` without FFmpeg), `TextPreview` (UTF-8 with U+FFFD repair, UTF-16 BOMs, rows of at most 1 KiB so long lines never cost frame time, first-4-MiB cap with `truncated`), `FolderPreview` (sorted, capped, counts), `PlaceholderPreview` reasons (no provider, coming soon, binary, no thumbnailer, known failure, not generated), `PreviewResult` variant whose index is `PreviewKind`; `PreviewRequest {path, entry snapshot, mime, purpose, target device px, location, folder/text options, stop}`, `PreviewKey`/`make_key`/`hash_value`; limits (65535 px sides, 1 GP sources, 64 MP full decodes, 32 MP outputs, 256 MiB per decode); pure `sniff_image_format`, `looks_binary`, `decode_text`, `fit_size`, `select_jpeg_scale_denom`, `apply_exif_orientation`, `downscale`, `make_image`, `approx_bytes`; `IPreviewProvider` (`id`, pure `can_handle` -> priority, reentrant `produce`; Unsupported falls through), `ProviderRegistry`.
+  - **thumbnail** (new header, preview): Freedesktop size classes, GLib-compatible `file_uri`, `md5_hex`, paths, validated `read_thumbnail`/`lookup_thumbnail` (Valid/Stale/Missing/Invalid), atomic 0600 `write_thumbnail` with the spec's tEXt keys, failure markers in `fail/navigator-1/`, `decide` policy (never inside the cache; network and removable volumes read-only by default); `.thumbnailer` parsing, `split_exec`/`expand_exec` (no shell, values never re-split), `load_thumbnailers` (XDG precedence, TryExec), `choose_thumbnailer`, `ThumbnailerLimits`, `run_thumbnailer` through an injected `platform::IProcessRunner`.
+  - **preview_service** (new header, preview): `build_features`, `register_builtin_providers` (ids and priorities listed in the header), `IPreviewService` (priorities Inspector > Visible > Prefetch, epochs and `cancel_older` for scrolling, coalescing tickets, `lookup`, `poll`, `invalidate` Memory/Regenerate, LRU budget, stats, `shutdown`), `create_preview_service`.
+  - **platform** (platform): `thumbnail_cache_dir`, `data_dirs`, `find_program`, `ProcessRequest`/`ProcessResult`/`IProcessRunner`/`create_default_process_runner` (waits, argv only, stdin /dev/null, captured and capped output, own process group, SIGKILL on timeout or stop, rlimits, optional bubblewrap sandbox).
+  - **layout** (core-fs): `InspectorPlacement`, `InspectorState {visible, placement, width, height, show_grid, show_minimap}` with constants, `resolve_inspector_placement`, `next_placement`; `Session::inspector`, JSON `"inspector"` (additive, version stays 1, written only when not default, lenient). Lock and zoom are runtime only.
+  - **ui** (`ui.hpp`): `AppConfig::thumbnail_dir`, `preview_cache_bytes`, `enable_thumbnails`, `enable_external_thumbnailers`; headless runs without `thumbnail_dir`/`cache_dir` never touch `~/.cache/thumbnails`.
+  - **commands** (commands): ids 1320-1327 and names under "Commands"; range 1320-1339. Default chords `Space` and `Alt+KeypadEnter` for `view.inspect` (`docs/keymap.md` "Phase 6 defaults"); text fields consume `Space`; Inspector focus routing documented there and in `commands.hpp`.
+  - **features.md**: Navigator-extra rows for video (poster, metadata, Play hand-off).
+  - Known breakage until the parallel agents land: exhaustive `switch` over `CommandId` fails `-Werror=switch` (GCC 13) in `src/commands/builtin_commands.cpp` (`to_string`, line 86), `src/ui/browser/browser_model.cpp` (line 961) and `src/ui/workspace/workspace.cpp` (line 275): 8 new enumerators each. Everything else in the tree compiles unchanged (GCC 13 and Clang 18, header check in C++20 and C++23). Runtime tests that need updates by their owners once commands binds the rows: `tests/commands/keymap_test.cpp` (`read_keymap_doc` must also read `## Phase 6 defaults`, `phase_rows` grows to index 6; counts 3 + 25 + 21 + 5 + 4 + 2; the expected `(unbound)` sets gain the seven `inspector.*` names; `Space` and `Alt+KeypadEnter` leave any "free chord" lists) and `tests/integration/keymap_e2e_test.cpp` (`per_phase.size()` 5 -> 6 with `per_phase.at(6) == 2`, `bound.size()` 58 -> 60, the `(unbound)` set and its size 14 -> 21, per-command effect checks for `view.inspect`). `tests/commands/keymap_test.cpp` keeps passing until commands binds the rows (its parser ignores unknown sections), but `tests/integration/keymap_e2e_test.cpp` parses every `## Phase N defaults` table generically, so it fails as soon as this doc lands (2 documented rows the keymap does not bind yet, 7 new `(unbound)` rows) until commands and qa land. `tests/core/layout_json_test.cpp` golden text is unaffected (`"inspector"` is only written when not default).

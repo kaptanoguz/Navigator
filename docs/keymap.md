@@ -346,6 +346,66 @@ leaves the flattened view; `nav.refresh` (`F5`) re-runs a flatten walk.
 | Click on the progress bar's stop button | `search.cancel` |
 | Click on a column header in the flattened view | Sort by that column instead of relevance (until the query changes) |
 
+## Phase 6 defaults (Inspector)
+
+`docs/features.md` attributes `Space` (open the Inspector) and `Alt`+numpad `Enter` (Inspect)
+to File Pilot; both bind `view.inspect`. Every other Inspector command is unbound: fit / 1:1,
+grid, minimap and lock are Inspector header buttons and palette entries (design review: zoom
+keys must not steal list keys while the list has focus), and "Play" is the button on a video
+poster. `Space` was free: no earlier table binds it, `Ctrl+Space` stays reserved for cursor
+selection (Phase 8; chords match exactly, so they do not clash), and type-to-filter never
+starts with a `Space` (Phase 5). `Alt+KeypadEnter` was free (`KeypadEnter` and
+`Ctrl+KeypadEnter` are Phase 2 / Phase 3 rows). `Escape` keeps its Phase 5 cascade and does not
+close the Inspector; `Space` toggles it.
+
+`load_default_keymap()` binds the Phase 0, 2, 3, 4 and 5 tables, then this table, in this order.
+
+| Chord | Command name | CommandId | arg | Notes |
+|-------|--------------|-----------|-----|-------|
+| `Space` | `view.inspect` | `Inspect` (1320) | 0 | Show the Inspector on the cursor entry; again: hide. File Pilot behaviour per `features.md` |
+| `Alt+KeypadEnter` | `view.inspect` | `Inspect` (1320) | 0 | File Pilot behaviour per `features.md` |
+| (unbound) | `inspector.toggle_lock` | `ToggleInspectorLock` (1321) | 0 | Lock button in the Inspector header |
+| (unbound) | `inspector.zoom_fit` | `InspectorZoomFit` (1322) | 0 | Header button; default zoom |
+| (unbound) | `inspector.zoom_1to1` | `InspectorZoom1to1` (1323) | 0 | Header button; one image pixel per device pixel |
+| (unbound) | `inspector.play` | `InspectorPlay` (1324) | 0 | Play button on a video poster: opens the default player (Navigator extra) |
+| (unbound) | `inspector.cycle_placement` | `CycleInspectorPlacement` (1325) | 0 | Auto, right, bottom; header menu |
+| (unbound) | `inspector.toggle_grid` | `ToggleInspectorGrid` (1326) | 0 | Header button |
+| (unbound) | `inspector.toggle_minimap` | `ToggleInspectorMinimap` (1327) | 0 | Header button |
+
+### Focus scoping (Phase 6)
+
+- The Inspector never takes keyboard focus by itself: it follows the list cursor, so arrow keys
+  keep moving the list while it updates (design review).
+- **Text fields** (address bar, GoTo, rename and name prompts, the Phase 5 filter field) consume
+  `Space` and `Shift+Space` as text before the keymap, so a space typed into a filter never
+  opens the Inspector. This extends the Phase 4 and Phase 5 field key lists.
+- **List focused**: `Space` resolves through the keymap to `view.inspect`.
+- **Inspector focused** (after a click inside it): the ui routes resolved commands to it, as the
+  Phase 4 sidebar does:
+
+  | Resolved command | Inspector effect |
+  |------------------|------------------|
+  | `list.cursor_up` / `_down` / `_page_up` / `_page_down` / `_home` / `_end` | Scroll text and folder previews; pan an image larger than the view |
+  | `list.activate` (`Enter`, `KeypadEnter`) | `inspector.play` (open with the default application) |
+  | `list.clear_selection` (`Escape`) | Focus back to the active pane |
+  | `view.inspect` (`Space`) | Hide the Inspector; focus back to the active pane |
+
+  Every other chord resolves as usual (`Ctrl+Q`, `F6`, `Ctrl+W`, ...).
+
+### Mouse (Phase 6)
+
+| Gesture | Effect |
+|---------|--------|
+| Click in the Inspector | Give it keyboard focus |
+| Wheel over an image | Zoom about the pointer (between fit and 16:1) |
+| `Ctrl`+wheel over text | Nothing in Phase 6 (font size is a Phase 9 setting) |
+| Drag on an image larger than the view | Pan |
+| Double-click on an image | Toggle `inspector.zoom_fit` / `inspector.zoom_1to1` |
+| Click on the minimap | Centre the view there |
+| Click on the play disc of a video poster | `inspector.play` |
+| Click or double-click on a row of a folder preview | Nothing in Phase 6 (the preview never navigates) |
+| Drag the Inspector's inner edge | Resize (`layout::kInspectorMin*` .. `kInspectorMax*` dp) |
+
 ## Later phases
 
 - A user-configurable keymap file arrives in **Phase 8**. It binds chords (and multi-key
