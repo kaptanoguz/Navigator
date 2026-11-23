@@ -34,6 +34,10 @@ preview_service.hpp -> preview.hpp, thumbnail.hpp, platform.hpp (IProcessRunner)
 layout.hpp (InspectorState) and ui.hpp (AppConfig) do not include the preview headers
 src/preview -> navigator_core (list_directory, sort_entries) + decoder libs PRIVATE; never
                src/platform (runner, cache root, data dirs injected; MIME filled by the ui)
+trash.hpp -> volume.hpp (VolumeQuery), fs.hpp (EntryKind), types   (Phase 7; src/platform)
+transfer.hpp -> types                                             (Phase 7; src/platform, pure)
+ops.hpp -> trash.hpp (ITrash interface, TrashedItem values), fs.hpp, types (Phase 7; src/ops)
+src/ops -> navigator_core only; ITrash injected (never src/platform headers)
 ```
 
 `src/core` implements `places.hpp` and `path_input.hpp` without calling any `src/platform`
@@ -656,6 +660,238 @@ orientation tests, Freedesktop interop with a GLib-made thumbnail, 100 MP and co
 fixtures, large-text frame time, headless never writes `~/.cache/thumbnails`) ->
 **design-reviewer** (Inspector, thumbnails, states).
 
+## Phase 7: file operations, trash, undo, drag and drop
+
+Goal (roadmap "Faz 7"): copy / move / rename / new folder / delete-to-trash with a conflict
+sheet and non-modal progress, XDG Trash with restore, undo/redo, drag and drop between panes
+and from other programs, clipboard interoperability. Acceptance: a move between two panes comes
+back with undo; a trashed item is restored from the Trash view; a drag from Navigator to at
+least one external target (GNOME Files or the desktop) is attempted on Wayland and the result
+documented. Undo/redo and the Trash view are **Navigator extras** (`docs/features.md`); the
+File Pilot behaviours are copy/cut/paste/delete/rename, `Ctrl+Shift+N`, copy/move to the
+previous pane, drops from other programs, wheel scroll and edge auto-scroll while dragging.
+
+This is the first phase that mutates user files. The safety rules below are normative; a diff
+that weakens one needs coordinator approval and a changelog entry.
+
+### Ownership
+
+| Piece | Where | Role |
+|-------|-------|------|
+| Engine (`run_operation`), `IOperationQueue` / `create_operation_queue`, `UndoStack`, `make_label`, pure helpers (`split_extension`, `stem_length`, `keep_both_name`, `validate_new_name`, `is_same_or_inside`, `protection_of`) | `ops.hpp`, `src/ops` (new library `navigator_ops`), `tests/ops` (new) | ops |
+| FreeDesktop Trash: `ITrash` / `create_trash`, `.trashinfo` format, `escape_path`, dates, topdir rules; `platform::move_to_trash` wrapper | `trash.hpp`, `platform.hpp`, `src/platform`, `tests/platform` | platform |
+| `file_uri`, `path_from_file_uri`, uri-list, GNOME/Nautilus/KDE clipboard formats, `make_clipboard_offer`, `read_clipboard` (pure); `choose_drop_action` (header-only) | `transfer.hpp`, `src/platform`, `tests/platform` | platform |
+| Ids 1281-1285, 1340-1349, 1360-1362, names, `PasteArg`, 12 chords | `src/commands`, `tests/commands` | commands |
+| Progress bar and operations panel, conflict sheet, confirmation sheets, notices with Undo, inline rename / new-folder editors, Trash view, SDL clipboard offer/read, DnD state machine (internal and incoming), outgoing-drag attempt, cut dimming, Inspector following moves, i18n (`cmd.*`, `ops.*`, `undo.label.*`, `trash.*`, EN + TR) | `src/ui`, `src/app` | ui |
+| `navigator_add_subdir(src/ops)` and `tests/ops`; link `navigator_ops` (and `navigator_platform` for `create_trash`) into the ui; quit-while-running prompt wiring | root `CMakeLists.txt`, `src/app/main.cpp` | integration |
+| Atomicity / partial-failure / cancellation / undo tests on fixtures, Nautilus interop checks, manual DnD note | `tests/**`, `docs/qa-phase7.md`, `docs/platform-limitations.md` | qa |
+
+`src/ops` links `navigator_core` (`fs::stat`, `fs::to_display_name`) and nothing else; the
+trash is injected as `std::shared_ptr<trash::ITrash>` (EngineOptions), so `tests/ops` can use a
+fake or the real `create_trash` with `TrashOptions::home_trash` inside the fixture (tests/ops may
+link `navigator_platform` for that). `src/ops` never includes `src/platform` headers. Recursive
+copy and deletion live only in `src/ops`; `src/platform`'s trash only renames within one
+filesystem and writes / removes `.trashinfo` files.
+
+### Safety rules (normative)
+
+The full text is in `ops.hpp` (S1..S16) and `trash.hpp` (T1..T7). In short:
+
+1. **No silent removal.** Only `OpKind::DeletePermanently` with `OpRequest::confirmed`
+   removes user data; the engine otherwise unlinks only its own temp files, a verified
+   cross-filesystem move source, an empty folder it created (undo), and the partial copy of the
+   item being moved when a cross-filesystem move is cancelled.
+2. **Delete = trash.** `Delete` submits `Trash`. A volume without a usable trash yields
+   `Unsupported` per item and `OpResult::untrashable`; there is never a permanent fallback. The
+   ui then offers the permanent-delete sheet for exactly those items.
+3. **Permanent delete is separate and confirmed** (`file.delete_permanently`, `trash.empty`):
+   the sheet names the count and says it cannot be undone; focus starts on Cancel; `submit()`
+   rejects the request without `confirmed`. Undo, redo, paste, drops and conflict decisions
+   never produce it.
+4. **Never follow symlinks** when deleting, trashing, moving or walking trees (dirfd-relative
+   calls, `O_NOFOLLOW`, `AT_SYMLINK_NOFOLLOW`).
+5. **One filesystem per tree**: recursive walks stop at mount points inside a tree and report
+   them.
+6. **Copy = temp file + rename**: `.<name>.navigator-<random>.part` in the destination folder,
+   metadata applied, then `renameat2(RENAME_NOREPLACE)`; fallback `link` + `unlink`, last
+   resort check-then-rename on filesystems without either (vfat, exfat: a racing program that
+   creates the same name in the microseconds between check and rename can lose that file; this
+   is documented and accepted because those filesystems offer no atomic primitive). Leftover
+   `.part` files after a crash keep that recognisable name; Phase 7 does not sweep them.
+7. **Move**: same filesystem = `renameat2(RENAME_NOREPLACE)`; across filesystems = copy, fsync,
+   verify each source unchanged during its copy, then remove only the scanned source entries
+   bottom up. Changed or new source entries stay and are reported.
+8. **Overwrite only after a decision**; Replace trashes the existing item first (undo restores
+   it); when no trash exists, a file is replaced atomically and the conflict sheet says it is
+   permanent before the user decides; a folder is never replaced permanently.
+9. **Cancellation** leaves no temp file and no truncated file, keeps completed items, and
+   reports them (they are undoable).
+10. **Metadata**: mode (setuid/setgid dropped unless owner and group are kept) and times;
+    `user.*` xattrs and POSIX ACLs best effort, `security.*` / `trusted.*` never; no chown
+    unless root. FIFOs recreated, sockets and devices not copied, hard links within a tree
+    kept, sparse holes kept.
+11. **Undo never deletes and never overwrites**: undone copies and links go to the trash, an
+    undone new folder is rmdir'ed only while empty, every inverse step checks identity
+    (`ItemGuard`: FileId, size, mtime, kind) and skips changed items, and an occupied
+    destination becomes a conflict. Permanent deletes are not recorded (not undoable).
+12. **Protected sources**: `/`, the home directory and its ancestors, mount points and trash
+    directories are refused as sources of Move, Rename, Trash and DeletePermanently
+    (`protection_of`); copying them is allowed. Copy/move of a folder into itself is refused.
+13. **Space** is checked before a copy writes anything (`NoSpace`).
+14. **Tests** create, move and delete files only in temporary fixture directories, never
+    touch `$HOME` or the real trash, and inject faults through `EngineOptions::fault_injector`
+    instead of filling disks.
+
+### Operation queue and data flow
+
+```
+UI thread (frame end, command handlers)              ops workers (IOperationQueue)
+  edit.paste / F7 / drop / file.trash / ...            submit: lexical checks (S3, S13)
+    -> OpRequest -> queue.submit()  ---------------->  Queued until no earlier op overlaps
+  frame start: queue.poll(events)                       its paths (is_same_or_inside either
+    Started / Progress -> progress bar + panel          way); then up to max_concurrent (2)
+    ConflictRaised -> conflict sheet (first pending)    run: Scanning (totals, S14) ->
+       user decision -> queue.resolve(id, decision)      Working -> Finishing
+    ItemFinished -> Inspector follows moved/renamed     conflicts under Ask: raise, wait on
+       items; cut dimming cleared                         a condition variable (slot kept)
+    Finished -> notice ("Moved 3 items", "Undo"),       pause / cancel checked every
+       UndoStack::record_done(result.record, origin),     copy_chunk_bytes and per entry
+       refresh touched_folders not covered by watches   on_event() -> SDL user event wakes
+  watch events (Phase 1) reconcile the listings          the frame loop
+```
+
+- One `IOperationQueue` and one `UndoStack` per App. The queue's workers never touch ui
+  state; everything the ui needs comes through `poll()` / `snapshot()` /
+  `pending_conflicts()`.
+- Listings are not edited by the ops code. Watched folders update through inotify events
+  (Phase 1); `OpResult::touched_folders` lists folders to re-list where no watch covers them
+  (network filesystems, folders shown in a flattened view). After a paste or drop the ui
+  selects the created items (`ItemOutcome::destination`) once they appear in the listing.
+- The **Inspector follows** a moved or renamed item from `ItemFinished` (source ->
+  destination), keeps its lock across a rename, and shows "The file no longer exists" when the
+  item was trashed (docs/review/phase-6.md), never an error flash.
+- **Quit** while operations run: the ui asks (continue in background is not possible:
+  Navigator has no daemon) and then calls `shutdown()`, which cancels safely (S9).
+- **Undo** (`edit.undo`): `take_undo()`, check `UndoRecord::volumes` are mounted (else a notice
+  names the missing volume and the record is put back with `restore()`), submit
+  `OpRequest{Undo, origin Undo, record}`. The undo's own result record arrives through
+  `record_done(..., Undo)` and becomes the redo entry. Undo depth 100, runtime only (not
+  persisted: inode identities and trash names can change while Navigator is closed).
+- Labels: `make_label()` gives the i18n key and arguments; the palette shows "Undo: move 3
+  items to Photos" / "Geri al: 3 öğeyi Photos klasörüne taşı" for `edit.undo`.
+
+### Trash
+
+- `trash::ITrash` follows the FreeDesktop Trash spec 1.0 exactly (`trash.hpp` T1..T7): home
+  trash `$XDG_DATA_HOME/Trash`, per-volume `$topdir/.Trash/$uid` (only with the sticky bit and
+  not a symlink) else `$topdir/.Trash-$uid`, `.trashinfo` with GIO's escaping and local
+  `DeletionDate`, names reserved with `O_EXCL`, no `directorysizes`.
+- **Cross-filesystem trashing is refused** (the spec permits copying to the home trash; we do
+  not, because a copy + delete of a large tree is neither atomic nor what "Move to Trash"
+  promises). Removable and network volumes get a per-volume trash when writable; read-only
+  volumes and volumes where neither trash directory is usable report `Unsupported`, and the ui
+  asks for permanent deletion explicitly.
+- **Trash view**: `trash.open` (sidebar row `PlaceKind::Trash`) switches the active tab to a
+  runtime view mode listing `ITrash::list()` on a worker (columns: name, original folder,
+  deletion date, size), watching every `TrashDir::files_dir()`. It is not persisted (the session
+  keeps the folder the tab showed before, like the flattened view). Restore =
+  `OpKind::Restore` (conflicts Ask; missing parent folders are created and recorded);
+  `Delete` / "Delete permanently" / `trash.empty` = confirmed `DeletePermanently` with
+  `OpRequest::trashed`. Opening or previewing trashed files is read-only (Inspector works).
+- Cross-device restore (an item in the home trash whose original folder is on another
+  filesystem, e.g. trashed by another program that copies): `ITrash::restore` returns
+  `CrossDevice`; the engine copies (S6), verifies, then erases the trashed copy and calls
+  `forget()`.
+
+### Clipboard and drag and drop
+
+- **Clipboard** (`transfer.hpp`): `edit.copy` / `edit.cut` offer, through
+  `SDL_SetClipboardData`, `x-special/gnome-copied-files`, `text/uri-list`,
+  `application/x-kde-cutselection` (cut only), and text (paths). `edit.paste` reads
+  `SDL_GetClipboardData` in the order gnome-copied-files, uri-list (+ KDE marker), Nautilus
+  text form. Plain-text paths are never pasted as files. The ui keeps its own last offer so a
+  cut can be cleared after the paste only while Navigator still owns the clipboard.
+  `edit.copy_path` (Phase 4) stays separate and offers text only.
+- **Incoming drops** (SDL3): `SDL_EVENT_DROP_BEGIN` starts a drop session, `DROP_POSITION`
+  hit-tests targets each event (folder rows, panes, tabs, breadcrumbs, sidebar rows; the
+  tab-split drop styling of Phase 3 is reused), `DROP_FILE` adds one path, `DROP_TEXT` is fed
+  through `decode_uri_list()` (a uri-list delivered as text), `DROP_COMPLETE` decides with
+  `choose_drop_action()` (external: Copy unless Shift) and submits. SDL3 does not expose the
+  source's proposed action or the XDND / `wl_data_offer` action negotiation, so an external
+  source always sees "copy". Archives dragged out of File Roller use XdndDirectSave, which
+  SDL3 does not implement: such drops arrive as nothing or as a temp path, and Phase 7 treats
+  them like any file drop (Phase 10 revisits archives).
+- **Internal drags** (pane to pane, to tabs, breadcrumbs, sidebar) are a ui state machine:
+  `Idle -> Pressed (threshold 4 dp) -> Dragging(items, origin, action from modifiers each
+  frame) -> Dropped / Cancelled (Escape, or release outside any target)`. While dragging:
+  wheel scrolls the list under the pointer, the list auto-scrolls within 24 dp of its top or
+  bottom edge (speed grows towards the edge), a folder row hovered for about 700 ms opens
+  (spring-loaded; disabled with animations off), the badge shows count + first thumbnail +
+  action. Dropping runs at frame end (`OpRequest` submit), never mid-draw. Phase 3's tab drag
+  shares the same machine with a different payload.
+- **Drops onto executables** (`features.md`, phases 7 and 10): deferred to Phase 10 together
+  with "Open console here"; in Phase 7 a drop onto a file row is `DropAction::None`.
+- **Outgoing drags to other programs: limitation.** SDL 3.4 has no drag-source API (it only
+  receives drops). What Phase 7 does:
+  - Always available: `Ctrl+C` in Navigator, `Ctrl+V` in GNOME Files / Nemo / Dolphin / the
+    desktop, through the formats above (tested in qa).
+  - X11: a small XDND source in `src/ui/platform/` using the `Display*` / `Window` from
+    `SDL_PROP_WINDOW_X11_*` (XdndSelection owner, `text/uri-list` and
+    `x-special/gnome-copied-files` targets, XdndActionCopy / XdndActionMove). This works
+    without compositor support and is the planned implementation.
+  - Wayland: a drag source needs `wl_data_device.start_drag` with the serial of the button
+    press that started the drag on Navigator's own seat. The attempt: bind a second
+    `wl_data_device_manager` / `wl_seat` / `wl_pointer` on SDL's `wl_display`
+    (`SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER`) with a private event queue, take the press
+    serial from that pointer, and start the drag with SDL's `wl_surface` as origin. Whether
+    Mutter and Muffin accept this (one client, two pointer objects) is exactly what the roadmap
+    asks to test: qa / ui record the outcome for GNOME Files and the desktop in
+    `docs/platform-limitations.md`. If it fails, Wayland users get the clipboard path above
+    and the drag badge says "Drag to other apps is not available on this session" when the
+    pointer leaves the window. No portal offers drag-and-drop for unsandboxed apps.
+
+### Rename, new folder, conflict sheet, progress
+
+- **Rename** (`F2`): inline editor on the row, stem selected (`stem_length`), Turkish input
+  through SDL text input; `validate_new_name` errors are shown inline; Enter submits
+  `OpKind::Rename`. A case-only rename (`a.txt` -> `A.txt`) on a case-insensitive filesystem
+  is not a conflict (the engine sees the same FileId and renames through a temp name).
+- **New folder** (`Ctrl+Shift+N`): placeholder row with the translated default name
+  ("New Folder" / "Yeni Klasör") made unique with `keep_both_name`, editor open; Enter submits
+  `MakeDirectory`; Escape creates nothing.
+- **Conflict sheet**: Inspector-card style, not a system dialog; both sides with the Phase 6
+  thumbnail (preview service, Thumbnail purpose), size, date; actions Replace (warns when
+  `replace_is_permanent`, hidden when not `replace_allowed`), Skip, Keep both (editable name),
+  Merge (folders), Cancel operation; "Apply to all"; `Enter` = Keep both, `Escape` = Skip.
+  One sheet at a time; further conflicts queue.
+- **Progress**: the Phase 5 pattern: a thin bar under the pane title bar of the destination
+  pane (or the source pane for trash), stop and pause buttons in the status bar, bytes and
+  items, the current name middle-elided, rate and ETA after about 2 s of stable samples. Short
+  operations (< 300 ms) show only the finishing notice. `ops.toggle_panel` lists all running
+  and the last 20 finished operations with their errors.
+- **Notices**: "Moved 3 items to the trash. Undo" ("3 öğe çöp kutusuna taşındı. Geri al");
+  failures summarise counts and open the panel for details. `Error::message` is never shown
+  untranslated; `ErrorCode` picks the text (Phase 7 adds `NoSpace`, `ReadOnlyFilesystem`,
+  `CrossDevice`, `NotEmpty`).
+
+### Deferred
+
+Persistent undo history; batch rename (Phase 9); drops onto executables and "Open console
+here" (Phase 10); archives as sources or targets (Phase 10); GVfs / `trash://` of other
+programs' mounts (Phase 10); `directorysizes`; sweeping stale `.part` files; copying
+`security.*` xattrs; a "new empty file" command; KDE-style ".directory" handling; cross-window
+drag (multi-window phase).
+
+Work split for Phase 7: **contracts** (this diff) -> **ops** (`src/ops`, `tests/ops`, against
+a fake `ITrash` first) and **platform** (`trash`, `transfer`, `tests/platform`) and
+**commands** (ids, names, chords, `tests/commands`) in parallel -> **ui** (progress, sheets,
+editors, Trash view, clipboard, DnD) -> integration (`src/ops` / `tests/ops` subdirs, links,
+quit prompt) -> **qa** (atomicity: kill / cancel mid-copy leaves no truncated destination;
+partial failures through the fault injector; cross-filesystem move with a tmpfs fixture when
+available; undo/redo round trips including "changed since" and "appeared since"; Nautilus
+clipboard interop; Wayland/X11 drag notes) -> **design-reviewer** (sheets, progress, DnD
+feedback).
+
 ## Error policy
 
 - One policy: fallible functions return `navigator::Result<T>` (`types.hpp`). No exceptions across module boundaries.
@@ -673,9 +909,10 @@ fixtures, large-text frame time, headless never writes `~/.cache/thumbnails`) ->
 - Pure functions (`mime::*`, `fs::compare_names`/`sort_entries`, `to_string`/`parse_key_chord`, `layout::Layout`/`ClosedTabs` members, `layout::to_json`/`*_from_json`) are callable from any thread, including the UI thread.
 - Pure Phase 4 helpers (`places::*` store members, resolution and JSON functions, `path_input::expand_user_path` / `parse_completion_input` / `match_completions` / `format_paths_for_copy`, `platform::parse_user_dirs`, volume identity/usage helpers) are callable from any thread. `path_input::fix_path_case` / `resolve_input` / `complete_path`, `places::load_*` / `save_*`, `platform::read_user_dirs` / `user_home` block (worker threads; the startup load and save on quit are the UI-thread exceptions, as for the session).
 - `layout::Session` is a value owned by the UI thread; the background session writer receives a copy. `layout::load_session`/`save_session`/`*_named_layout` block on file I/O; Phase 3's exceptions on the UI thread are the startup load and the save on quit.
-- Interfaces (`IWatcher`, `IVolumeMonitor`, `IMountSource`, `IAppLauncher`, `IIndex`, `IPreviewProvider`, `IPreviewService`, `IProcessRunner`) document their own threading. `IWatcher`/`IVolumeMonitor` are single-thread-at-a-time objects with no internal thread (drained with `poll()`, optional blocking `wait()` / pollable `native_handle()`).
+- Interfaces (`IWatcher`, `IVolumeMonitor`, `IMountSource`, `IAppLauncher`, `IIndex`, `IPreviewProvider`, `IPreviewService`, `IProcessRunner`, Phase 7 `ops::IOperationQueue`, `trash::ITrash`) document their own threading. `IWatcher`/`IVolumeMonitor` are single-thread-at-a-time objects with no internal thread (drained with `poll()`, optional blocking `wait()` / pollable `native_handle()`).
 - Phase 6: `preview::*` and `thumbnail::*` pure helpers (marked Pure in the headers) are callable from any thread, including the UI thread for key computation. `IPreviewProvider::produce` is called concurrently on preview workers (providers are reentrant); `ProviderRegistry` is built on one thread and then shared read-only. `IPreviewService` owns its workers, is internally synchronized, never blocks the caller (except `shutdown`), and is drained by one consumer (`poll`, UI thread); results are shared immutable `std::shared_ptr<const PreviewResult>`. Thumbnail file functions and `platform::IProcessRunner::run` block (workers only). Textures are created on the UI thread only.
 - Phase 5: `search::*` free functions, `Query`, `TypeFilter` and the inline `index.hpp` helpers are pure (any thread, including the UI thread for the folder filter up to `kUiThreadFilterLimit` entries). A `search::Matcher` and an `fs::Walker` are single-thread-at-a-time objects; `Walker` blocks on I/O (workers only). An `IIndex` owns one service thread; `query()`/`status()` are callable from any thread concurrently, `start()`/`stop()`/`request_rescan()` from the owning (UI) thread.
+- Phase 7: `ops::IOperationQueue` members are thread-safe and non-blocking (UI thread calls them every frame); its workers run `run_operation`, which blocks. `ops::UndoStack` is UI-thread only. `trash::ITrash` members are thread-safe and block (workers only), except the lexical `is_inside_trash`. `transfer::*`, `ops::` pure helpers and `trash::` format helpers are pure (any thread).
 - Cancellation uses `std::stop_token`; a cancelled call fails with `ErrorCode::Cancelled`.
 
 ## Public headers
@@ -698,7 +935,9 @@ fixtures, large-text frame time, headless never writes `~/.cache/thumbnails`) ->
 | `walk.hpp` | `fs::WalkOptions`, `WalkEntry`, `WalkSkip`, `WalkStats`, `WalkBatch`, `Walker`, constants | Phase 5 contract, implemented in `src/core` (core-fs) |
 | `search.hpp` | `search::MatchMode` (+ `to_string`), scoring constants, `Query`, `compile_query`, `narrows`, `HighlightRange`, `Match`, `Matcher`, `match`, `RankInfo`, `ranks_before`, `TypeKind`, `TypeKey`, `TypeFilter`, `TypeCount`, `type_key_of`, `allows`, `is_visible`, `set_visible`, `toggle_all`, `normalize`, `summarize_types`, `FilterHit`, `filter_entries` | Phase 5 contract, implemented in `src/search` (search) |
 | `index.hpp` | `search::IndexState` (+ `to_string`), `IndexStatus`, `RescanKind`, `IndexQuery`, `IndexHit`, `IndexResult`, `IIndex`, `NameIndexOptions`, `create_name_index`; inline `should_index_by_default`, `fnv1a64`, `index_stable_id`, `index_dir`, `index_file`; file format v1 | Phase 5 contract, implemented in `src/search` (search) |
-| `ops.hpp` | `OpKind`, `ConflictPolicy`, `OpRequest`, `OpProgress`, `OpId` | stub, ops phase |
+| `ops.hpp` | `ops::OpId`, `OpKind` (+ `to_string`), `ConflictPolicy`, `ConflictAction`, `ConflictDecision`, `ItemGuard`, `ConflictSide`, `ConflictId`, `Conflict`, `OpOptions`, `OpOrigin`, `OpRequest`, `OpPhase`, `OpProgress`, `ItemStatus`, `ItemOutcome`, `UndoStep`, `UndoId`, `UndoRecord`, `OpResult`, `UndoLabel`, `make_label`, `NameParts`, `split_extension`, `stem_length`, `kNameMaxBytes`, `keep_both_name`, `NameError`, `validate_new_name`, `is_same_or_inside`, `Protection`, `ProtectedPaths`, `protection_of`, `ConflictResolver`, `ProgressSink`, `EngineOptions`, `run_operation`, `OpEvent`, `QueueOptions`, `IOperationQueue`, `create_operation_queue`, `kDefaultUndoDepth`, `UndoStack`; safety rules S1..S16 | Phase 7 contract, implemented in `src/ops` (ops) |
+| `trash.hpp` | `trash::LocalDateTime`, `format_deletion_date`, `parse_deletion_date`, `escape_path`, `unescape_path`, `TrashInfo`, `format_trashinfo`, `parse_trashinfo`, `shared_topdir_trash`, `user_topdir_trash`, `info_path_for`, `original_path_from`, `TrashDirKind`, `TrashDir`, `TrashedItem`, `TrashListing`, `TrashOptions`, `ITrash`, `create_trash`; rules T1..T7 | Phase 7 contract, implemented in `src/platform` (platform) |
+| `transfer.hpp` | `transfer::kMime*`, `file_uri`, `path_from_file_uri`, `encode_uri_list` (2), `UriList`, `decode_uri_list`, `ClipboardAction`, `FileClipboard`, `encode_gnome_copied_files`, `decode_gnome_copied_files`, `decode_nautilus_text`, `make_clipboard_offer`, `ClipboardGetter`, `read_clipboard`, `DropAction`, `DropContext`, `choose_drop_action` (inline) | Phase 7 contract, implemented in `src/platform` (platform) |
 | `preview.hpp` | `preview::PixelSize`, limits, `ImageBuffer`, `make_image`, `ExifOrientation` (+ `orientation_from_tag`, `swaps_axes`, `oriented_size`), `Rational`, `ExifDateTime`, `ExifInfo`, `ImageFormat` (+ `to_string`), `sniff_image_format`, `ImageInfo`, `MetadataSource`, `VideoInfo`, `TextEncoding`, `TextOptions`, `TextRow`, `TextPreview`, `looks_binary`, `decode_text`, `FolderOptions`, `FolderPreview`, `PreviewPurpose`, `ImageOrigin`, `PlaceholderReason`, `PlaceholderPreview`, `ImagePreview`, `VideoPreview`, `PreviewContent`, `PreviewKind`, `PreviewResult`, `approx_bytes`, `SourceLocation`, `PreviewRequest`, `PreviewKey`, `make_key`, `hash_value`, `PreviewKeyHash`, `fit_size`, `select_jpeg_scale_denom`, `apply_exif_orientation`, `downscale`, priorities, `IPreviewProvider`, `ProviderRegistry` | Phase 6 contract, implemented in `src/preview` (preview) |
 | `thumbnail.hpp` | `thumbnail::ThumbnailSize` (+ `pixels`, `dir_name`, `size_for`), constants, `cache_root_for`, `file_uri`, `md5_hex`, `thumbnail_file_name`, `thumbnail_path`, `failure_path`, `is_inside_cache`, `mtime_seconds`, `SourceInfo`, `LookupStatus`, `ThumbnailRead`, `read_thumbnail`, `lookup_thumbnail`, `WriteOptions`, `write_thumbnail`, `write_failure`, `has_failure`, `Policy`, `Decision`, `decide`, `Thumbnailer`, `parse_thumbnailer`, `split_exec`, `ExecInputs`, `expand_exec`, `thumbnailer_dirs`, `ProgramExists`, `load_thumbnailers`, `choose_thumbnailer`, `ThumbnailerLimits`, `run_thumbnailer` | Phase 6 contract, implemented in `src/preview` (preview) |
 | `preview_service.hpp` | `preview::BuildFeatures`, `build_features`, `BuiltinProviderOptions`, `register_builtin_providers`, `RequestPriority`, `Ticket`, `Completion`, `ThumbnailCacheOptions`, `PreviewServiceOptions`, `InvalidateMode`, `ServiceStats`, `IPreviewService`, `create_preview_service`, constants | Phase 6 contract, implemented in `src/preview` (preview) |
@@ -708,7 +947,8 @@ Stub functions are declared only; nothing may call them until their phase lands.
 
 ## Commands
 
-- `CommandId` values are stable and never renumbered. Ranges: 1-999 app/view, 1000-1099 navigation, 1100-1199 list (activation, cursor, selection), 1200-1219 tabs, 1220-1239 panes, 1240-1249 named layouts, 1250-1259 windows, 1260-1279 sidebar/bookmarks/recents, 1280-1299 edit/clipboard, 1300-1319 filter/flatten/search/index, 1320-1339 Inspector/previews, 1340+ later phases.
+- `CommandId` values are stable and never renumbered. Ranges: 1-999 app/view, 1000-1099 navigation, 1100-1199 list (activation, cursor, selection), 1200-1219 tabs, 1220-1239 panes, 1240-1249 named layouts, 1250-1259 windows, 1260-1279 sidebar/bookmarks/recents, 1280-1299 edit/clipboard, 1300-1319 filter/flatten/search/index, 1320-1339 Inspector/previews, 1340-1359 file operations / operations panel, 1360-1369 trash, 1370+ later phases.
+  - Phase 7: `Copy = 1281` (`edit.copy`, `Ctrl+C`), `Cut = 1282` (`edit.cut`, `Ctrl+X`), `Paste = 1283` (`edit.paste`, `Ctrl+V`, arg `PasteArg`), `Undo = 1284` (`edit.undo`, `Ctrl+Z`), `Redo = 1285` (`edit.redo`, `Ctrl+Shift+Z`, `Ctrl+Y`), `MoveToTrash = 1340` (`file.trash`, `Delete`), `DeletePermanently = 1341` (`file.delete_permanently`, `Shift+Delete`), `Rename = 1342` (`file.rename`, `F2`), `NewFolder = 1343` (`file.new_folder`, `Ctrl+Shift+N`), `CopyToOtherPane = 1344` (`file.copy_to_other_pane`, `F7`), `MoveToOtherPane = 1345` (`file.move_to_other_pane`, `Shift+F7`), `OpenTerminalHere = 1346` (`file.open_terminal_here`, reserved no-op), `CancelOperation = 1347` (`ops.cancel`, arg OpId), `TogglePauseOperation = 1348` (`ops.toggle_pause`, arg OpId), `ToggleOperationsPanel = 1349` (`ops.toggle_panel`), `OpenTrash = 1360` (`trash.open`), `RestoreFromTrash = 1361` (`trash.restore`), `EmptyTrash = 1362` (`trash.empty`). Focus scoping: `docs/keymap.md` "Phase 7 defaults".
   - Phase 6: `Inspect = 1320` (`view.inspect`, `Space`, `Alt+KeypadEnter`), `ToggleInspectorLock = 1321` (`inspector.toggle_lock`), `InspectorZoomFit = 1322` (`inspector.zoom_fit`), `InspectorZoom1to1 = 1323` (`inspector.zoom_1to1`), `InspectorPlay = 1324` (`inspector.play`), `CycleInspectorPlacement = 1325` (`inspector.cycle_placement`), `ToggleInspectorGrid = 1326` (`inspector.toggle_grid`), `ToggleInspectorMinimap = 1327` (`inspector.toggle_minimap`). All arg 0. Space in text fields and Inspector focus routing: `docs/keymap.md` "Phase 6 defaults".
   - Phase 5: `FocusFilter = 1300` (`list.filter`, `Ctrl+F`), `ClearFilter = 1301` (`list.clear_filter`), `ToggleFlatten = 1302` (`search.flatten`, `Ctrl+E`), `FlattenVolume = 1303` (`search.flatten_volume`, `Ctrl+Shift+E`), `ToggleTypesPopup = 1304` (`search.types`, `Ctrl+Shift+F`), `ToggleFuzzy = 1305` (`search.toggle_fuzzy`), `CancelSearch = 1306` (`search.cancel`), `RebuildIndex = 1307` (`search.rebuild_index`). All arg 0. Filter-field focus scoping, type-to-filter and the Escape cascade: `docs/keymap.md` "Phase 5 defaults".
   - Phase 4: `ToggleSidebar = 5` (`view.toggle_sidebar`), `ToggleViewLock = 6` (`view.toggle_view_lock`, stub), `GoTo = 1005` (`nav.goto`), `FocusAddressBar = 1004` now defined (inline path edit, `Ctrl+L`); `FocusSidebar = 1260` (`sidebar.focus`), `ToggleBookmark = 1261` (`bookmarks.toggle`), `RenameBookmark = 1262` (`bookmarks.rename`), `MoveBookmarkUp = 1263` (`bookmarks.move_up`), `MoveBookmarkDown = 1264` (`bookmarks.move_down`), `ClearRecents = 1270` (`recents.clear`), `ToggleRecentsTracking = 1271` (`recents.toggle_tracking`), `CopyPath = 1280` (`edit.copy_path`, arg `CopyPathArg`). Bookmark commands take 0 (focused row / active folder) or a `places::BookmarkId` value. `pane.focus_next/previous` include the visible sidebar in their cycle.
@@ -805,3 +1045,13 @@ stubs: `fs::EntryKind`, `fs::DirEntry`, `fs::SortKey`, `fs::ListOptions`, `fs::l
   - **features.md**: Navigator-extra rows for video (poster, metadata, Play hand-off).
   - Known breakage until the parallel agents land: exhaustive `switch` over `CommandId` fails `-Werror=switch` (GCC 13) in `src/commands/builtin_commands.cpp` (`to_string`, line 86), `src/ui/browser/browser_model.cpp` (line 961) and `src/ui/workspace/workspace.cpp` (line 275): 8 new enumerators each. Everything else in the tree compiles unchanged (GCC 13 and Clang 18, header check in C++20 and C++23). Runtime tests that need updates by their owners once commands binds the rows: `tests/commands/keymap_test.cpp` (`read_keymap_doc` must also read `## Phase 6 defaults`, `phase_rows` grows to index 6; counts 3 + 25 + 21 + 5 + 4 + 2; the expected `(unbound)` sets gain the seven `inspector.*` names; `Space` and `Alt+KeypadEnter` leave any "free chord" lists) and `tests/integration/keymap_e2e_test.cpp` (`per_phase.size()` 5 -> 6 with `per_phase.at(6) == 2`, `bound.size()` 58 -> 60, the `(unbound)` set and its size 14 -> 21, per-command effect checks for `view.inspect`). `tests/commands/keymap_test.cpp` keeps passing until commands binds the rows (its parser ignores unknown sections), but `tests/integration/keymap_e2e_test.cpp` parses every `## Phase N defaults` table generically, so it fails as soon as this doc lands (2 documented rows the keymap does not bind yet, 7 new `(unbound)` rows) until commands and qa land. `tests/core/layout_json_test.cpp` golden text is unaffected (`"inspector"` is only written when not default).
 - Phase 6 follow-up: process runner probes bwrap once and falls back unsandboxed when user namespaces are unavailable (reported via `sandboxed`); mime table gains 3gp, mts/m2ts, mpg/mpeg, ogv, wmv, flv.
+- Phase 7 (contracts): file operations, trash, undo, drag and drop. `ops.hpp` turned from a stub into a contract in namespace `navigator::ops` (no caller existed, so the breaking change is free: the old `navigator::OpKind` / `ConflictPolicy` / `OpRequest` / `OpProgress` / `OpId` are replaced; `OpKind::Delete` is now `DeletePermanently`, `ConflictPolicy::Overwrite` is now `Replace`, `OpId` is a strong id). Two new headers, `trash.hpp` and `transfer.hpp`. No signature of an implemented function changed.
+  - **types**: `ErrorCode::NoSpace = 10`, `ReadOnlyFilesystem = 11`, `CrossDevice = 12`, `NotEmpty = 13` with `to_string` names (`no_space`, `read_only_filesystem`, `cross_device`, `not_empty`). Earlier producers never return them; every existing `switch` over `ErrorCode` in `src/` has a `default`, so nothing breaks.
+  - **ops** (ops, new `src/ops`, library `navigator_ops`): normative safety rules S1..S16 (no silent removal, delete = trash with no permanent fallback, permanent delete only with `confirmed`, never follow symlinks, one filesystem per tree, temp + `RENAME_NOREPLACE` copies, verified cross-fs moves, overwrite only after a decision with the replaced item trashed, cancellation without partial files, metadata/xattr/special-file rules, undo that never deletes or overwrites and verifies identity, protected sources, space check, fixture-only tests). Blocking `run_operation` for tests and workers, `IOperationQueue` (poll-based events, conflict handshake through `resolve`, pause/resume/cancel, overlapping path sets serialized, `max_concurrent` 2), `UndoStack` (UI thread, depth 100, runtime only; origin-driven redo handling), `make_label`, pure helpers `split_extension` / `stem_length` / `keep_both_name` (" (n)", compound `.tar.*`, dot-files, NAME_MAX) / `validate_new_name` / `is_same_or_inside` / `protection_of`. `EngineOptions::fault_injector` is the test seam for partial failures.
+  - **trash** (new header, platform, `src/platform`): FreeDesktop Trash 1.0 rules T1..T7 (same-filesystem rename only, cross-filesystem trashing refused, `.Trash/$uid` only with sticky bit and no symlink, `.Trash-$uid` otherwise, GIO path escaping, local DeletionDate, `O_EXCL` name reservation, no `directorysizes`), `ITrash` (`trash_dir_for`, `trash`, `trash_dirs`, `list`, `restore` with `RENAME_NOREPLACE`, `forget`, lexical `is_inside_trash`), `create_trash(TrashOptions)` with injectable home trash, uid, mount table and clock. Recursive deletion stays in `src/ops`.
+  - **transfer** (new header, platform, `src/platform`, pure): GLib-identical `file_uri` (same output as `thumbnail::file_uri`; qa asserts it), `path_from_file_uri`, RFC 2483 uri-list, `x-special/gnome-copied-files`, Nautilus text form, KDE cut marker, offer/accept order, `choose_drop_action` (GNOME modifiers; external drops copy unless Shift).
+  - **platform**: `move_to_trash` is now a documented wrapper over `trash::create_trash` + `ITrash::trash` (was a stub returning Unsupported); `open_terminal` stays a stub (Phase 10). `tests/platform/desktop_test.cpp:344` expects Unsupported from `move_to_trash("/nonexistent")` and must change to NotFound when platform implements it.
+  - **places**: comment only: `PlaceKind::Trash` is now the sidebar row for `trash.open` (`build_places` still does not emit it).
+  - **commands** (commands): ids 1281-1285, 1340-1349, 1360-1362 and names under "Commands"; new ranges 1340-1359 and 1360-1369; `PasteArg::{None, IntoCursorFolder}`; 12 default chords (`docs/keymap.md` "Phase 7 defaults": `Ctrl+C`, `Ctrl+X`, `Ctrl+V`, `Ctrl+Z`, `Ctrl+Shift+Z`, `Ctrl+Y`, `Delete`, `Shift+Delete`, `F2`, `Ctrl+Shift+N`, `F7`, `Shift+F7`; none conflicts with the 60 earlier chords); text fields additionally consume `Shift+Delete`, `Ctrl+Shift+Z`, `Ctrl+Y`; file commands are not routed to the pane while the sidebar or a popup has focus.
+  - **features.md**: Navigator-extra rows for undo/redo, Trash view, conflict sheet, background progress, clipboard interop.
+  - Known breakage until the parallel agents land: exhaustive `switch` over `CommandId` fails `-Werror=switch` (GCC 13) in `src/commands/builtin_commands.cpp` (`to_string`, line 96), `src/ui/browser/browser_model.cpp` (line 961) and `src/ui/workspace/workspace.cpp` (line 276). `tests/commands/keymap_test.cpp` (`read_keymap_doc` must learn "## Phase 7 defaults", and the expected row counts gain `phase_rows[7] == 12`) and `tests/integration/keymap_e2e_test.cpp` (Phase 7 rows) need updates by commands / qa when the chords are bound. Root `CMakeLists.txt` needs `navigator_add_subdir(src/ops)` and `navigator_add_subdir(tests/ops)` (integration).

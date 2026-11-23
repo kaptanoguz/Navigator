@@ -39,10 +39,12 @@ namespace navigator {
 //   1240-1249  named layouts   (Phase 3)
 //   1250-1259  windows         (reserved: multi-window phase)
 //   1260-1279  sidebar, bookmarks, recents (Phase 4)
-//   1280-1299  edit / clipboard (Phase 4: copy path; file operations add copy/cut/paste here)
+//   1280-1299  edit / clipboard (Phase 4: copy path; Phase 7: copy/cut/paste, undo/redo)
 //   1300-1319  filter, flatten, name search, index (Phase 5)
 //   1320-1339  Inspector and previews (Phase 6)
-//   1340+      reserved for later phases (file operations, ...)
+//   1340-1359  file operations and the operations panel (Phase 7)
+//   1360-1369  trash (Phase 7)
+//   1370+      reserved for later phases
 // Every id except None is registered by register_builtin_commands() and appears in the palette.
 // `arg` meanings are listed per id; "arg: 0" means the command ignores it.
 enum class CommandId : std::uint32_t {
@@ -169,6 +171,23 @@ enum class CommandId : std::uint32_t {
                      //   or the current folder when nothing is selected, formatted by
                      //   path_input::format_paths_for_copy(PathQuoting::Auto).
                      //   arg: CopyPathArg flags
+    // Phase 7. File commands act on the active tab of the active pane while the list (or the
+    // Inspector) has focus; with the sidebar or a popup focused they are not routed to the
+    // pane (docs/keymap.md "Focus scoping (Phase 7)"). "Selection" means the selected rows in
+    // list order; with no selection the commands are no-ops (a notice says why). arg: 0
+    // unless stated.
+    Copy = 1281,  // "edit.copy"  puts the selection on the clipboard as a copy
+                  //   (transfer::make_clipboard_offer, ClipboardAction::Copy)
+    Cut = 1282,   // "edit.cut"   same with ClipboardAction::Cut; the rows are drawn dimmed until
+                  //   the paste or until another program takes the clipboard
+    Paste = 1283, // "edit.paste" reads the clipboard (transfer::read_clipboard); copy -> OpKind
+                  //   Copy, cut -> OpKind::Move into the tab's folder, ConflictPolicy::Ask.
+                  //   After a cut is pasted the clipboard is cleared if Navigator still owns
+                  //   it. Clipboard text that is not a file list does nothing (notice).
+                  //   arg: PasteArg flags
+    Undo = 1284,  // "edit.undo"  ops::UndoStack::take_undo -> OpKind::Undo. No-op (notice)
+                  //   when empty or when a volume of the record is not mounted (named)
+    Redo = 1285,  // "edit.redo"  ops::UndoStack::take_redo -> OpKind::Redo
 
     // Filter, flatten and index (Phase 5). docs/architecture.md "Phase 5" has the data flow and
     // docs/keymap.md "Focus scoping (Phase 5)" the keys of the filter field. All act on the
@@ -232,6 +251,46 @@ enum class CommandId : std::uint32_t {
     ToggleInspectorMinimap = 1327,  // "inspector.toggle_minimap"  overview with the visible
                                     //   rectangle while the image is larger than the view
                                     //   (persisted)
+
+    // File operations (Phase 7). docs/architecture.md "Phase 7" has the data flow and the
+    // safety rules; ops.hpp the engine contract.
+    MoveToTrash = 1340,           // "file.trash"  OpKind::Trash of the selection, no confirmation;
+                                  //   a notice with "Undo" follows. Items on a volume without a
+                                  //   usable trash are NOT deleted: the permanent-delete sheet
+                                  //   opens for exactly those (ops.hpp S2). In the Trash view it
+                                  //   acts as file.delete_permanently
+    DeletePermanently = 1341,     // "file.delete_permanently"  confirmation sheet first (count,
+                                  //   "cannot be undone"; initial focus on Cancel), then
+                                  //   OpKind::DeletePermanently with confirmed = true (S3)
+    Rename = 1342,                // "file.rename"  inline editor on the cursor row with the stem
+                                  //   selected (ops::stem_length); Enter -> OpKind::Rename, Escape
+                                  //   cancels. Multi-selection: the cursor row only (batch rename
+                                  //   is Phase 9)
+    NewFolder = 1343,             // "file.new_folder"  inline editor on a new placeholder row
+                                  //   holding the translated default name made unique with
+                                  //   ops::keep_both_name; Enter -> OpKind::MakeDirectory with the
+                                  //   typed name; Escape creates nothing
+    CopyToOtherPane = 1344,       // "file.copy_to_other_pane"  OpKind::Copy of the selection into
+                                  //   the active tab folder of the previously active pane
+                                  //   ("previous pane", docs/features.md); no-op with one pane
+    MoveToOtherPane = 1345,       // "file.move_to_other_pane"  same with OpKind::Move
+    OpenTerminalHere = 1346,      // "file.open_terminal_here"  RESERVED: registered, unbound, no-op
+                                  //   until platform::open_terminal lands (Phase 10)
+    CancelOperation = 1347,       // "ops.cancel"  arg: ops::OpId::value; 0 = the most recently
+                                  //   started unfinished operation (progress bar stop button)
+    TogglePauseOperation = 1348,  // "ops.toggle_pause"  arg as ops.cancel
+    ToggleOperationsPanel = 1349, // "ops.toggle_panel"  non-modal list of running and recent
+                                  //   operations (status bar button)
+
+    // Trash (Phase 7). The Trash view is a runtime view mode of a tab (like the flattened view;
+    // not persisted: a session saves the folder the tab showed before). arg: 0 for all.
+    OpenTrash = 1360,        // "trash.open"  shows the Trash view (all trash directories,
+                             //   trash::ITrash::list) in the active tab; the sidebar Trash row
+                             //   (places::PlaceKind::Trash) enqueues it
+    RestoreFromTrash = 1361, // "trash.restore"  Trash view: OpKind::Restore of the selected items
+                             //   to their original folders (conflicts: Ask)
+    EmptyTrash = 1362,       // "trash.empty"  confirmation sheet (count, "cannot be undone"),
+                             //   then OpKind::DeletePermanently of every listed item
 };
 
 // Bit flags for the `arg` of CopyPath. Unknown bits are ignored (reserved).
@@ -240,6 +299,15 @@ enum class CommandId : std::uint32_t {
 struct CopyPathArg {
     static constexpr std::uint64_t None = 0;
     static constexpr std::uint64_t CurrentFolder = std::uint64_t{1} << 0U;
+};
+
+// Bit flags for the `arg` of Paste. Unknown bits are ignored (reserved).
+//   0:                into the active tab's folder (Ctrl+V).
+//   IntoCursorFolder: into the folder of the cursor row when it is a folder (or a link to one),
+//                     else as 0 (row context menu "Paste into folder").
+struct PasteArg {
+    static constexpr std::uint64_t None = 0;
+    static constexpr std::uint64_t IntoCursorFolder = std::uint64_t{1} << 0U;
 };
 
 // Bit flags for the `arg` of NewTab. Unknown bits are ignored (reserved).
@@ -378,6 +446,16 @@ Result<void> register_builtin_commands(CommandRegistry& registry);
 //     resolved list.cursor_* commands to it (scroll text, pan an image at 1:1),
 //     list.activate to inspector.play, and list.clear_selection (Escape) returns focus to the
 //     active pane; view.inspect (Space) hides it.
+//   - Phase 7 (file operations; safety): every focused text field (all of the above,
+//     including the inline rename / new-folder editors) also consumes Shift+Delete (as
+//     Delete), Ctrl+Shift+Z and Ctrl+Y (text redo, or nothing), so no file command can fire
+//     while typing; the Phase 4 fields already consume Delete, Ctrl+C/X/V/Z, and the Phase 5
+//     filter field Delete, Ctrl+V, Ctrl+Z and Ctrl+C/X while it has a text selection. With the
+//     sidebar or a popup focused, the resolved edit.copy/cut/paste, file.* and trash.restore
+//     commands are not routed to the pane (no invisible action on a selection the user is
+//     not looking at); file.rename on a bookmark row becomes bookmarks.rename. With the
+//     Inspector focused they act on the active pane as usual. While a confirmation or
+//     conflict sheet is open it takes the keyboard like a Phase 3 popup.
 // Multi-key sequences ("g g") and command aliases arrive in Phase 8 as an addition (e.g. a
 // KeySequence type and Keymap::bind_sequence); the single-chord API below stays.
 

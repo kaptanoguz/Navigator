@@ -33,6 +33,8 @@ set(NAVIGATOR_CONTRACT_HEADERS
     places
     path_input
     walk
+    trash
+    transfer
     detail/expected
 )
 
@@ -107,6 +109,14 @@ foreach(std IN ITEMS 20 23)
     _navigator_header_object(navigator_contract_phase6_cxx${std}
                              "${CMAKE_CURRENT_SOURCE_DIR}/phase6_usage.cpp" CXX ${std})
     list(APPEND _nav_check_targets navigator_contract_phase6_cxx${std})
+
+    # Phase 7 ops requests/conflicts/progress/results, run_operation, IOperationQueue,
+    # UndoStack, pure name/path helpers, the Trash service and .trashinfo helpers (with a fake
+    # ITrash), clipboard / uri-list / drop-action helpers, new ErrorCodes, file-operation
+    # command ids (compile only).
+    _navigator_header_object(navigator_contract_phase7_cxx${std}
+                             "${CMAKE_CURRENT_SOURCE_DIR}/phase7_usage.cpp" CXX ${std})
+    list(APPEND _nav_check_targets navigator_contract_phase7_cxx${std})
 endforeach()
 
 # plugin.h from C11

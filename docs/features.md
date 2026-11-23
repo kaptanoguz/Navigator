@@ -209,3 +209,13 @@ video playback, see "Inspector (preview)"):
 | Video metadata in the Inspector: duration, resolution, frame rate, video and audio codecs, audio channels, container (FFmpeg builds) | 6 |
 | "Play" button on the video poster opens the default player (`xdg-open`); no in-app playback | 6 |
 | Page/first-page preview for other types (PDF, office documents, e-books, TIFF, RAW, …) through the system's Freedesktop `.thumbnailer` entries, shown as a "page preview" without image metadata; built-in PDF rendering remains future work | 6 |
+
+File operations beyond what `features.md` lists for File Pilot are Navigator's own:
+
+| Navigator extra | Phase |
+|---|---|
+| Undo / redo of copy, move, rename, new folder, link and trash (`Ctrl+Z`, `Ctrl+Shift+Z` / `Ctrl+Y`), with a palette label ("Undo: move 3 items to Photos"); undo never deletes data (an undone copy goes to the trash); permanent delete is not undoable | 7 |
+| FreeDesktop Trash (home and per-volume `.Trash-$uid`) with a Trash view, restore and empty; `Delete` moves to the trash without asking, `Shift+Delete` deletes permanently after a confirmation | 7 |
+| Conflict sheet comparing both files (thumbnail, size, date): Replace, Skip, Keep both ("name (2).ext"), Merge folders, Apply to all; replaced items go to the trash first | 7 |
+| Non-modal progress for background operations with pause, cancel, rate and ETA; several independent operations at once | 7 |
+| Clipboard interoperability with GNOME Files, Nemo, Caja, Thunar and Dolphin (`x-special/gnome-copied-files`, `text/uri-list`, KDE cut marker) | 7 |

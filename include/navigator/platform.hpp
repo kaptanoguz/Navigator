@@ -1,6 +1,7 @@
 // navigator/platform.hpp
 //
-// Purpose: desktop integration: open with default app, trash, MIME lookup, terminal, XDG dirs
+// Purpose: desktop integration: open with default app, trash wrapper (trash.hpp), MIME lookup,
+// terminal, XDG dirs
 //          (base dirs, user dirs from user-dirs.dirs), passwd home lookup; Phase 6: thumbnail
 //          cache root, XDG data dirs, $PATH lookup, and a bounded child-process runner for
 //          external thumbnailers (IProcessRunner).
@@ -107,14 +108,17 @@ public:
 [[nodiscard]] Result<std::string> mime_type(const Path& path);
 
 // ---------------------------------------------------------------------------------------------
-// Stubs for later phases (declared only; do not call until their phase lands)
+// Trash wrapper (Phase 7) and a stub for a later phase
 // ---------------------------------------------------------------------------------------------
 
-// Ops phase. Moves `path` to the freedesktop.org trash of its volume.
-// Errors: NotFound, PermissionDenied, Unsupported (no trash on this volume), IoError.
+// Phase 7: convenience wrapper, create_trash({}) then ITrash::trash(path) (trash.hpp, rules
+// T1..T7: same-filesystem rename only, never a permanent fallback). The ops engine and the ui
+// use trash::ITrash (injectable, testable roots) instead; this exists for tools and tests.
+// Errors: those of trash::create_trash and trash::ITrash::trash.
 [[nodiscard]] Result<void> move_to_trash(const Path& path);
 
-// Later phase. Opens the user's terminal emulator with `dir` as working directory.
+// Stub (Phase 10; file.open_terminal_here is reserved). Opens the user's terminal emulator with
+// `dir` as working directory.
 [[nodiscard]] Result<void> open_terminal(const Path& dir);
 
 // ---------------------------------------------------------------------------------------------

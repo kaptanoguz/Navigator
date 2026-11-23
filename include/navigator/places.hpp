@@ -128,7 +128,8 @@ enum class PlaceKind : std::uint8_t {
     Music = 4,
     Pictures = 5,
     Videos = 6,
-    Trash = 7,      // reserved: ops phase (trash:// browsing); build_places() does not emit it
+    Trash = 7,      // Phase 7: the sidebar row enqueues trash.open (Trash view); build_places()
+                    //   does not emit it: the ui appends it after Videos when it shows the row
     FileSystem = 8, // "/"
 };
 
