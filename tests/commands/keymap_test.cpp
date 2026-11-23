@@ -161,13 +161,14 @@ std::string unquote(const std::string& cell) {
 }
 
 // The chord tables of docs/keymap.md ("Phase 0 defaults", "Phase 2 defaults", "Phase 3
-// defaults", "Phase 4 defaults", "Phase 5 defaults"), in document order. `rows` skips the rows
-// that are not chords ("window close", "(unbound)"); `unbound` lists the command names of the
+// defaults", "Phase 4 defaults", "Phase 5 defaults", "Phase 6 defaults"), in document order. `rows`
+// skips the rows that are not chords ("window close", "(unbound)"); `unbound` lists the command
+// names of the
 // "(unbound)" rows.
 struct KeymapDoc {
     std::vector<DocRow> rows;
     std::vector<std::string> unbound;
-    std::size_t phase_rows[6] = {0, 0, 0, 0, 0, 0}; // chord rows per phase (index 1 unused)
+    std::size_t phase_rows[7] = {0, 0, 0, 0, 0, 0, 0}; // chord rows per phase (index 1 unused)
 };
 
 KeymapDoc read_keymap_doc() {
@@ -175,7 +176,7 @@ KeymapDoc read_keymap_doc() {
     REQUIRE(in.good());
     KeymapDoc doc;
     std::string line;
-    int section = 0; // the phase of the table being read (0, 2, 3, 4, 5); valid while in_table
+    int section = 0; // the phase of the table being read (0, 2, 3, 4, 5, 6); valid while in_table
     bool in_table = false;
     while (std::getline(in, line)) {
         if (line.starts_with("## ")) {
@@ -190,6 +191,8 @@ KeymapDoc read_keymap_doc() {
                 section = 4;
             } else if (line.starts_with("## Phase 5 defaults")) {
                 section = 5;
+            } else if (line.starts_with("## Phase 6 defaults")) {
+                section = 6;
             } else {
                 in_table = false;
             }
@@ -467,7 +470,8 @@ TEST_CASE("load_default_keymap binds exactly the docs/keymap.md tables, in order
     CHECK(parsed.phase_rows[3] == 21); // Phase 3 chords
     CHECK(parsed.phase_rows[4] == 5);  // Phase 4 chords
     CHECK(parsed.phase_rows[5] == 4);  // Phase 5 chords
-    REQUIRE(doc.size() == 3 + 25 + 21 + 5 + 4);
+    CHECK(parsed.phase_rows[6] == 2);  // Phase 6 chords
+    REQUIRE(doc.size() == 3 + 25 + 21 + 5 + 4 + 2);
 
     Keymap keymap;
     REQUIRE(navigator::load_default_keymap(keymap));
@@ -497,12 +501,27 @@ TEST_CASE("every default binding resolves to a registered built-in", "[keymap][d
         bound.insert(info->id);
     }
     // Every registered command has a default chord, except the documented "(unbound)" rows.
-    const std::set<CommandId> unbound{
-        CommandId::CloseLeftTabs,    CommandId::DeleteLayout,   CommandId::NewWindow,
-        CommandId::FocusSidebar,     CommandId::RenameBookmark, CommandId::MoveBookmarkUp,
-        CommandId::MoveBookmarkDown, CommandId::ClearRecents,   CommandId::ToggleRecentsTracking,
-        CommandId::ToggleViewLock,   CommandId::ClearFilter,    CommandId::ToggleFuzzy,
-        CommandId::CancelSearch,     CommandId::RebuildIndex};
+    const std::set<CommandId> unbound{CommandId::CloseLeftTabs,
+                                      CommandId::DeleteLayout,
+                                      CommandId::NewWindow,
+                                      CommandId::FocusSidebar,
+                                      CommandId::RenameBookmark,
+                                      CommandId::MoveBookmarkUp,
+                                      CommandId::MoveBookmarkDown,
+                                      CommandId::ClearRecents,
+                                      CommandId::ToggleRecentsTracking,
+                                      CommandId::ToggleViewLock,
+                                      CommandId::ClearFilter,
+                                      CommandId::ToggleFuzzy,
+                                      CommandId::CancelSearch,
+                                      CommandId::RebuildIndex,
+                                      CommandId::ToggleInspectorLock,
+                                      CommandId::InspectorZoomFit,
+                                      CommandId::InspectorZoom1to1,
+                                      CommandId::InspectorPlay,
+                                      CommandId::CycleInspectorPlacement,
+                                      CommandId::ToggleInspectorGrid,
+                                      CommandId::ToggleInspectorMinimap};
     for (const CommandInfo& info : registry.all()) {
         INFO("command " << info.name);
         CHECK(bound.contains(info.id) == !unbound.contains(info.id));
@@ -521,12 +540,27 @@ TEST_CASE("docs/keymap.md (unbound) rows are exactly the unbound built-ins", "[k
 
     std::set<std::string> documented(doc.unbound.begin(), doc.unbound.end());
     CHECK(documented.size() == doc.unbound.size()); // no duplicate (unbound) rows
-    CHECK(documented ==
-          std::set<std::string>{"tab.close_left", "layout.delete", "window.new", "sidebar.focus",
-                                "bookmarks.rename", "bookmarks.move_up", "bookmarks.move_down",
-                                "recents.clear", "recents.toggle_tracking", "view.toggle_view_lock",
-                                "list.clear_filter", "search.toggle_fuzzy", "search.cancel",
-                                "search.rebuild_index"});
+    CHECK(documented == std::set<std::string>{"tab.close_left",
+                                              "layout.delete",
+                                              "window.new",
+                                              "sidebar.focus",
+                                              "bookmarks.rename",
+                                              "bookmarks.move_up",
+                                              "bookmarks.move_down",
+                                              "recents.clear",
+                                              "recents.toggle_tracking",
+                                              "view.toggle_view_lock",
+                                              "list.clear_filter",
+                                              "search.toggle_fuzzy",
+                                              "search.cancel",
+                                              "search.rebuild_index",
+                                              "inspector.toggle_lock",
+                                              "inspector.zoom_fit",
+                                              "inspector.zoom_1to1",
+                                              "inspector.play",
+                                              "inspector.cycle_placement",
+                                              "inspector.toggle_grid",
+                                              "inspector.toggle_minimap"});
     std::set<std::string> actual;
     for (const CommandInfo& info : registry.all()) {
         if (keymap.chords_for(info.name).empty()) {
@@ -546,7 +580,8 @@ TEST_CASE("default chords are unique and leave reserved chords free", "[keymap][
     }
     // Reserved for later phases or avoided (docs/keymap.md, "Phase 3/4/5 defaults"): Ctrl+P
     // stays free for quick-open / search, Ctrl+C for copying files (Phase 7). Ctrl+E is bound
-    // since Phase 5 (search.flatten).
+    // since Phase 5 (search.flatten). Space is bound since Phase 6 (view.inspect); Ctrl+Space
+    // stays reserved for cursor selection (Phase 8).
     for (const char* text :
          {"Ctrl+P", "Ctrl+C", "Ctrl+Shift+P", "Ctrl+Comma", "Ctrl+Space", "Ctrl+Shift+N", "Ctrl+N",
           "Ctrl+Alt+Left", "Ctrl+Alt+Right", "Ctrl+Alt+Up", "Ctrl+Alt+Down", "Ctrl+Backslash"}) {
@@ -600,6 +635,10 @@ TEST_CASE("default primary chords", "[keymap][defaults]") {
     CHECK(primary("search.flatten") == "Ctrl+E");
     CHECK(primary("search.flatten_volume") == "Ctrl+Shift+E");
     CHECK(primary("search.types") == "Ctrl+Shift+F");
+    // Phase 6
+    CHECK(primary("view.inspect") == "Space");
+    CHECK(keymap.chords_for("view.inspect").size() == 2);
+    CHECK(to_string(keymap.chords_for("view.inspect")[1]) == "Alt+KeypadEnter");
     // Ctrl+L (address bar) and Ctrl+Shift+L (theme) are distinct chords.
     CHECK(primary("view.toggle_theme") == "Ctrl+Shift+L");
 }
@@ -617,8 +656,9 @@ TEST_CASE("default keymap loads once; a second load fails and changes nothing",
 
 TEST_CASE("default keymap is all-or-nothing on a pre-bound chord", "[keymap][defaults]") {
     Keymap keymap;
-    // Ctrl+Shift+F is the last default row, so a partial load would have bound everything else.
-    const KeyChord shift_end{Key::F, kCtrl | kShift};
+    // Alt+KeypadEnter is the last default row, so a partial load would have bound everything
+    // else.
+    const KeyChord shift_end{Key::KeypadEnter, kAlt};
     REQUIRE(keymap.bind(shift_end, "user.custom", 42));
     REQUIRE(keymap.bind(KeyChord{Key::F9, kNone}, "user.other"));
 
@@ -870,6 +910,73 @@ TEST_CASE("Phase 5 defaults conflict with user bindings all-or-nothing",
     REQUIRE(defaults.bind(chord("Ctrl+F"), "user.find"));
     CHECK(defaults.resolve(chord("Ctrl+F"))->command == "user.find");
     CHECK(defaults.chords_for("list.filter").empty());
+}
+
+TEST_CASE("a Phase 6 key sequence becomes the expected command list",
+          "[keymap][resolve][sequence][phase6]") {
+    const CommandRegistry registry = builtin_registry();
+    Keymap keymap;
+    REQUIRE(navigator::load_default_keymap(keymap));
+
+    // Space toggles the Inspector; chords match exactly, so Shift+Space and Ctrl+Space (reserved
+    // for Phase 8 cursor selection) resolve to nothing. Alt+KeypadEnter is a second Inspect key,
+    // distinct from KeypadEnter (list.activate) and Ctrl+KeypadEnter (list.open_in_new_tab).
+    // Arrow keys keep moving the list cursor; the Inspector follows it.
+    const char* presses[] = {
+        "Space",           "Down",        "Shift+Space", "Ctrl+Space",     "Space",
+        "Alt+KeypadEnter", "KeypadEnter", "Escape",      "Ctrl+Alt+Space", "Ctrl+KeypadEnter",
+        "Alt+Space"};
+    CommandQueue queue;
+    for (const char* text : presses) {
+        if (const std::optional<Command> c =
+                navigator::resolve_command(keymap, registry, chord(text))) {
+            queue.enqueue(*c);
+        }
+    }
+    std::vector<Command> ran;
+    queue.drain([&](const Command& c) { ran.push_back(c); });
+
+    const std::vector<Command> expected{
+        {CommandId::Inspect, 0},      {CommandId::CursorDown, 0}, {CommandId::Inspect, 0},
+        {CommandId::Inspect, 0},      {CommandId::Activate, 0},   {CommandId::ClearSelection, 0},
+        {CommandId::OpenInNewTab, 0},
+    };
+    CHECK(ran == expected);
+    CHECK(queue.empty());
+    CHECK_FALSE(navigator::resolve_command(keymap, registry, chord("Shift+Space")));
+    CHECK_FALSE(navigator::resolve_command(keymap, registry, chord("Ctrl+Space")));
+    // No default binds any inspector.* command (header buttons and palette only).
+    for (const KeyBinding& b : keymap.bindings()) {
+        INFO("binding " << to_string(b.chord) << " -> " << b.command);
+        CHECK_FALSE(b.command.starts_with("inspector."));
+    }
+}
+
+TEST_CASE("Phase 6 defaults conflict with user bindings all-or-nothing",
+          "[keymap][defaults][phase6]") {
+    // A user binding on Space (e.g. a habit from another file manager) blocks the whole default
+    // load and leaves the keymap as it was.
+    Keymap keymap;
+    REQUIRE(keymap.bind(chord("Space"), "user.preview"));
+    const auto r = navigator::load_default_keymap(keymap);
+    REQUIRE_FALSE(r);
+    CHECK(r.error().code == ErrorCode::AlreadyExists);
+    REQUIRE(keymap.bindings().size() == 1);
+    CHECK(keymap.resolve(chord("Space"))->command == "user.preview");
+    CHECK(keymap.resolve(chord("Ctrl+Q")) == nullptr);
+
+    // After the defaults load, Space can be rebound explicitly; Alt+KeypadEnter keeps Inspect.
+    Keymap defaults;
+    REQUIRE(navigator::load_default_keymap(defaults));
+    const auto clash = defaults.bind(chord("Space"), "user.preview");
+    REQUIRE_FALSE(clash);
+    CHECK(clash.error().code == ErrorCode::AlreadyExists);
+    REQUIRE(defaults.unbind(chord("Space")));
+    REQUIRE(defaults.bind(chord("Space"), "user.preview"));
+    CHECK(defaults.resolve(chord("Space"))->command == "user.preview");
+    const std::vector<KeyChord> left = defaults.chords_for("view.inspect");
+    REQUIRE(left.size() == 1);
+    CHECK(to_string(left.front()) == "Alt+KeypadEnter");
 }
 
 TEST_CASE("rebinding changes what a sequence produces", "[keymap][resolve][sequence]") {

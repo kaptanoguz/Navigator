@@ -78,6 +78,16 @@ constexpr std::array kBuiltins{
     Builtin{CommandId::ToggleFuzzy, "search.toggle_fuzzy", "cmd.search.toggle_fuzzy"},
     Builtin{CommandId::CancelSearch, "search.cancel", "cmd.search.cancel"},
     Builtin{CommandId::RebuildIndex, "search.rebuild_index", "cmd.search.rebuild_index"},
+    Builtin{CommandId::Inspect, "view.inspect", "cmd.view.inspect"},
+    Builtin{CommandId::ToggleInspectorLock, "inspector.toggle_lock", "cmd.inspector.toggle_lock"},
+    Builtin{CommandId::InspectorZoomFit, "inspector.zoom_fit", "cmd.inspector.zoom_fit"},
+    Builtin{CommandId::InspectorZoom1to1, "inspector.zoom_1to1", "cmd.inspector.zoom_1to1"},
+    Builtin{CommandId::InspectorPlay, "inspector.play", "cmd.inspector.play"},
+    Builtin{CommandId::CycleInspectorPlacement, "inspector.cycle_placement",
+            "cmd.inspector.cycle_placement"},
+    Builtin{CommandId::ToggleInspectorGrid, "inspector.toggle_grid", "cmd.inspector.toggle_grid"},
+    Builtin{CommandId::ToggleInspectorMinimap, "inspector.toggle_minimap",
+            "cmd.inspector.toggle_minimap"},
 };
 
 } // namespace
@@ -142,6 +152,14 @@ std::string_view to_string(CommandId id) noexcept {
     case CommandId::ToggleFuzzy: return "search.toggle_fuzzy";
     case CommandId::CancelSearch: return "search.cancel";
     case CommandId::RebuildIndex: return "search.rebuild_index";
+    case CommandId::Inspect: return "view.inspect";
+    case CommandId::ToggleInspectorLock: return "inspector.toggle_lock";
+    case CommandId::InspectorZoomFit: return "inspector.zoom_fit";
+    case CommandId::InspectorZoom1to1: return "inspector.zoom_1to1";
+    case CommandId::InspectorPlay: return "inspector.play";
+    case CommandId::CycleInspectorPlacement: return "inspector.cycle_placement";
+    case CommandId::ToggleInspectorGrid: return "inspector.toggle_grid";
+    case CommandId::ToggleInspectorMinimap: return "inspector.toggle_minimap";
     }
     return "unknown";
 }

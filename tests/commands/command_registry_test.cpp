@@ -23,8 +23,9 @@ constexpr auto kTestB = static_cast<CommandId>(901);
 
 // Phase 0: 3 ids; Phase 2: ToggleHidden, 5 navigation, 3 list, 6 cursor; Phase 3:
 // OpenInNewTab, 10 tab, 5 pane, 3 layout, 1 window; Phase 4: 2 view, GoTo, 1 sidebar,
-// 4 bookmarks, 2 recents, 1 edit; Phase 5: 2 list filter, 6 search.
-constexpr std::size_t kBuiltinCount = 18 + 20 + 11 + 8;
+// 4 bookmarks, 2 recents, 1 edit; Phase 5: 2 list filter, 6 search; Phase 6: view.inspect,
+// 7 inspector.
+constexpr std::size_t kBuiltinCount = 18 + 20 + 11 + 8 + 8;
 
 struct Expected {
     CommandId id;
@@ -81,6 +82,18 @@ constexpr Expected kPhase5[] = {
     {CommandId::ToggleFuzzy, 1305, "search.toggle_fuzzy"},
     {CommandId::CancelSearch, 1306, "search.cancel"},
     {CommandId::RebuildIndex, 1307, "search.rebuild_index"},
+};
+
+// Phase 6 ids with their frozen numeric values and names (include/navigator/commands.hpp).
+constexpr Expected kPhase6[] = {
+    {CommandId::Inspect, 1320, "view.inspect"},
+    {CommandId::ToggleInspectorLock, 1321, "inspector.toggle_lock"},
+    {CommandId::InspectorZoomFit, 1322, "inspector.zoom_fit"},
+    {CommandId::InspectorZoom1to1, 1323, "inspector.zoom_1to1"},
+    {CommandId::InspectorPlay, 1324, "inspector.play"},
+    {CommandId::CycleInspectorPlacement, 1325, "inspector.cycle_placement"},
+    {CommandId::ToggleInspectorGrid, 1326, "inspector.toggle_grid"},
+    {CommandId::ToggleInspectorMinimap, 1327, "inspector.toggle_minimap"},
 };
 
 } // namespace
@@ -228,8 +241,8 @@ TEST_CASE("to_string(CommandId) values", "[to_string]") {
     CHECK(navigator::to_string(static_cast<CommandId>(1006)) == "unknown");
     CHECK(navigator::to_string(static_cast<CommandId>(1103)) == "unknown");
     for (const std::uint32_t gap :
-         {1117U, 1199U, 1210U, 1219U, 1225U, 1239U, 1243U, 1249U, 1251U, 1259U, 1265U, 1269U, 1272U,
-          1279U, 1281U, 1299U, 1308U, 1319U, 1320U}) {
+         {1117U, 1199U, 1210U, 1219U, 1225U, 1239U, 1243U, 1249U, 1251U, 1259U, 1265U,
+          1269U, 1272U, 1279U, 1281U, 1299U, 1308U, 1319U, 1328U, 1339U, 1340U}) {
         INFO("id " << gap);
         CHECK(navigator::to_string(static_cast<CommandId>(gap)) == "unknown");
     }
@@ -358,6 +371,35 @@ TEST_CASE("Phase 5 ids: stable values, names, registered with cmd.<name>",
         // Header range: filter, flatten, name search, index 1300-1319.
         CHECK((e.value >= 1300 && e.value <= 1319));
         CHECK((e.name.starts_with("list.") || e.name.starts_with("search.")));
+    }
+}
+
+TEST_CASE("Phase 6 ids: stable values, names, registered with cmd.<name>",
+          "[registry][builtin][phase6]") {
+    CommandRegistry registry;
+    REQUIRE(navigator::register_builtin_commands(registry));
+    std::uint32_t previous = 0;
+    for (const Expected& e : kPhase6) {
+        INFO("command " << e.name);
+        CHECK(static_cast<std::uint32_t>(e.id) == e.value);
+        CHECK(e.value > previous);
+        previous = e.value;
+        CHECK(navigator::to_string(e.id) == e.name);
+        const CommandInfo* by_id = registry.find(e.id);
+        REQUIRE(by_id != nullptr);
+        CHECK(by_id->name == e.name);
+        CHECK(by_id->title_key == std::string("cmd.") + std::string(e.name));
+        const CommandInfo* by_name = registry.find(e.name);
+        REQUIRE(by_name != nullptr);
+        CHECK(by_name->id == e.id);
+        // Header range: Inspector and previews 1320-1339.
+        CHECK((e.value >= 1320 && e.value <= 1339));
+        CHECK((e.name == "view.inspect" || e.name.starts_with("inspector.")));
+    }
+    // 1328-1339 are still free: nothing registered there yet.
+    for (std::uint32_t v = 1328; v <= 1339; ++v) {
+        INFO("id " << v);
+        CHECK(registry.find(static_cast<CommandId>(v)) == nullptr);
     }
 }
 
