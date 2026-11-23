@@ -34,6 +34,8 @@
 #include <navigator/ui.hpp>
 
 #include "browser/browser_view.hpp"
+#include "dnd/file_drag.hpp"
+#include "ops/file_ops.hpp"
 #include "path/path_entry.hpp"
 #include "shell/painter.hpp"
 #include "theme/theme.hpp"
@@ -91,6 +93,27 @@ struct ShellFrame {
     // and the list thumbnails source (null: glyphs only).
     std::function<void()> draw_inspector;
     RowThumbnailSource* thumbnails = nullptr;
+    // Phase 7 (file operations; docs/architecture.md "Phase 7").
+    // Cut dimming and the inline rename editor (null: none).
+    const FileOps* file_ops = nullptr;
+    // Drop slots registered while drawing (the App hit-tests them next frame).
+    std::vector<DropSlot>* slots = nullptr;
+    bool file_drag_active = false;
+    // A tab in Trash mode is drawn by draw_trash instead of its folder list; its tab label is
+    // tab_title(tab) when that has a value.
+    std::function<bool(layout::TabId)> is_trash_tab;
+    std::function<void(layout::TabId, const RectF&, const Palette&, const PointerInput&, bool,
+                       bool)>
+        draw_trash;
+    std::function<std::optional<std::string>(layout::TabId)> tab_title;
+    // The progress chip (status bar of the active pane) and the overlays (panel, notices,
+    // sheets, drag badge) drawn above the panes and below popups; the pointer over them belongs
+    // to them (ops_hit), a modal sheet takes all of it (ops_modal).
+    std::function<float()> ops_chip_width;
+    std::function<void(const RectF&)> draw_ops_chip;
+    std::function<void(float)> draw_ops_overlay;
+    std::function<bool(float, float)> ops_hit;
+    bool ops_modal = false;
 };
 
 enum class PointerCursor : std::uint8_t { Default, ResizeHorizontal, ResizeVertical };

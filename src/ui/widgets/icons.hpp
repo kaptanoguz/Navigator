@@ -69,6 +69,8 @@ enum class LineIcon : std::uint8_t {
     Funnel,  // types popup button
     Flatten, // flatten (search.flatten) toggle
     Stop,    // stop a running search
+    // Phase 7.
+    Trash, // sidebar Trash row
 };
 void draw_line_icon(Renderer& r, LineIcon icon, float x, float y, float size, float t,
                     const Color& color, const Color& background, bool filled = false);

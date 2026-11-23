@@ -77,6 +77,9 @@ public:
     void toggle_lock() noexcept;
     // The locked item vanished (deleted / renamed away): unlocks. Returns true when it did.
     bool unlock_if_gone(bool exists) noexcept;
+    // Phase 7: the shown item was moved or renamed from `from`: it now is `moved` (same lock,
+    // refreshed in place). False when the Inspector shows something else.
+    bool retarget(const Path& from, Item moved, double now_ms);
 
     // ---- Frame start / end -------------------------------------------------------------------
     // Shown or hidden (view.inspect). Hiding cancels the outstanding request.

@@ -62,6 +62,13 @@
 //   NAVIGATOR_DEBUG_BENCH_FLATTEN=1        flatten acceptance: flatten, cancel, report, quit
 //   NAVIGATOR_DEBUG_VOLUMES=<dir>          fake volume table for the sidebar (debug_volumes.hpp)
 //   NAVIGATOR_DEBUG_BENCH_SCROLL=1         scroll benchmark: logs frame times to stdout and quits
+//   NAVIGATOR_DEBUG_OPS_DELAY_MS=<ms>      every file operation waits this long per entry
+//                                          (screenshots of a running copy; fixtures only)
+//   Phase 7 script steps: waitops (hold until no operation runs), waitprogress (hold until
+//   one has copied bytes), waitconflict (hold until a conflict sheet is open),
+//   conflict:skip|replace|keep|merge|cancel[:all], confirm:yes|no, panel (open the operations
+//   panel), trashclick:NAME, dragstart:NAME, dragover:row:NAME | sidebar:LABEL | pane:N |
+//   trash, dragend (drop where it is), dragcancel, rename:NAME (open the inline editor)
 // User-facing: NAVIGATOR_NO_ANIMATIONS=1 forces AppConfig::animations off.
 #include <algorithm>
 #include <array>
@@ -73,6 +80,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -80,6 +88,7 @@
 #include <vector>
 
 #include <SDL3/SDL.h>
+#include <unistd.h>
 
 #include <navigator/i18n.hpp>
 #include <navigator/layout.hpp>
@@ -88,11 +97,14 @@
 #include <navigator/platform.hpp>
 #include <navigator/preview.hpp>
 #include <navigator/preview_service.hpp>
+#include <navigator/transfer.hpp>
+#include <navigator/trash.hpp>
 #include <navigator/ui.hpp>
 #include <navigator/watch.hpp>
 
 #include "browser/browser_model.hpp"
 #include "browser/browser_view.hpp"
+#include "dnd/file_drag.hpp"
 #include "i18n/catalog.hpp"
 #include "input/sdl_input.hpp"
 #include "inspector/inspector_controller.hpp"
@@ -101,8 +113,14 @@
 #include "inspector/preview_backend.hpp"
 #include "inspector/texture_cache.hpp"
 #include "inspector/thumbnail_scheduler.hpp"
+#include "ops/app_trash.hpp"
+#include "ops/clipboard.hpp"
+#include "ops/file_ops.hpp"
+#include "ops/ops_view.hpp"
+#include "ops/sdl_clipboard.hpp"
 #include "path/copy_path.hpp"
 #include "path/path_worker.hpp"
+#include "platform/outgoing_drag.hpp"
 #include "render/backend_name.hpp"
 #include "render/renderer.hpp"
 #include "render/sdl_handles.hpp"
@@ -118,6 +136,8 @@
 #include "text/font_cache.hpp"
 #include "text/text_renderer.hpp"
 #include "theme/theme.hpp"
+#include "trash/trash_model.hpp"
+#include "trash/trash_view.hpp"
 #include "widgets/text_edit.hpp"
 #include "widgets/ui_context.hpp"
 #include "workspace/session_writer.hpp"
@@ -271,6 +291,56 @@ struct App::Impl {
     std::unique_ptr<ui::SessionWriter> writer;        // outlives nothing it reads (copies)
     std::unique_ptr<ui::IndexService> indexes;        // Phase 5; outlives the workspace
     std::unique_ptr<ui::Workspace> workspace;
+    // Phase 7: file operations (docs/architecture.md "Phase 7"). Declared after the SDL members
+    // so the operation queue's workers (which push SDL events) stop before SDL is torn down.
+    ui::MemoryClipboard memory_clipboard;
+    ui::SdlClipboard sdl_clipboard;
+    ui::IClipboard* clipboard = nullptr;
+    std::function<void()> wake_cb;
+    ui::TrashSource trash_source = ui::TrashSource::None;
+    Path home_trash_root; // protected (ops.hpp S13); empty without a trash
+    std::unique_ptr<ui::TrashModel> trash_model;
+    std::unique_ptr<ui::FileOps> file_ops;
+    std::set<std::uint32_t> trash_tabs; // tabs in Trash mode (runtime only)
+    ui::OpsView ops_view;
+    ui::TrashView trash_view;
+    ui::FileDrag drag;
+    ui::IncomingDrop incoming;
+    ui::DropEval incoming_eval;
+    fs::DirEntry incoming_first;
+    std::vector<ui::DropSlot> slots; // this frame's drop slots (cleared at draw start)
+    fs::DirEntry drag_first;
+    bool drag_debug_hold = false; // scripted drags stay alive without a pressed button
+    // Outgoing drags to other programs (X11 XDND source, Wayland attempt): created with the
+    // window, started when a drag leaves it.
+    std::unique_ptr<ui::OutgoingDrag> outgoing;
+    bool outgoing_tried = false;              // begin() was attempted for this drag
+    bool outgoing_live = false;               // the other program is the target now
+    Modifiers release_mods = Modifiers::None; // held when the button went up (a key may follow)
+    float window_w = 0.0F; // px, last frame (hit test of "the pointer left the window")
+    float window_h = 0.0F;
+    struct PendingDrop {
+        std::vector<Path> items;
+        Path folder;
+    };
+    std::optional<PendingDrop> pending_drop; // an Alt drop waiting for its menu choice
+    struct PendingSelect {
+        Path dir;
+        std::vector<std::string> names;
+        double deadline = 0.0;
+    };
+    std::vector<PendingSelect> pending_select;
+    struct PendingRename {
+        layout::TabId tab;
+        Path dir;
+        std::string name;
+        double deadline = 0.0;
+    };
+    std::optional<PendingRename> pending_rename;
+    std::vector<Path> protected_mounts; // last mount point set handed to the queue
+    std::uint64_t rows_trash_serial = 0;
+    bool rows_trash_active = false;
+    ui::SidebarTrash rows_trash;
     ui::WorkspaceView view;
     // Phase 4: sidebar data (stores, volume / probe workers, persistence) and view.
     std::unique_ptr<ui::PlacesModel> places;
@@ -410,6 +480,28 @@ struct App::Impl {
                         const ui::PointerInput& ptr, double t_ms, double dt_ms, Timestamp now);
     void apply_inspector_output();
     [[nodiscard]] bool previews_busy() const noexcept;
+    // Phase 7.
+    void init_file_ops(const AppConfig& config);
+    void sync_protected_paths();
+    [[nodiscard]] ui::FileTarget file_target() const;
+    [[nodiscard]] static bool is_file_command(CommandId id) noexcept;
+    void file_command(const Command& command);
+    bool trash_command(const Command& command);
+    [[nodiscard]] bool trash_active() const;
+    void enter_trash_view();
+    void leave_trash_view();
+    bool sheet_key(const KeyChord& chord);
+    void begin_inline_rename();
+    [[nodiscard]] std::function<bool(std::string_view)> name_taken() const;
+    void apply_reconcile(double t_ms);
+    void process_pending(double t_ms);
+    void drag_begin(std::uint32_t tab, std::size_t row);
+    void drag_frame_end(double t_ms);
+    void apply_drop(std::vector<Path> items, const ui::DropEval& eval, float x, float y);
+    void incoming_update();
+    void handle_drop_event(const SDL_Event& event);
+    void quit_request();
+    [[nodiscard]] std::vector<ui::DropSlot>::const_iterator find_slot(std::string_view spec) const;
 };
 
 Result<void> App::Impl::init(const AppConfig& config) {
@@ -547,6 +639,12 @@ Result<void> App::Impl::init(const AppConfig& config) {
             renderer_id.c_str(), gpu_driver.empty() ? "" : " on ", gpu_driver.c_str(),
             fonts->regular_file().family.c_str(), fonts->regular_file().path.c_str());
 
+    outgoing = ui::create_outgoing_drag(window.get());
+    SDL_Log("Navigator: outgoing drag: %s", outgoing
+                                                ? (outgoing->backend() == ui::OutgoingBackend::X11
+                                                       ? "X11 (XDND)"
+                                                       : "Wayland (data device attempt)")
+                                                : "not available (clipboard path)");
     renderer = std::make_unique<ui::Renderer>(sdl_renderer.get());
     auto glyph_atlas = ui::text::GlyphAtlas::create(sdl_renderer.get());
     if (!glyph_atlas) {
@@ -683,8 +781,98 @@ Result<void> App::Impl::init(const AppConfig& config) {
     places = std::make_unique<ui::PlacesModel>(std::move(po));
     places->load();
     places->set_sidebar_visible(workspace->sidebar().visible);
+    wake_cb = wake_fn;
     init_previews(config);
+    init_file_ops(config);
     return ok();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Phase 7: file operations
+// ---------------------------------------------------------------------------------------------
+
+void App::Impl::init_file_ops(const AppConfig& config) {
+    const bool headless = config.max_frames > 0;
+    // A headless run never touches the desktop clipboard or the owner's trash (AppConfig).
+    clipboard = headless ? static_cast<ui::IClipboard*>(&memory_clipboard)
+                         : static_cast<ui::IClipboard*>(&sdl_clipboard);
+    ui::AppTrash at = ui::create_app_trash(config.trash_dir, headless);
+    if (!at.note.empty()) {
+        SDL_Log("Navigator: %s", at.note.c_str());
+    }
+    trash_source = at.source;
+    ui::FileOpsOptions fo;
+    fo.trash = at.trash;
+    fo.clipboard = clipboard;
+    fo.wake = wake_cb;
+    fo.new_folder_name = [] { return std::string(tr("file.new_folder_default")); };
+    fo.is_mounted = [this](const Path& mount) {
+        const std::vector<VolumeInfo>& volumes = places->volumes();
+        if (volumes.empty() || mount == Path("/")) {
+            return true; // the volume list is not known yet: do not block an undo on a guess
+        }
+        return std::ranges::any_of(volumes,
+                                   [&](const VolumeInfo& v) { return v.mount_point == mount; });
+    };
+    if (const char* d = env("NAVIGATOR_DEBUG_OPS_DELAY_MS")) {
+        const auto delay = std::chrono::milliseconds(std::max(0L, std::strtol(d, nullptr, 10)));
+        fo.fault_injector = [delay](const Path&) {
+            std::this_thread::sleep_for(delay);
+            return true;
+        };
+        fo.progress_interval = std::chrono::milliseconds(50);
+    }
+    // Protected paths (S13): the home directory and its ancestors, the mount points, and the
+    // trash directories (lexical; refreshed when the volume list changes).
+    fo.protected_paths.home = home;
+    if (at.source == ui::TrashSource::Injected) {
+        home_trash_root = Path(std::string(config.trash_dir));
+    } else if (at.source == ui::TrashSource::System) {
+        if (auto dd = platform::data_dirs(); dd && !dd->empty()) {
+            home_trash_root = dd->front() / "Trash";
+        }
+    }
+    if (!home_trash_root.empty()) {
+        fo.protected_paths.trash_roots.push_back(home_trash_root);
+    }
+    file_ops = std::make_unique<ui::FileOps>(std::move(fo));
+    ui::TrashModel::Options to;
+    to.trash = at.trash;
+    to.wake = wake_cb;
+    trash_model = std::make_unique<ui::TrashModel>(std::move(to));
+    if (at.trash) {
+        trash_model->refresh(); // the count of the sidebar row
+    }
+}
+
+void App::Impl::sync_protected_paths() {
+    if (!file_ops || !places) {
+        return;
+    }
+    std::vector<Path> mounts;
+    for (const VolumeInfo& v : places->volumes()) {
+        if (!v.mount_point.empty()) {
+            mounts.push_back(v.mount_point);
+        }
+    }
+    if (mounts == protected_mounts) {
+        return;
+    }
+    protected_mounts = mounts;
+    ops::ProtectedPaths pp;
+    pp.home = home;
+    pp.mount_points = std::move(mounts);
+    // The home trash root is the one the queue was created with; per-volume trashes sit below
+    // their mount points (.Trash/<uid> and .Trash-<uid>, trash.hpp T4).
+    const auto uid = static_cast<std::uint32_t>(::getuid());
+    for (const Path& m : pp.mount_points) {
+        pp.trash_roots.push_back(trash::user_topdir_trash(m, uid));
+        pp.trash_roots.push_back(trash::shared_topdir_trash(m, uid));
+    }
+    if (!home_trash_root.empty()) {
+        pp.trash_roots.push_back(home_trash_root);
+    }
+    file_ops->set_protected_paths(std::move(pp));
 }
 
 void App::Impl::apply_window_geometry(const layout::WindowGeometry& g, bool restore) const {
@@ -756,6 +944,10 @@ void App::Impl::persist_tick(double t_ms) {
 }
 
 void App::Impl::final_save() {
+    // Phase 7: running operations stop at their next check (S9); finished items stay done.
+    if (file_ops) {
+        file_ops->shutdown();
+    }
     if (places) {
         places->final_save();
     }
@@ -790,7 +982,12 @@ bool App::Impl::continuous() const noexcept {
     // Phase 5: a running search streams results and animates its progress.
     return max_frames > 0 || show_fps || fade_start_ms >= 0.0 || view.animating() || bench ||
            sidebar.animating() || (workspace && workspace->searching()) || bench_flatten ||
-           previews_busy();
+           previews_busy() ||
+           (file_ops &&
+            (file_ops->busy() || file_ops->sheet_open() || file_ops->notice().has_value() ||
+             ops_view.animating() || file_ops->confirm_stats().has_value())) ||
+           drag.dragging() || incoming.active() || pending_rename.has_value() ||
+           !pending_select.empty() || (trash_model && trash_model->loading());
 }
 
 float App::Impl::fade_progress(double t_ms) const noexcept {
@@ -831,6 +1028,10 @@ void App::Impl::handle_event(const SDL_Event& event) {
         pointer.x = event.motion.x * pixel_density;
         pointer.y = event.motion.y * pixel_density;
         pointer.inside = true;
+        if (drag.dragging()) {
+            pointer.mods =
+                ui::translate_modifiers(SDL_GetModState()); // Ctrl / Shift / Alt mid-drag
+        }
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN: {
         pointer.x = event.button.x * pixel_density;
@@ -859,6 +1060,7 @@ void App::Impl::handle_event(const SDL_Event& event) {
         if (event.button.button == SDL_BUTTON_LEFT) {
             pointer.down = false;
             pointer.released = true;
+            release_mods = pointer.mods; // the modifiers of the drop, even if a key goes up next
         } else if (event.button.button == SDL_BUTTON_MIDDLE) {
             pointer.middle_released = true;
         }
@@ -874,12 +1076,19 @@ void App::Impl::handle_event(const SDL_Event& event) {
         pointer.wheel_x += x;
         break;
     }
+    case SDL_EVENT_DROP_BEGIN:
+    case SDL_EVENT_DROP_POSITION:
+    case SDL_EVENT_DROP_FILE:
+    case SDL_EVENT_DROP_TEXT:
+    case SDL_EVENT_DROP_COMPLETE: handle_drop_event(event); break;
     case SDL_EVENT_WINDOW_MOUSE_LEAVE: pointer.inside = false; break;
     case SDL_EVENT_WINDOW_MOUSE_ENTER: pointer.inside = true; break;
     case SDL_EVENT_WINDOW_FOCUS_GAINED: focused = true; break;
     case SDL_EVENT_WINDOW_FOCUS_LOST:
         focused = false;
         view.cancel_drag();
+        drag.cancel();
+        drag_debug_hold = false;
         if (pointer.down) {
             pointer.down = false;
             pointer.released = true; // never leave a drag captured
@@ -895,7 +1104,67 @@ void App::Impl::handle_event(const SDL_Event& event) {
     }
 }
 
+bool App::Impl::sheet_key(const KeyChord& chord) {
+    if (!file_ops->sheet_open()) {
+        return false;
+    }
+    ui::ConflictSheet* cs = file_ops->conflict_sheet();
+    const bool editing =
+        file_ops->sheet_kind() == ui::SheetKind::Conflict && cs != nullptr && cs->editing_name;
+    const bool plain = chord.mods == Modifiers::None;
+    if (chord.key == Key::Enter || chord.key == Key::KeypadEnter) {
+        if (plain || editing) {
+            file_ops->sheet_activate();
+            return true;
+        }
+        return false;
+    }
+    if (chord.key == Key::Escape && plain) {
+        file_ops->sheet_escape();
+        return true;
+    }
+    if (editing) {
+        const ui::FieldKeyResult r = ui::apply_field_key(cs->name, chord, [] {
+            std::string out;
+            if (char* t = SDL_GetClipboardText(); t != nullptr) {
+                out = t;
+                SDL_free(t);
+            }
+            return out;
+        });
+        if (r.clipboard) {
+            set_clipboard(*r.clipboard);
+        }
+        if (r.changed) {
+            file_ops->conflict_name_edited();
+        }
+        return r.handled;
+    }
+    if (chord.key == Key::Tab && (plain || chord.mods == Modifiers::Shift)) {
+        file_ops->sheet_focus(plain ? 1 : -1);
+        return true;
+    }
+    if ((chord.key == Key::Right || chord.key == Key::Left) && plain) {
+        file_ops->sheet_focus(chord.key == Key::Right ? 1 : -1);
+        return true;
+    }
+    if (chord.key == Key::Space && plain) {
+        file_ops->sheet_toggle_apply_all();
+        return true;
+    }
+    if (chord.key == Key::F2 && plain) {
+        file_ops->conflict_begin_name_edit();
+        return true;
+    }
+    return false;
+}
+
 void App::Impl::handle_key(const KeyChord& chord, bool repeat) {
+    // Phase 7: a conflict / confirmation / quit sheet takes Enter, Escape, Tab, Space first.
+    if (sheet_key(chord)) {
+        dirty = true;
+        return;
+    }
     // Delete in the layout picker deletes the highlighted layout (popup-local, docs/keymap.md
     // "Popups"), before its filter field sees the key.
     if (chord == KeyChord{Key::Delete, Modifiers::None} && !repeat && view.delete_key(intents)) {
@@ -1005,6 +1274,13 @@ void App::Impl::handle_key(const KeyChord& chord, bool repeat) {
 }
 
 ui::TextEdit* App::Impl::text_field() noexcept {
+    if (file_ops && file_ops->sheet_kind() == ui::SheetKind::Conflict &&
+        file_ops->conflict_sheet() != nullptr && file_ops->conflict_sheet()->editing_name) {
+        return &file_ops->conflict_sheet()->name; // the typed Keep both name
+    }
+    if (file_ops && file_ops->inline_edit() != nullptr && !view.popup_open()) {
+        return &file_ops->inline_edit()->edit; // F2 / Ctrl+Shift+N editor
+    }
     if (sidebar.renaming() && !view.popup_open()) {
         return sidebar.rename_edit();
     }
@@ -1043,6 +1319,17 @@ void App::Impl::filter_escape() {
 }
 
 void App::Impl::handle_text(std::string_view typed) {
+    if (ui::TextEdit* f = text_field();
+        f != nullptr &&
+        (file_ops->inline_edit() != nullptr || file_ops->sheet_kind() == ui::SheetKind::Conflict)) {
+        if (f->insert(typed)) {
+            field_edited();
+        }
+        return;
+    }
+    if (file_ops->sheet_open()) {
+        return; // a sheet owns the keyboard: typing starts nothing behind it
+    }
     if (sidebar.renaming() && !view.popup_open()) {
         (void)sidebar.rename_edit()->insert(typed);
         return;
@@ -1066,6 +1353,9 @@ void App::Impl::handle_text(std::string_view typed) {
     // The Inspector's local keys (G, M, 0, 1, ...) never start type-to-filter.
     if (inspector_focus && inspector.visible()) {
         return;
+    }
+    if (trash_active()) {
+        return; // no filter in the Trash view
     }
     if (ui::starts_type_to_filter(owner, held, typed)) {
         ui::BrowserModel& m = workspace->active_model();
@@ -1163,6 +1453,14 @@ void App::Impl::sync_index_volumes() {
 }
 
 void App::Impl::field_edited() {
+    if (file_ops->sheet_kind() == ui::SheetKind::Conflict) {
+        file_ops->conflict_name_edited();
+        return;
+    }
+    if (file_ops->inline_edit() != nullptr && !view.popup_open()) {
+        file_ops->inline_edited(name_taken());
+        return;
+    }
     if (sidebar.renaming() && !view.popup_open()) {
         return;
     }
@@ -1249,6 +1547,10 @@ void App::Impl::open_sidebar_row(std::size_t row, bool new_tab) {
     if (!r.item()) {
         return;
     }
+    if (r.kind == ui::SidebarRowKind::Place && r.place == places::PlaceKind::Trash) {
+        queue.enqueue(CommandId::OpenTrash); // the Trash row opens the Trash view
+        return;
+    }
     if (r.status == places::LocationStatus::Offline) {
         toast(ui::substitute(tr("sidebar.offline_notice"), "name", r.label), true);
         return;
@@ -1261,6 +1563,7 @@ void App::Impl::open_sidebar_row(std::size_t row, bool new_tab) {
     if (new_tab) {
         (void)workspace->open_tab(r.path, false);
     } else {
+        leave_trash_view();
         workspace->navigate_active(r.path);
     }
 }
@@ -1282,6 +1585,13 @@ void App::Impl::sidebar_menu(std::size_t row, float x, float y) {
         e.separator_before = sep;
         entries.push_back(std::move(e));
     };
+    if (r.kind == ui::SidebarRowKind::Place && r.place == places::PlaceKind::Trash) {
+        cmd_entry("cmd.trash.open", CommandId::OpenTrash, 0, "trash.open", true, false);
+        cmd_entry("cmd.trash.empty", CommandId::EmptyTrash, 0, "trash.empty",
+                  trash_model && trash_model->count() > 0, false);
+        view.open_menu(keymap, std::move(entries), x, y);
+        return;
+    }
     if (r.item()) {
         const bool online = r.online();
         const auto open_entry = [&](std::string_view key, bool new_tab, std::string_view hint) {
@@ -1483,6 +1793,7 @@ void App::Impl::apply_outcomes() {
             if (o.new_tab) {
                 (void)workspace->open_tab(o.path, false);
             } else {
+                leave_trash_view();
                 workspace->navigate_active(o.path, o.cursor_name);
             }
             break;
@@ -1522,9 +1833,17 @@ void App::Impl::layout_sidebar(float width_px, float height_px) {
     const ui::BrowserModel* m = workspace->model(workspace->active_tab());
     const Path folder = m != nullptr && m->loaded() ? m->current_dir() : Path();
     // Rows change only with the places data, the sidebar state, the folder or the language.
+    const bool trash_now = trash_active();
     if (places->serial() != rows_serial || !(st == rows_state) || folder != rows_folder ||
-        language() != rows_language || sidebar_rows.empty()) {
-        sidebar_rows = ui::build_sidebar_rows(*places, st, folder);
+        language() != rows_language || sidebar_rows.empty() ||
+        (trash_model && trash_model->serial() != rows_trash_serial) ||
+        trash_now != rows_trash_active) {
+        rows_trash.show = true;
+        rows_trash.count = trash_model ? trash_model->count() : 0;
+        rows_trash.active = trash_now;
+        sidebar_rows = ui::build_sidebar_rows(*places, st, folder, ui::kMaxRecentRows, rows_trash);
+        rows_trash_serial = trash_model ? trash_model->serial() : 0;
+        rows_trash_active = trash_now;
         rows_serial = places->serial();
         rows_state = st;
         rows_folder = folder;
@@ -1595,9 +1914,41 @@ void App::Impl::execute(const Command& command) {
         view.cancel_drag(); // Escape during a tab drag
         return;
     }
+    if (command.id == CommandId::ClearSelection && drag.dragging()) {
+        drag.cancel(); // Escape during a file drag: nothing happens
+        drag_debug_hold = false;
+        return;
+    }
+    // Phase 7: the inline rename editor, sheets and the Trash view take commands first.
+    if (file_ops->inline_edit() != nullptr && !view.popup_open()) {
+        if (command.id == CommandId::Activate) {
+            (void)file_ops->inline_commit(name_taken());
+            return;
+        }
+        if (command.id == CommandId::ClearSelection) {
+            file_ops->inline_cancel(); // Escape: nothing is renamed
+            return;
+        }
+        if (is_cursor_command(command.id)) {
+            return;
+        }
+    }
+    if (file_ops->sheet_open() && command.id != CommandId::Quit &&
+        command.id != CommandId::ToggleTheme && command.id != CommandId::ToggleFpsOverlay &&
+        command.id != CommandId::CancelOperation && command.id != CommandId::TogglePauseOperation &&
+        command.id != CommandId::ToggleOperationsPanel) {
+        return; // file commands are not routed while a sheet has the keyboard
+    }
+    if (is_file_command(command.id)) {
+        file_command(command);
+        return;
+    }
+    if (trash_active() && trash_command(command)) {
+        return;
+    }
     switch (command.id) {
     case CommandId::None: return;
-    case CommandId::Quit: running = false; return;
+    case CommandId::Quit: quit_request(); return;
     case CommandId::ToggleFpsOverlay:
         show_fps = !show_fps;
         stats_reset = true;
@@ -1726,6 +2077,567 @@ void App::Impl::execute(const Command& command) {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Phase 7: file commands
+// ---------------------------------------------------------------------------------------------
+
+bool App::Impl::is_file_command(CommandId id) noexcept {
+    switch (id) {
+    case CommandId::Copy:
+    case CommandId::Cut:
+    case CommandId::Paste:
+    case CommandId::Undo:
+    case CommandId::Redo:
+    case CommandId::MoveToTrash:
+    case CommandId::DeletePermanently:
+    case CommandId::Rename:
+    case CommandId::NewFolder:
+    case CommandId::CopyToOtherPane:
+    case CommandId::MoveToOtherPane:
+    case CommandId::OpenTerminalHere:
+    case CommandId::CancelOperation:
+    case CommandId::TogglePauseOperation:
+    case CommandId::ToggleOperationsPanel:
+    case CommandId::OpenTrash:
+    case CommandId::RestoreFromTrash:
+    case CommandId::EmptyTrash: return true;
+    default: return false;
+    }
+}
+
+bool App::Impl::trash_active() const {
+    return workspace && trash_tabs.contains(workspace->active_tab().value);
+}
+
+void App::Impl::enter_trash_view() {
+    focus_sidebar(false);
+    view.close_address_bar();
+    filter_tab = layout::TabId{};
+    file_ops->inline_cancel();
+    trash_tabs.insert(workspace->active_tab().value);
+    trash_model->refresh();
+}
+
+void App::Impl::leave_trash_view() {
+    if (workspace) {
+        trash_tabs.erase(workspace->active_tab().value);
+    }
+}
+
+ui::FileTarget App::Impl::file_target() const {
+    ui::FileTarget t;
+    t.tab = workspace->active_tab();
+    const ui::BrowserModel* m = workspace->model(t.tab);
+    if (m == nullptr || !m->loaded()) {
+        return t;
+    }
+    t.dir = m->current_dir();
+    const std::size_t n = m->row_count();
+    for (std::size_t i = 0; i < n; ++i) {
+        if (m->is_selected(i)) {
+            t.selected.push_back(m->row_path(i));
+        }
+    }
+    if (const std::size_t c = m->cursor(); c < n) {
+        t.cursor = m->row_path(c);
+        t.cursor_is_dir = fs::is_directory_like(m->row_entry(c));
+    }
+    return t;
+}
+
+std::function<bool(std::string_view)> App::Impl::name_taken() const {
+    const ui::InlineEdit* ie = file_ops->inline_edit();
+    const ui::BrowserModel* m = ie != nullptr ? workspace->model(ie->tab) : nullptr;
+    return [m](std::string_view name) { return m != nullptr && m->find(name) != ui::kNoRow; };
+}
+
+void App::Impl::begin_inline_rename() {
+    ui::BrowserModel& m = workspace->active_model();
+    if (!m.loaded()) {
+        return;
+    }
+    if (m.flattened()) {
+        file_ops->notify(std::string(tr("notice.rename_in_search")));
+        return;
+    }
+    const std::size_t row = m.cursor();
+    if (row >= m.row_count()) {
+        file_ops->notify(std::string(tr("notice.nothing_selected")));
+        return;
+    }
+    const fs::DirEntry& e = m.row_entry(row);
+    focus_sidebar(false);
+    view.close_address_bar();
+    filter_tab = layout::TabId{};
+    file_ops->begin_rename(workspace->active_tab(), m.current_dir(), e.name,
+                           fs::is_directory_like(e));
+    file_ops->inline_edited(name_taken());
+}
+
+void App::Impl::file_command(const Command& command) {
+    dirty = true;
+    const bool in_trash = trash_active();
+    const bool selection_cmd =
+        command.id == CommandId::Copy || command.id == CommandId::Cut ||
+        command.id == CommandId::Paste || command.id == CommandId::MoveToTrash ||
+        command.id == CommandId::DeletePermanently || command.id == CommandId::Rename ||
+        command.id == CommandId::NewFolder || command.id == CommandId::CopyToOtherPane ||
+        command.id == CommandId::MoveToOtherPane;
+    // Focus scoping (docs/keymap.md "Focus scoping (Phase 7)"): no file command acts on a
+    // selection that does not have the keyboard. file.rename on a bookmark row renames it.
+    if (selection_cmd && (sidebar_focus || view.address_open() || view.popup_open())) {
+        if (command.id == CommandId::Rename && sidebar_focus) {
+            bookmark_command(Command{CommandId::RenameBookmark, 0});
+        }
+        return;
+    }
+    const auto not_in_trash = [&] { file_ops->notify(std::string(tr("notice.trash_view_only"))); };
+    switch (command.id) {
+    case CommandId::Copy:
+    case CommandId::Cut:
+        if (in_trash) {
+            not_in_trash();
+        } else {
+            file_ops->copy(file_target(), command.id == CommandId::Cut);
+        }
+        return;
+    case CommandId::Paste:
+        if (in_trash) {
+            not_in_trash();
+        } else {
+            file_ops->paste(file_target(), (command.arg & PasteArg::IntoCursorFolder) != 0U);
+        }
+        return;
+    case CommandId::MoveToTrash:
+        if (in_trash) {
+            // In the Trash view Delete means "delete permanently" and always asks.
+            file_ops->request_delete_trashed(trash_model->selected_items());
+        } else {
+            file_ops->trash(file_target());
+        }
+        return;
+    case CommandId::DeletePermanently:
+        if (in_trash) {
+            file_ops->request_delete_trashed(trash_model->selected_items());
+        } else {
+            file_ops->request_delete_permanently(file_target());
+        }
+        return;
+    case CommandId::Rename:
+        if (in_trash) {
+            not_in_trash();
+        } else {
+            begin_inline_rename();
+        }
+        return;
+    case CommandId::NewFolder:
+        if (in_trash) {
+            not_in_trash();
+        } else {
+            filter_tab = layout::TabId{};
+            file_ops->new_folder(file_target());
+        }
+        return;
+    case CommandId::CopyToOtherPane:
+    case CommandId::MoveToOtherPane: {
+        if (in_trash) {
+            not_in_trash();
+            return;
+        }
+        const std::vector<layout::PaneId> order = workspace->layout().pane_order();
+        if (order.size() < 2) {
+            file_ops->notify(std::string(tr("notice.one_pane")));
+            return;
+        }
+        std::size_t at = 0;
+        for (std::size_t i = 0; i < order.size(); ++i) {
+            if (order[i] == workspace->active_pane()) {
+                at = i;
+            }
+        }
+        const layout::PaneNode* node =
+            workspace->layout().find_pane(order[(at + 1) % order.size()]);
+        const ui::BrowserModel* other = nullptr;
+        if (node != nullptr && node->active_tab < node->tabs.size()) {
+            other = workspace->model(node->tabs[node->active_tab].id);
+        }
+        if (other == nullptr || !other->loaded() ||
+            trash_tabs.contains(node->tabs[node->active_tab].id.value)) {
+            file_ops->notify(std::string(tr("notice.one_pane")));
+            return;
+        }
+        file_ops->copy_to_folder(file_target(), other->current_dir(),
+                                 command.id == CommandId::MoveToOtherPane);
+        return;
+    }
+    case CommandId::Undo: file_ops->undo(); return;
+    case CommandId::Redo: file_ops->redo(); return;
+    case CommandId::CancelOperation: file_ops->cancel(command.arg); return;
+    case CommandId::TogglePauseOperation: file_ops->toggle_pause(command.arg); return;
+    case CommandId::ToggleOperationsPanel: file_ops->toggle_panel(); return;
+    case CommandId::OpenTerminalHere: return; // reserved until Phase 10
+    case CommandId::OpenTrash: enter_trash_view(); return;
+    case CommandId::RestoreFromTrash:
+        if (in_trash) {
+            file_ops->restore(trash_model->selected_or_cursor());
+        } else {
+            file_ops->notify(std::string(tr("notice.nothing_selected")));
+        }
+        return;
+    case CommandId::EmptyTrash:
+        if (!trash_model->available()) {
+            file_ops->notify(std::string(tr("trash.unavailable")), true);
+        } else {
+            file_ops->request_empty_trash(trash_model->items());
+        }
+        return;
+    default: return;
+    }
+}
+
+bool App::Impl::trash_command(const Command& command) {
+    const bool extend = (command.arg & CursorArg::Extend) != 0U;
+    switch (command.id) {
+    case CommandId::CursorUp: trash_model->cursor_by(-1, extend); return true;
+    case CommandId::CursorDown: trash_model->cursor_by(1, extend); return true;
+    case CommandId::CursorPageUp:
+        trash_model->cursor_page(-1, extend, trash_view.page_rows());
+        return true;
+    case CommandId::CursorPageDown:
+        trash_model->cursor_page(1, extend, trash_view.page_rows());
+        return true;
+    case CommandId::CursorHome: trash_model->cursor_home(extend); return true;
+    case CommandId::CursorEnd: trash_model->cursor_end(extend); return true;
+    case CommandId::SelectAll: trash_model->select_all(); return true;
+    case CommandId::ClearSelection: trash_model->clear_selection(); return true;
+    case CommandId::Activate:
+        file_ops->restore(trash_model->selected_or_cursor()); // Enter restores; never deletes
+        return true;
+    case CommandId::NavigateBack:
+    case CommandId::NavigateUp: leave_trash_view(); return true;
+    case CommandId::NavigateForward: return true;
+    case CommandId::Refresh: trash_model->refresh(); return true;
+    case CommandId::FocusFilter:
+    case CommandId::ToggleFlatten:
+    case CommandId::FlattenVolume:
+    case CommandId::ToggleTypesPopup:
+    case CommandId::OpenInNewTab: return true; // nothing to filter or open in the Trash
+    default: return false;
+    }
+}
+
+void App::Impl::quit_request() {
+    if (file_ops->request_quit()) {
+        running = false;
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Phase 7: drag and drop
+// ---------------------------------------------------------------------------------------------
+
+void App::Impl::drag_begin(std::uint32_t tab, std::size_t row) {
+    ui::BrowserModel* m = workspace->model(layout::TabId{tab});
+    if (m == nullptr || row >= m->row_count() || trash_tabs.contains(tab) ||
+        file_ops->sheet_open() || file_ops->inline_edit() != nullptr) {
+        return;
+    }
+    if (!m->is_selected(row)) {
+        m->click_row(row, Modifiers::None); // dragging an unselected row drags just that row
+    }
+    std::vector<Path> items;
+    bool have_first = false;
+    for (std::size_t i = 0; i < m->row_count(); ++i) {
+        if (m->is_selected(i)) {
+            if (!have_first) {
+                drag_first = m->row_entry(i);
+                have_first = true;
+            }
+            items.push_back(m->row_path(i));
+        }
+    }
+    if (items.empty()) {
+        return;
+    }
+    if (env("NAVIGATOR_DEBUG_DND") != nullptr) {
+        SDL_Log("Navigator: drag begins with %zu item(s)", items.size());
+    }
+    drag.begin(std::move(items), tab, now_ms());
+    outgoing_tried = false;
+    outgoing_live = false;
+}
+
+void App::Impl::apply_drop(std::vector<Path> items, const ui::DropEval& eval, float x, float y) {
+    if (items.empty()) {
+        return;
+    }
+    if (env("NAVIGATOR_DEBUG_DND") != nullptr) {
+        SDL_Log("Navigator: drop of %zu item(s): action %d trash %d folder %s", items.size(),
+                static_cast<int>(eval.action), eval.trash ? 1 : 0, eval.folder.c_str());
+    }
+    if (eval.trash) {
+        file_ops->trash_paths(std::move(items));
+        return;
+    }
+    switch (eval.action) {
+    case transfer::DropAction::None: return;
+    case transfer::DropAction::Ask: {
+        pending_drop = PendingDrop{std::move(items), eval.folder};
+        using Entry = ui::WorkspaceView::MenuEntry;
+        std::vector<Entry> entries;
+        const auto add = [&](std::string_view key, transfer::DropAction a) {
+            Entry e;
+            e.label = std::string(tr(key));
+            ui::Intent in;
+            in.kind = ui::Intent::Kind::DropChoose;
+            in.index = static_cast<std::size_t>(a);
+            e.intent = in;
+            entries.push_back(std::move(e));
+        };
+        add("drag.copy", transfer::DropAction::Copy);
+        add("drag.move", transfer::DropAction::Move);
+        add("drag.link", transfer::DropAction::Link);
+        Entry cancel;
+        cancel.label = std::string(tr("confirm.cancel"));
+        cancel.separator_before = true;
+        entries.push_back(std::move(cancel));
+        view.open_menu(keymap, std::move(entries), x, y);
+        return;
+    }
+    case transfer::DropAction::Copy:
+    case transfer::DropAction::Move:
+    case transfer::DropAction::Link:
+        file_ops->transfer(std::move(items), eval.folder, eval.action);
+        return;
+    }
+}
+
+void App::Impl::drag_frame_end(double t_ms) {
+    if (!drag.dragging()) {
+        return;
+    }
+    if (!drag_debug_hold && !pointer.down && !pointer.released) {
+        drag.cancel(); // the button went up without us seeing it
+        return;
+    }
+    drag.update(pointer.x, pointer.y, pointer.released ? release_mods : pointer.mods, slots, t_ms,
+                ui::default_drop_probe());
+    // Outgoing: the drag left the window, so other programs may take it (docs/dnd.md).
+    const bool in_window =
+        pointer.x >= 0.0F && pointer.y >= 0.0F && pointer.x <= window_w && pointer.y <= window_h;
+    if (outgoing && !drag_debug_hold) {
+        if (!in_window) {
+            if (!outgoing_tried && !outgoing->active()) {
+                outgoing_tried = true;
+                outgoing_live = outgoing->begin(drag.items());
+                if (env("NAVIGATOR_DEBUG_DND") != nullptr) {
+                    SDL_Log("Navigator: outgoing drag %s (%s)",
+                            outgoing_live ? "started" : "refused", outgoing->state().c_str());
+                }
+            }
+            if (outgoing_live && outgoing->active()) {
+                (void)outgoing->motion();
+            }
+        } else if (outgoing_live && outgoing->active()) {
+            outgoing->finish(false); // back over Navigator: the internal drag continues
+            outgoing_live = false;
+            outgoing_tried = false;
+        }
+        if (pointer.released && outgoing_live && outgoing->active()) {
+            outgoing->finish(true); // drop on the other program's window
+            outgoing_live = false;
+            outgoing_tried = false;
+            drag.cancel();
+            return;
+        }
+    }
+    if (animations && !view.popup_open()) {
+        if (const std::optional<ui::DropSlot> spring = drag.take_spring(t_ms); spring) {
+            // Spring-loaded folder: it opens in the pane it was hovered in.
+            if (ui::BrowserModel* tm = workspace->model(layout::TabId{spring->tab});
+                tm != nullptr) {
+                tm->navigate_to(spring->folder);
+            }
+        }
+    }
+    if (pointer.released && !drag_debug_hold) {
+        ui::FileDrag::Outcome o = drag.finish();
+        if (o.kind == ui::FileDrag::Outcome::Kind::Drop) {
+            apply_drop(std::move(o.items), o.eval, pointer.x, pointer.y);
+        }
+    }
+}
+
+void App::Impl::incoming_update() {
+    if (!incoming.active() || !incoming.has_position()) {
+        return;
+    }
+    const ui::DropSlot* slot = ui::pick_slot(slots, incoming.x(), incoming.y());
+    const Modifiers mods = ui::translate_modifiers(SDL_GetModState());
+    if (incoming.paths().empty()) {
+        // SDL delivers the paths when the drop happens; until then the highlight shows where a
+        // copy (or a move with Shift) would land.
+        incoming_eval = ui::DropEval{};
+        if (slot != nullptr && slot->kind != ui::SlotKind::Trash && !slot->folder.empty()) {
+            incoming_eval.kind = slot->kind;
+            incoming_eval.folder = slot->folder;
+            incoming_eval.label = slot->label;
+            incoming_eval.rect = slot->rect;
+            incoming_eval.action = has(mods, Modifiers::Alt)     ? transfer::DropAction::Ask
+                                   : has(mods, Modifiers::Shift) ? transfer::DropAction::Move
+                                                                 : transfer::DropAction::Copy;
+        }
+        incoming_first = fs::DirEntry{};
+        return;
+    }
+    incoming_eval =
+        ui::evaluate_drop(incoming.paths(), slot, false, mods, ui::default_drop_probe());
+    if (Result<fs::DirEntry> e = fs::stat(incoming.paths().front(), false); e) {
+        incoming_first = *e;
+    }
+}
+
+void App::Impl::handle_drop_event(const SDL_Event& event) {
+    switch (event.type) {
+    case SDL_EVENT_DROP_BEGIN: incoming.begin(); break;
+    case SDL_EVENT_DROP_POSITION:
+        pointer.x = event.drop.x * pixel_density;
+        pointer.y = event.drop.y * pixel_density;
+        pointer.inside = true;
+        incoming.position(pointer.x, pointer.y);
+        incoming_update();
+        break;
+    case SDL_EVENT_DROP_FILE:
+        if (event.drop.data != nullptr) {
+            incoming.add_path(Path(event.drop.data));
+        }
+        break;
+    case SDL_EVENT_DROP_TEXT:
+        if (event.drop.data != nullptr) {
+            (void)incoming.add_text(event.drop.data);
+        }
+        break;
+    case SDL_EVENT_DROP_COMPLETE: {
+        const float x = incoming.has_position() ? incoming.x() : pointer.x;
+        const float y = incoming.has_position() ? incoming.y() : pointer.y;
+        std::vector<Path> items = incoming.complete();
+        incoming_eval = ui::DropEval{};
+        if (items.empty()) {
+            file_ops->notify(std::string(tr("notice.drop_failed")), true);
+            break;
+        }
+        const ui::DropSlot* slot = ui::pick_slot(slots, x, y);
+        const ui::DropEval eval =
+            ui::evaluate_drop(items, slot, false, ui::translate_modifiers(SDL_GetModState()),
+                              ui::default_drop_probe());
+        apply_drop(std::move(items), eval, x, y);
+        break;
+    }
+    default: break;
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Phase 7: reconciling views after operations
+// ---------------------------------------------------------------------------------------------
+
+void App::Impl::apply_reconcile(double t_ms) {
+    ui::Reconcile rc = file_ops->take_reconcile();
+    if (rc.empty()) {
+        return;
+    }
+    dirty = true;
+    for (const Path& folder : rc.refresh) {
+        for (const layout::TabId tab : workspace->visible_tabs()) {
+            if (ui::BrowserModel* m = workspace->model(tab);
+                m != nullptr && m->loaded() && m->current_dir() == folder) {
+                m->refresh();
+            }
+        }
+    }
+    // A locked Inspector follows a moved or renamed item.
+    for (const auto& [from, to] : rc.moved) {
+        if (to.empty() || !inspector.locked() || inspector.item() == nullptr ||
+            inspector.item()->path != from) {
+            continue;
+        }
+        if (Result<fs::DirEntry> e = fs::stat(to, false); e) {
+            ui::inspector::Item it;
+            it.path = to;
+            it.entry = *e;
+            it.location = location_for(to);
+            (void)inspector.retarget(from, std::move(it), t_ms);
+        }
+    }
+    for (ui::Reconcile::Select& sel : rc.select) {
+        pending_select.push_back(
+            PendingSelect{std::move(sel.dir), std::move(sel.names), t_ms + 3000.0});
+    }
+    if (rc.rename_after_create) {
+        pending_rename =
+            PendingRename{rc.rename_after_create->tab, std::move(rc.rename_after_create->dir),
+                          std::move(rc.rename_after_create->name), t_ms + 3000.0};
+    }
+    if (rc.trash_changed && trash_model && trash_model->available()) {
+        trash_model->refresh();
+    }
+}
+
+void App::Impl::process_pending(double t_ms) {
+    // The inline editor belongs to one folder of one tab: leaving either commits (GNOME Files).
+    if (ui::InlineEdit* ie = file_ops->inline_edit(); ie != nullptr) {
+        const ui::BrowserModel* m = workspace->model(ie->tab);
+        if (m == nullptr || !m->loaded() || m->current_dir() != ie->dir) {
+            file_ops->inline_cancel();
+        } else if (workspace->active_tab() != ie->tab) {
+            (void)file_ops->inline_commit(name_taken());
+        }
+    }
+    if (pending_rename) {
+        ui::BrowserModel* m = workspace->model(pending_rename->tab);
+        if (m == nullptr || t_ms > pending_rename->deadline) {
+            pending_rename.reset();
+        } else if (m->loaded() && m->current_dir() == pending_rename->dir) {
+            const std::size_t row = m->find_row(pending_rename->name);
+            if (row != ui::kNoRow) {
+                m->click_row(row, Modifiers::None);
+                focus_sidebar(false);
+                view.close_address_bar();
+                filter_tab = layout::TabId{};
+                file_ops->begin_rename(pending_rename->tab, pending_rename->dir,
+                                       pending_rename->name, true, true);
+                file_ops->inline_edited(name_taken());
+                pending_rename.reset();
+                dirty = true;
+            }
+        }
+    }
+    for (auto it = pending_select.begin(); it != pending_select.end();) {
+        bool done = t_ms > it->deadline;
+        for (const layout::TabId tab : workspace->visible_tabs()) {
+            ui::BrowserModel* m = workspace->model(tab);
+            if (m != nullptr && m->loaded() && m->current_dir() == it->dir && !done) {
+                bool all = true;
+                for (const std::string& n : it->names) {
+                    all = all && m->find_row(n) != ui::kNoRow;
+                }
+                if (all) {
+                    if (tab == workspace->active_tab() || !pending_rename) {
+                        (void)m->select_by_names(it->names);
+                    }
+                    done = true;
+                    dirty = true;
+                }
+            }
+        }
+        it = done ? pending_select.erase(it) : std::next(it);
+    }
+    // Trash tabs whose tab closed.
+    for (auto it = trash_tabs.begin(); it != trash_tabs.end();) {
+        it = workspace->model(layout::TabId{*it}) == nullptr ? trash_tabs.erase(it) : std::next(it);
+    }
+}
+
 void App::Impl::layout_intent(const ui::Intent& in) {
     using Kind = ui::Intent::Kind;
     const auto report = [this](const Result<void>& r, std::string_view ok_key,
@@ -1800,6 +2712,7 @@ void App::Impl::apply_intents() {
             break;
         case Kind::NavigateTo:
             if (m != nullptr) {
+                trash_tabs.erase(in.tab);
                 m->navigate_to(in.path);
             }
             break;
@@ -1871,6 +2784,7 @@ void App::Impl::apply_intents() {
             if (in.additive) {
                 (void)workspace->open_tab(in.path, false);
             } else {
+                leave_trash_view();
                 workspace->navigate_active(in.path);
             }
             break;
@@ -1894,6 +2808,28 @@ void App::Impl::apply_intents() {
                 const std::vector<search::TypeCount> present = m->type_summary();
                 search::toggle_all(tf, Span<const search::TypeCount>(present));
                 m->set_type_filter(std::move(tf));
+            }
+            break;
+        // Phase 7.
+        case Kind::DragBegin: drag_begin(in.tab, in.row); break;
+        case Kind::InlineCommit:
+            if (file_ops->inline_edit() != nullptr) {
+                (void)file_ops->inline_commit(name_taken());
+            }
+            break;
+        case Kind::DismissOpsNotice: file_ops->dismiss_notice(); break;
+        case Kind::SheetButton: file_ops->sheet_activate(in.index); break;
+        case Kind::SheetApplyAll: file_ops->sheet_toggle_apply_all(); break;
+        case Kind::SheetEditName: file_ops->conflict_begin_name_edit(); break;
+        case Kind::TrashClickRow: trash_model->click_row(in.row, in.mods); break;
+        case Kind::TrashClearSelect: trash_model->clear_selection(); break;
+        case Kind::DropChoose:
+            if (pending_drop) {
+                PendingDrop pd = std::move(*pending_drop);
+                pending_drop.reset();
+                file_ops->transfer(
+                    std::move(pd.items), pd.folder,
+                    static_cast<transfer::DropAction>(std::min<std::size_t>(in.index, 3)));
             }
             break;
         }
@@ -1974,6 +2910,18 @@ void App::Impl::run_script_step() {
         }
         if (next == "waitthumbs" &&
             (thumbs.pending_count() > 0 || (textures && textures->uploading()))) {
+            return;
+        }
+        if (next == "waitops" &&
+            (file_ops->busy() || !pending_select.empty() || pending_rename.has_value() ||
+             (trash_model && trash_model->loading()))) {
+            return;
+        }
+        if (next == "waitprogress" &&
+            (file_ops->running().empty() || file_ops->running().front().bytes_done == 0)) {
+            return;
+        }
+        if (next == "waitconflict" && file_ops->sheet_kind() != ui::SheetKind::Conflict) {
             return;
         }
         if (next == "waitindex") {
@@ -2087,7 +3035,109 @@ void App::Impl::run_script_step() {
         if (const std::optional<ui::RectF> r = sidebar.row_rect(num(1)); r) {
             sidebar_menu(num(1), r->x + (0.6F * r->w), r->center_y());
         }
+    } else if (op == "waitops" || op == "waitprogress" || op == "waitconflict") {
+        // Held before the step was taken (above).
+    } else if (op == "panel") {
+        if (!file_ops->panel_open()) {
+            file_ops->toggle_panel();
+        }
+    } else if (op == "conflict") {
+        // conflict:skip|replace|keep|merge|cancel[:all]
+        if (ui::ConflictSheet* cs = file_ops->conflict_sheet(); cs != nullptr) {
+            cs->apply_all = parts.size() > 2 && parts[2] == "all";
+            const std::vector<ui::ConflictButton> buttons = ui::conflict_buttons(cs->conflict);
+            const ui::ConflictButton want = arg == "skip"      ? ui::ConflictButton::Skip
+                                            : arg == "replace" ? ui::ConflictButton::Replace
+                                            : arg == "merge"   ? ui::ConflictButton::Merge
+                                            : arg == "cancel"  ? ui::ConflictButton::Cancel
+                                                               : ui::ConflictButton::KeepBoth;
+            for (std::size_t i = 0; i < buttons.size(); ++i) {
+                if (buttons[i] == want) {
+                    file_ops->sheet_activate(i);
+                    break;
+                }
+            }
+        }
+    } else if (op == "confirm") {
+        if (file_ops->confirm_sheet() != nullptr) {
+            file_ops->sheet_activate(arg == "yes" ? 1U : 0U);
+        }
+    } else if (op == "trashclick") {
+        for (std::size_t i = 0; i < trash_model->count(); ++i) {
+            if (ui::TrashModel::display_name_of(trash_model->items()[i]) == arg) {
+                trash_model->click_row(i, parts.size() > 2 &&
+                                                  parts[2].find("ctrl") != std::string::npos
+                                              ? Modifiers::Ctrl
+                                              : Modifiers::None);
+            }
+        }
+    } else if (op == "rename") {
+        const std::size_t row = model.find(arg);
+        if (row != ui::kNoRow) {
+            model.click_row(row, Modifiers::None);
+            begin_inline_rename();
+        }
+    } else if (op == "dragstart") {
+        const std::size_t row = model.find(arg);
+        if (row != ui::kNoRow) {
+            drag_begin(workspace->active_tab().value, row);
+            drag_debug_hold = drag.dragging();
+        }
+    } else if (op == "dragover") {
+        // dragover:row:NAME | sidebar:LABEL | pane:N | trash
+        const auto at = find_slot(raw.substr(std::string("dragover:").size()));
+        if (at != slots.end() && drag.dragging()) {
+            pointer.x = at->rect.center_x();
+            pointer.y = at->rect.center_y();
+            pointer.inside = true;
+            drag.update(pointer.x, pointer.y, pointer.mods, slots, now_ms(),
+                        ui::default_drop_probe());
+        }
+    } else if (op == "dragend") {
+        drag_debug_hold = false;
+        pointer.released = true;
+    } else if (op == "dragcancel") {
+        drag.cancel();
+        drag_debug_hold = false;
     }
+}
+
+std::vector<ui::DropSlot>::const_iterator App::Impl::find_slot(std::string_view spec) const {
+    const std::size_t colon = spec.find(':');
+    const std::string kind(spec.substr(0, colon));
+    const std::string value =
+        colon == std::string_view::npos ? std::string() : std::string(spec.substr(colon + 1));
+    for (auto it = slots.begin(); it != slots.end(); ++it) {
+        if (kind == "row" && it->kind == ui::SlotKind::Row && it->label == value) {
+            return it;
+        }
+        if (kind == "sidebar" && it->kind == ui::SlotKind::Sidebar && it->label == value) {
+            return it;
+        }
+        if (kind == "trash" && it->kind == ui::SlotKind::Trash) {
+            return it;
+        }
+        if (kind == "tab" && it->kind == ui::SlotKind::Tab && it->label == value) {
+            return it;
+        }
+        if (kind == "crumb" && it->kind == ui::SlotKind::Crumb && it->label == value) {
+            return it;
+        }
+    }
+    if (kind == "pane") {
+        const layout::PaneId pane =
+            pane_at_index(static_cast<std::size_t>(std::strtoull(value.c_str(), nullptr, 10)));
+        const layout::PaneNode* node = workspace->layout().find_pane(pane);
+        if (node != nullptr && node->active_tab < node->tabs.size()) {
+            for (auto it = slots.begin(); it != slots.end(); ++it) {
+                if (it->kind == ui::SlotKind::Pane &&
+                    it->tab == node->tabs[node->active_tab].id.value) {
+                    return it;
+                }
+            }
+        }
+    }
+    return slots.end();
 }
 
 void App::Impl::update_scale() {
@@ -2163,7 +3213,19 @@ void App::Impl::draw_frame(double t_ms, double dt_ms) {
         },
         .draw_inspector = {},
         .thumbnails = nullptr,
+        .file_ops = file_ops.get(),
+        .slots = &slots,
+        .file_drag_active = drag.dragging(),
+        .is_trash_tab = {},
+        .draw_trash = {},
+        .tab_title = {},
+        .ops_chip_width = {},
+        .draw_ops_chip = {},
+        .draw_ops_overlay = {},
+        .ops_hit = {},
+        .ops_modal = ops_view.modal(),
     };
+    slots.clear(); // the views register this frame's drop slots while drawing
     // Phase 4: the sidebar takes the left of the window; the panes get the rest.
     layout_sidebar(static_cast<float>(w), static_cast<float>(h));
     const bool sidebar_shown = sidebar_rect.w > 0.0F;
@@ -2203,6 +3265,7 @@ void App::Impl::draw_frame(double t_ms, double dt_ms) {
         .density = density,
         .dragged_tab = view.dragged_tab(),
         .popup_open = popup,
+        .slots = &slots,
     };
     if (sidebar_shown) {
         frame.draw_sidebar = [this, &sf] { sidebar.draw(sf); };
@@ -2221,6 +3284,101 @@ void App::Impl::draw_frame(double t_ms, double dt_ms) {
             draw_inspector(painter, pal, masked_ptr ? masked : pointer, t_ms, dt_ms, now);
         };
     }
+    // Phase 7: the Trash view, the progress chip, the overlays and the drag badge.
+    const bool kb_list = frame.list_keyboard;
+    frame.is_trash_tab = [this](layout::TabId tab) { return trash_tabs.contains(tab.value); };
+    frame.tab_title = [this](layout::TabId tab) -> std::optional<std::string> {
+        if (trash_tabs.contains(tab.value)) {
+            return std::string(tr("trash.title"));
+        }
+        return std::nullopt;
+    };
+    frame.draw_trash = [this, &painter, &pal, kb_list, t_ms, dt_ms,
+                        now](layout::TabId tab, const ui::RectF& body, const ui::Palette& pane_pal,
+                             const ui::PointerInput& ptr, bool active, bool marked) {
+        ui::TrashFrame tf{painter,
+                          pane_pal,
+                          theme,
+                          *trash_model,
+                          ptr,
+                          queue,
+                          intents,
+                          body,
+                          tab.value,
+                          focused && active && kb_list,
+                          active,
+                          marked,
+                          animations,
+                          density,
+                          dt_ms,
+                          now,
+                          home.empty() ? nullptr : &home};
+        (void)pal;
+        (void)t_ms;
+        trash_view.draw(tf);
+    };
+    ui::DragVisual visual;
+    const bool pointer_in_window = pointer.x >= 0.0F && pointer.y >= 0.0F &&
+                                   pointer.x <= static_cast<float>(w) &&
+                                   pointer.y <= static_cast<float>(h);
+    if (drag.dragging()) {
+        visual.active = true;
+        visual.eval = drag.eval();
+        visual.count = drag.items().size();
+        visual.first = drag_first;
+        visual.x = pointer.x;
+        visual.y = pointer.y;
+        visual.pointer_inside = pointer_in_window;
+        visual.outgoing_note =
+            std::string(tr(outgoing_live ? "drag.external_ok" : "drag.use_clipboard"));
+    } else if (incoming.active() && incoming.has_position()) {
+        visual.active = true;
+        visual.external = true;
+        visual.eval = incoming_eval;
+        visual.count = incoming.paths().size();
+        visual.first = incoming_first;
+        visual.x = incoming.x();
+        visual.y = incoming.y();
+    }
+    window_w = static_cast<float>(w);
+    window_h = static_cast<float>(h);
+    const ui::PointerInput& ops_ptr = popup ? masked : pointer;
+    const auto make_ops_frame = [&](float lift) {
+        return ui::OpsFrame{
+            .painter = painter,
+            .palette = pal,
+            .theme = theme,
+            .ops = *file_ops,
+            .pointer = ops_ptr,
+            .queue = queue,
+            .intents = intents,
+            .width = static_cast<float>(w),
+            .height = static_cast<float>(h),
+            .content = frame.content,
+            .density = density,
+            .now_ms = t_ms,
+            .dt_ms = dt_ms,
+            .animations = animations,
+            .now = now,
+            .notice_lift_px = lift,
+            .thumb =
+                [this, &pal](const Path& path, const fs::DirEntry& e, const ui::RectF& box) {
+                    return list_thumbs != nullptr &&
+                           list_thumbs->draw_entry(*renderer, pal, path, e, box, scale, 1.0F);
+                },
+            .drag = &visual,
+        };
+    };
+    frame.ops_chip_width = [this, &make_ops_frame] {
+        return ops_view.chip_width(make_ops_frame(0.0F));
+    };
+    frame.draw_ops_chip = [this, &make_ops_frame](const ui::RectF& slot) {
+        ops_view.draw_chip(make_ops_frame(0.0F), slot);
+    };
+    frame.draw_ops_overlay = [this, &make_ops_frame](float lift) {
+        ops_view.draw_overlays(make_ops_frame(lift));
+    };
+    frame.ops_hit = [this](float x, float y) { return ops_view.hit(x, y); };
     view.update(frame);
     view.draw(frame);
     thumbs.end_frame();
@@ -2457,7 +3615,7 @@ ui::inspector::Item App::Impl::item_for(const ui::BrowserModel& m, std::size_t r
 ui::inspector::Subject App::Impl::inspector_subject() const {
     ui::inspector::Subject s;
     const ui::BrowserModel& m = workspace->active_model();
-    if (!m.loaded()) {
+    if (!m.loaded() || trash_active()) {
         return s;
     }
     auto* self = const_cast<App::Impl*>(this); // location cache only
@@ -2715,6 +3873,23 @@ int App::run() {
         }
         s.sync_index_volumes();
         s.previews_frame_start(now_ms());
+        // Phase 7: finished operations, conflicts, the Trash listing, reconciliation.
+        if (s.file_ops->frame_start(now_ms())) {
+            s.dirty = true;
+        }
+        if (s.trash_model->frame_start()) {
+            s.dirty = true;
+        }
+        s.apply_reconcile(now_ms());
+        s.process_pending(now_ms());
+        if (s.outgoing && s.outgoing->active()) {
+            (void)s.outgoing->poll(now_ms());
+            s.dirty = true;
+        }
+        s.sync_protected_paths();
+        if (s.file_ops->quit_state() == ui::QuitState::Quit) {
+            s.running = false;
+        }
         // A background scan reports often: repaint only while a status bar shows the index.
         if (s.indexes->frame_start() && s.shows_index_status()) {
             s.dirty = true;
@@ -2775,6 +3950,7 @@ int App::run() {
             }
         }
         s.apply_intents();
+        s.drag_frame_end(now_ms());
         s.apply_outcomes();
         s.apply_inspector_output();
         for (const layout::TabId tab : s.workspace->visible_tabs()) {

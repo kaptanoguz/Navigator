@@ -213,6 +213,19 @@ void TextEdit::select_all() noexcept {
     caret_ = text_.size();
 }
 
+void TextEdit::select_range(std::size_t begin, std::size_t end) noexcept {
+    begin = std::min(begin, text_.size());
+    end = std::min(end, text_.size());
+    while (begin > 0 && begin < text_.size() && is_continuation(text_[begin])) {
+        --begin;
+    }
+    while (end > 0 && end < text_.size() && is_continuation(text_[end])) {
+        --end;
+    }
+    anchor_ = std::min(begin, end);
+    caret_ = std::max(begin, end);
+}
+
 std::string TextEdit::cut() {
     if (!has_selection()) {
         return {};
@@ -319,10 +332,10 @@ FieldKeyResult apply_field_key(TextEdit& edit, const KeyChord& chord,
         }
         break;
     case Key::Delete:
-        if (!shift) {
-            (void)edit.erase_forward(ctrl);
-            r.handled = true;
-        }
+        // Shift+Delete is a text edit here (as Delete): it must never reach file.delete_permanently
+        // (docs/keymap.md "Focus scoping (Phase 7)").
+        (void)edit.erase_forward(ctrl);
+        r.handled = true;
         break;
     case Key::Tab:
         if (m == Modifiers::None) {
@@ -364,6 +377,13 @@ FieldKeyResult apply_field_key(TextEdit& edit, const KeyChord& chord,
         if (ctrl && !shift) {
             (void)edit.undo();
             r.handled = true;
+        } else if (ctrl && shift) {
+            r.handled = true; // text redo: no redo stack, but never file redo (edit.redo)
+        }
+        break;
+    case Key::Y:
+        if (ctrl && !shift) {
+            r.handled = true; // as above (Ctrl+Y is edit.redo outside fields)
         }
         break;
     default: break;

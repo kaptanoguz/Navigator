@@ -478,6 +478,25 @@ bool Workspace::execute(const Command& command) {
     case CommandId::MoveBookmarkDown:
     case CommandId::ClearRecents:
     case CommandId::ToggleRecentsTracking:
+    // Phase 7: file operations, trash and undo (shell level; ui::App and ui::FileOps).
+    case CommandId::Copy:
+    case CommandId::Cut:
+    case CommandId::Paste:
+    case CommandId::Undo:
+    case CommandId::Redo:
+    case CommandId::MoveToTrash:
+    case CommandId::DeletePermanently:
+    case CommandId::Rename:
+    case CommandId::NewFolder:
+    case CommandId::CopyToOtherPane:
+    case CommandId::MoveToOtherPane:
+    case CommandId::OpenTerminalHere:
+    case CommandId::CancelOperation:
+    case CommandId::TogglePauseOperation:
+    case CommandId::ToggleOperationsPanel:
+    case CommandId::OpenTrash:
+    case CommandId::RestoreFromTrash:
+    case CommandId::EmptyTrash:
     case CommandId::CopyPath:
     case CommandId::SearchTabs:
     case CommandId::SaveLayout:

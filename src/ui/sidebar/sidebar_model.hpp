@@ -80,11 +80,20 @@ struct SidebarRow {
 // raw device when it has neither form); else places::default_label(mount_point).
 [[nodiscard]] std::string volume_label(const VolumeInfo& volume);
 
+// Phase 7: the Trash row of the Places section (places::PlaceKind::Trash; no path: it opens the
+// Trash view with trash.open and takes dropped items as file.trash).
+struct SidebarTrash {
+    bool show = false;
+    std::size_t count = 0; // items in the trash when known (SidebarRow::count), else 0
+    bool active = false;   // the active tab shows the Trash view: this row is the highlighted one
+};
+
 // The rows for one frame. `active_folder` may be empty (nothing highlighted).
 [[nodiscard]] std::vector<SidebarRow> build_sidebar_rows(const PlacesModel& model,
                                                          const layout::SidebarState& state,
                                                          const Path& active_folder,
-                                                         std::size_t max_recents = kMaxRecentRows);
+                                                         std::size_t max_recents = kMaxRecentRows,
+                                                         const SidebarTrash& trash = {});
 
 // Keyboard focus over rows: the next focusable row from `from` by `delta` (clamped, no wrap);
 // from == npos starts before the first / after the last row. npos when there is none.

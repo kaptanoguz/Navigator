@@ -40,6 +40,9 @@ struct CliOptions {
     // config.enable_thumbnails, --no-external-thumbnailers config.enable_external_thumbnailers,
     // --preview-cache-mb N sets config.preview_cache_bytes.
     std::string thumbnail_dir;
+    // Phase 7: --trash-dir DIR (raw bytes); empty: the real XDG trash (never in a --frames run,
+    // see AppConfig::trash_dir). main() points config.trash_dir at it.
+    std::string trash_dir;
     bool show_help = false;
     bool show_version = false;
     std::optional<Language> language;               // --lang overrides the environment

@@ -951,6 +951,19 @@ void BrowserModel::band_update(std::size_t first, std::size_t last) {
     recount();
 }
 
+std::size_t BrowserModel::select_by_names(const std::vector<std::string>& names) {
+    std::size_t found = 0;
+    for (const std::string& name : names) {
+        const std::size_t row = find_row(name);
+        if (row == kNoRow) {
+            continue;
+        }
+        click_row(row, found == 0 ? Modifiers::None : Modifiers::Ctrl);
+        ++found;
+    }
+    return found;
+}
+
 void BrowserModel::band_end() {
     band_active_ = false;
     band_base_.clear();
@@ -1035,6 +1048,25 @@ bool BrowserModel::execute(const Command& command) {
     case CommandId::MoveBookmarkDown:
     case CommandId::ClearRecents:
     case CommandId::ToggleRecentsTracking:
+    // Phase 7: file operations, trash and undo (shell level; ui::App and ui::FileOps).
+    case CommandId::Copy:
+    case CommandId::Cut:
+    case CommandId::Paste:
+    case CommandId::Undo:
+    case CommandId::Redo:
+    case CommandId::MoveToTrash:
+    case CommandId::DeletePermanently:
+    case CommandId::Rename:
+    case CommandId::NewFolder:
+    case CommandId::CopyToOtherPane:
+    case CommandId::MoveToOtherPane:
+    case CommandId::OpenTerminalHere:
+    case CommandId::CancelOperation:
+    case CommandId::TogglePauseOperation:
+    case CommandId::ToggleOperationsPanel:
+    case CommandId::OpenTrash:
+    case CommandId::RestoreFromTrash:
+    case CommandId::EmptyTrash:
     case CommandId::CopyPath: return false;
     }
     return false;

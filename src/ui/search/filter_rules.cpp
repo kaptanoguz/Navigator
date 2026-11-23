@@ -42,8 +42,9 @@ FilterKey route_filter_key(const KeyChord& chord, bool has_selection) noexcept {
         return (plain || shift || ctrl || ctrl_shift) ? FilterKey::Edit : FilterKey::Keymap;
     case Key::Backspace:
     case Key::Delete: return (plain || shift || ctrl) ? FilterKey::Edit : FilterKey::Keymap;
-    case Key::V:
-    case Key::Z: return ctrl ? FilterKey::Edit : FilterKey::Keymap;
+    case Key::V: return ctrl ? FilterKey::Edit : FilterKey::Keymap;
+    case Key::Z: return (ctrl || ctrl_shift) ? FilterKey::Edit : FilterKey::Keymap;
+    case Key::Y: return ctrl ? FilterKey::Edit : FilterKey::Keymap;
     case Key::C:
     case Key::X: return ctrl && has_selection ? FilterKey::Edit : FilterKey::Keymap;
     case Key::Insert: // Shift+Insert pastes, Ctrl+Insert copies (X11 habit)

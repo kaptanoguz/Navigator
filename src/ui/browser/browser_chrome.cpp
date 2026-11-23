@@ -346,6 +346,10 @@ void BrowserView::draw_breadcrumbs(const BrowserFrame& f, const RectF& area) {
         const bool clickable = !current && s.part != static_cast<std::size_t>(-1);
         const RectF hit = snap(RectF{x, mid - (0.5F * h), s.w, h});
         const bool inside = contains(hit, ptr.x, ptr.y) && contains(area, ptr.x, ptr.y);
+        if (f.slots != nullptr && s.part != static_cast<std::size_t>(-1)) {
+            f.slots->push_back(DropSlot{intersect(hit, area), parts[s.part].path, SlotKind::Crumb,
+                                        f.tab, parts[s.part].label});
+        }
         if (clickable && inside && ptr.pressed && active_ == WidgetId::None) {
             active_ = WidgetId::Crumb;
             active_index_ = s.part;
@@ -608,12 +612,12 @@ void BrowserView::draw_status(const BrowserFrame& f, const Layout& l) {
         }
         return width;
     };
-    const float right_w = draw_parts(right, l.status.right() - margin, true);
+    const float right_w = draw_parts(right, l.status.right() - margin - f.status_reserve, true);
 
     // Phase 5: a filtered or flattened view reports matches and search progress instead.
     if (m.loaded() && (m.flattened() || m.filter_active() || m.type_filter().active())) {
-        const float limit =
-            l.status.right() - margin - (right_w > 0.0F ? right_w + std::round(p.px(16.0F)) : 0.0F);
+        const float limit = l.status.right() - margin - f.status_reserve -
+                            (right_w > 0.0F ? right_w + std::round(p.px(16.0F)) : 0.0F);
         (void)draw_search_status(f, l, l.status.x + margin, limit);
         return;
     }

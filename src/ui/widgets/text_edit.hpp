@@ -57,6 +57,8 @@ public:
     void home(bool extend);
     void end(bool extend);
     void select_all() noexcept;
+    // Selects [begin, end) (clamped to the text and to code point boundaries); caret at `end`.
+    void select_range(std::size_t begin, std::size_t end) noexcept;
     // Cut returns the removed text (empty without a selection).
     std::string cut();
     // Reverts the last change. Returns false when there is nothing to undo.

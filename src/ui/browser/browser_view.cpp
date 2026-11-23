@@ -10,6 +10,7 @@
 
 #include "browser/format.hpp"
 #include "widgets/icons.hpp"
+#include "widgets/text_field.hpp"
 
 namespace navigator::ui {
 namespace {
@@ -216,6 +217,32 @@ void BrowserView::update(const BrowserFrame& f) {
             scroll_by(std::clamp(speed / scale, -60.0F, 60.0F) * 0.35F);
         }
     }
+    // Phase 7: a file drag near the top or bottom edge of this list scrolls it (faster closer to
+    // the edge); the wheel works as usual because `ptr` keeps its wheel.
+    if (f.drag_active && ptr.inside) {
+        const float edge = f.painter.px(24.0F);
+        const RectF zone{l.panel.x, l.body.y - edge, l.panel.w, l.body.h + (2.0F * edge)};
+        if (contains(zone, ptr.x, ptr.y)) {
+            float speed = 0.0F;
+            if (ptr.y < l.body.y + edge) {
+                speed = -(l.body.y + edge - ptr.y);
+            } else if (ptr.y > l.body.bottom() - edge) {
+                speed = ptr.y - (l.body.bottom() - edge);
+            }
+            if (speed != 0.0F) {
+                scroll_by(std::clamp(speed / scale, -60.0F, 60.0F) * 0.35F);
+            }
+        }
+    }
+    // Phase 7: the inline editor scrolls its row into view when it opens.
+    if (f.inline_edit != nullptr && !inline_active_) {
+        const std::size_t row = m.find_row(f.inline_edit->original);
+        if (row != kNoRow) {
+            ensure_visible(row, l, f);
+            scroll_ = target_;
+        }
+    }
+    inline_active_ = f.inline_edit != nullptr;
     // Scrollbar drag.
     if (active_ == WidgetId::Scrollbar && ptr.down && max_scroll_ > 0.0F) {
         const float content_px = content_dp * scale;
@@ -262,6 +289,11 @@ void BrowserView::draw(const BrowserFrame& f) {
     const float hair = std::max(1.0F, std::round(f.painter.px(1.0F)));
     r.fill_rounded_rect(l.panel, rad, f.palette.surface);
     draw_header(f, l);
+    if (f.slots != nullptr && f.model.loaded() && !f.model.current_dir().empty() &&
+        !f.model.flattened()) {
+        f.slots->push_back(DropSlot{l.panel, f.model.current_dir(), SlotKind::Pane, f.tab,
+                                    display_name(f.model.current_dir().filename().string())});
+    }
 
     handle_list_pointer(f, l);
     // Rows scroll under the header and stop one list pad above the card's bottom edge.
@@ -410,7 +442,19 @@ void BrowserView::handle_list_pointer(const BrowserFrame& f, const Layout& l) {
             f.queue.enqueue(CommandId::OpenInNewTab);
         }
     }
+    if (f.inline_edit != nullptr && ptr.pressed && !contains(inline_rect_, ptr.x, ptr.y)) {
+        // A press outside the editor commits the shown text (as GNOME Files).
+        Intent in;
+        in.kind = Intent::Kind::InlineCommit;
+        f.intents.push_back(in);
+    }
+    if (f.inline_edit != nullptr && ptr.pressed && contains(inline_rect_, ptr.x, ptr.y)) {
+        return; // a click inside the editor only keeps it
+    }
     if (ptr.pressed && active_ == WidgetId::None && contains(l.body, ptr.x, ptr.y)) {
+        drag_row_ = kNoRow;
+        deferred_click_ = false;
+        drag_started_ = false;
         if (scrollable && contains(scroll_hit, ptr.x, ptr.y)) {
             // Thumb grab or a jump on the track.
             const float scale = f.painter.scale();
@@ -458,11 +502,20 @@ void BrowserView::handle_list_pointer(const BrowserFrame& f, const Layout& l) {
             on_name = ptr.x >= l.name_x - f.painter.px(4.0F) && ptr.x <= name_end;
         }
         if (on_name) {
-            Intent in;
-            in.kind = Intent::Kind::ClickRow;
-            in.row = row;
-            in.mods = ptr.mods;
-            f.intents.push_back(in);
+            const bool plain = !has(ptr.mods, Modifiers::Ctrl) && !has(ptr.mods, Modifiers::Shift);
+            if (plain && f.drag_enabled && m.is_selected(row) && m.selected_count() > 1) {
+                // A drag takes the whole selection; a plain click selects only this row, on
+                // release (nothing changes at the press).
+                drag_row_ = row;
+                deferred_click_ = true;
+            } else {
+                Intent in;
+                in.kind = Intent::Kind::ClickRow;
+                in.row = row;
+                in.mods = ptr.mods;
+                f.intents.push_back(in);
+                drag_row_ = plain && f.drag_enabled ? row : kNoRow;
+            }
             active_ = WidgetId::Rows;
             press_row_ = kNoRow;
         } else {
@@ -473,6 +526,33 @@ void BrowserView::handle_list_pointer(const BrowserFrame& f, const Layout& l) {
         }
     }
 
+    if (active_ == WidgetId::Rows && drag_row_ != kNoRow) {
+        const float rdx = ptr.x - press_x_;
+        const float rdy = (ptr.y - l.body.y + sp) - press_y_;
+        const float thr = f.painter.px(kDragThreshold);
+        if (ptr.down && !drag_started_ && ((rdx * rdx) + (rdy * rdy)) >= thr * thr &&
+            f.inline_edit == nullptr) {
+            drag_started_ = true;
+            deferred_click_ = false;
+            Intent in;
+            in.kind = Intent::Kind::DragBegin;
+            in.row = drag_row_;
+            f.intents.push_back(in);
+        }
+        if (ptr.released) {
+            if (!drag_started_ && deferred_click_) {
+                Intent in;
+                in.kind = Intent::Kind::ClickRow;
+                in.row = drag_row_;
+                in.mods = Modifiers::None;
+                f.intents.push_back(in);
+            }
+            drag_row_ = kNoRow;
+            deferred_click_ = false;
+            drag_started_ = false;
+        }
+        return;
+    }
     if (active_ != WidgetId::Band) {
         return;
     }
@@ -619,12 +699,22 @@ void BrowserView::draw_rows(const BrowserFrame& f, const Layout& l) {
     const float unit_gap = std::round(p.px(3.5F));
     const bool highlight = !m.query().empty();
     const float parent_gap = std::round(p.px(8.0F));
+    const bool cut_any = f.file_ops != nullptr && f.file_ops->has_cut();
+    bool editor_drawn = false;
     for (std::size_t i = first; i <= last; ++i) {
         const fs::DirEntry& e = m.row_entry(i);
         const float y = row_y(i);
         const float mid = std::round(y + (0.5F * l.row_h));
         const bool dir = fs::is_directory_like(e);
-        const float dim = e.hidden ? 0.6F : 1.0F;
+        const bool is_cut = cut_any && f.file_ops->is_cut(m.row_path(i));
+        const float dim = (e.hidden ? 0.6F : 1.0F) * (is_cut ? 0.5F : 1.0F);
+        if (dir && f.slots != nullptr) {
+            const RectF hit = intersect(RectF{rx, y, rw, l.row_h}, l.body);
+            if (hit.h > 0.0F) {
+                f.slots->push_back(
+                    DropSlot{hit, m.row_path(i), SlotKind::Row, f.tab, display_name(e.name)});
+            }
+        }
         // Phase 6: an image / video thumbnail replaces the glyph once it has landed; it sits in
         // a box 2dp larger than the glyph, centred on it, so the name column does not move.
         const float thumb = std::round(p.px(metrics::icon_size + 2.0F));
@@ -650,8 +740,35 @@ void BrowserView::draw_rows(const BrowserFrame& f, const Layout& l) {
         const ShapedText& name_text = fitted.shaped;
         const float baseline = std::round(mid + (0.5F * name_text.cap_height()));
         const Color name_ink =
-            e.hidden && !m.is_selected(i) ? pal.text_secondary : pal.text_primary;
-        if (highlight) {
+            (e.hidden || is_cut) && !m.is_selected(i) ? pal.text_secondary : pal.text_primary;
+        const bool editing =
+            f.inline_edit != nullptr && !m.flattened() && e.name == f.inline_edit->original;
+        if (editing) {
+            // The inline editor replaces the name: a raised field with an accent ring (red when
+            // the name is not allowed), the stem selected.
+            const float pad_px = std::round(p.px(6.0F));
+            const float natural = p.shape(type::row, f.inline_edit->edit.text()).width();
+            const float room = l.name_r - l.text_x;
+            const float w = std::min(room + pad_px, std::max(natural + p.px(48.0F), p.px(200.0F)));
+            const RectF box =
+                snap(RectF{l.text_x - pad_px, y + p.px(1.0F), w + pad_px, l.row_h - p.px(2.0F)});
+            const float brad = std::round(p.px(5.0F));
+            const bool bad = f.inline_edit->message_error;
+            r.fill_rounded_rect(box, brad, pal.surface_raised);
+            r.stroke_rounded_rect(box, brad, std::max(1.0F, std::round(p.px(1.5F))),
+                                  bad ? pal.danger : pal.focus_ring);
+            TextFieldStyle st;
+            st.text = &type::row;
+            st.caret_height_dp = 15.0F;
+            (void)draw_text_field(p, pal, f.inline_edit->edit,
+                                  RectF{box.x + pad_px, box.y, box.w - (2.0F * pad_px), box.h}, {},
+                                  inline_scroll_, st);
+            inline_rect_ = box;
+            inline_message_ = f.inline_edit->message;
+            inline_message_error_ = bad;
+            inline_message_anchor_ = box;
+            editor_drawn = true;
+        } else if (highlight) {
             const std::vector<std::pair<std::uint32_t, std::uint32_t>> ranges =
                 name_highlights(f, e.name, name, fitted.shown);
             p.draw_highlighted(name_text, l.text_x, baseline, name_ink, pal.match,
@@ -698,6 +815,32 @@ void BrowserView::draw_rows(const BrowserFrame& f, const Layout& l) {
                 fitter_.fit(p, type::row_numeric, date, l.date_r - l.date_x, Elide::End);
             p.draw(when, l.date_x, baseline, pal.text_secondary);
         }
+    }
+    if (!editor_drawn) {
+        inline_rect_ = RectF{};
+        inline_message_.clear();
+    } else if (!inline_message_.empty()) {
+        // The validation message hangs under the editor.
+        const ShapedText msg = p.shape(type::caption, inline_message_);
+        const float padx = std::round(p.px(8.0F));
+        const float w = std::min(msg.width() + (2.0F * padx), l.panel.w - p.px(16.0F));
+        const float h = std::round(p.px(22.0F));
+        float by = inline_message_anchor_.bottom() + p.px(3.0F);
+        if (by + h > l.body.bottom()) {
+            by = inline_message_anchor_.y - h - p.px(3.0F);
+        }
+        const RectF bubble = snap(RectF{inline_message_anchor_.x, by, w, h});
+        const float brad = std::round(p.px(5.0F));
+        r.drop_shadow(bubble, brad, p.px(10.0F), p.px(2.0F), pal.shadow);
+        r.fill_rounded_rect(bubble, brad,
+                            inline_message_error_ ? pal.danger_surface : pal.surface_raised);
+        r.stroke_rounded_rect(bubble, brad, std::max(1.0F, std::round(p.px(1.0F))),
+                              inline_message_error_ ? pal.danger_border : pal.border);
+        const ShapedText fitted =
+            fitter_.fit(p, type::caption, inline_message_, w - (2.0F * padx), Elide::End);
+        p.draw(fitted, bubble.x + padx,
+               std::round(bubble.center_y() + (0.5F * fitted.cap_height())),
+               inline_message_error_ ? pal.text_primary : pal.text_secondary);
     }
     // Phase 6: thumbnails of the rows just off screen, so scrolling a little shows them at once.
     if (f.thumbnails != nullptr) {

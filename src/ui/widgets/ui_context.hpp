@@ -77,6 +77,16 @@ struct Intent {
         // Phase 5 (types popup; applied by the App to the tab's model).
         SetTypeVisible, // tab, index = search::TypeKind, text = extension, additive = visible
         ToggleAllTypes, // tab
+        // Phase 7 (file operations; applied by the App at frame end).
+        DragBegin,        // tab, row: a press on a row moved past the threshold
+        InlineCommit,     // a press outside the inline rename editor
+        DismissOpsNotice, // the notice's close button
+        SheetButton,      // index = button of the open sheet (0 = Cancel on confirm sheets)
+        SheetApplyAll,    // conflict sheet: toggle "Apply to all"
+        SheetEditName,    // conflict sheet: the name field was clicked
+        TrashClickRow,    // row, mods (Trash view)
+        TrashClearSelect, // click on empty space of the Trash view
+        DropChoose,       // index = transfer::DropAction chosen in the drop menu (Alt drops)
     };
     Kind kind = Kind::ClickRow;
     // The tab whose model a list intent applies to (layout::TabId value); set by the view.
@@ -134,6 +144,9 @@ enum class WidgetId : std::uint16_t {
     Types,       // types popup button (title bar)
     StopSearch,  // stop button in the status bar
     TypesRow,    // a row of the types popup
+    // Phase 7.
+    OpsWidget, // + index: chip, panel buttons, notice buttons, sheet buttons
+    TrashRows, // a press on a Trash view row
 };
 
 } // namespace navigator::ui

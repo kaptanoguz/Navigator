@@ -80,7 +80,8 @@ std::string volume_label(const VolumeInfo& volume) {
 
 std::vector<SidebarRow> build_sidebar_rows(const PlacesModel& model,
                                            const layout::SidebarState& state,
-                                           const Path& active_folder, std::size_t max_recents) {
+                                           const Path& active_folder, std::size_t max_recents,
+                                           const SidebarTrash& trash) {
     std::vector<SidebarRow> rows;
     const std::vector<VolumeInfo>& volumes = model.volumes();
 
@@ -166,7 +167,26 @@ std::vector<SidebarRow> build_sidebar_rows(const PlacesModel& model,
         const std::size_t header_at = rows.size();
         rows.push_back(std::move(h));
         std::size_t count = 0;
+        bool trash_done = !trash.show;
+        const auto add_trash = [&] {
+            trash_done = true;
+            ++count;
+            if (state.is_collapsed(SidebarSection::Places)) {
+                return;
+            }
+            SidebarRow r;
+            r.kind = SidebarRowKind::Place;
+            r.section = SidebarSection::Places;
+            r.place = places::PlaceKind::Trash;
+            r.label = std::string(tr(places::label_key(places::PlaceKind::Trash)));
+            r.count = trash.count;
+            r.highlighted = trash.active;
+            rows.push_back(std::move(r));
+        };
         for (const places::Place& p : model.places()) {
+            if (p.kind == places::PlaceKind::FileSystem && !trash_done) {
+                add_trash(); // Trash sits between the user folders and the file system
+            }
             if (model.missing(p.path) && p.kind != places::PlaceKind::Home &&
                 p.kind != places::PlaceKind::FileSystem) {
                 continue; // a configured XDG dir that does not exist
@@ -190,6 +210,9 @@ std::vector<SidebarRow> build_sidebar_rows(const PlacesModel& model,
                 fill_volume(r, volumes[*v], *v);
             }
             rows.push_back(std::move(r));
+        }
+        if (!trash_done) {
+            add_trash();
         }
         rows[header_at].count = count;
     }
@@ -240,7 +263,7 @@ std::vector<SidebarRow> build_sidebar_rows(const PlacesModel& model,
         }
         if (const std::optional<std::size_t> w =
                 places::deepest_containing(path_input::normalize_absolute(active_folder), roots);
-            w && *w < index.size()) {
+            w && *w < index.size() && !trash.active) {
             rows[index[*w]].highlighted = true;
         }
     }

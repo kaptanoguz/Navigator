@@ -178,6 +178,15 @@ Result<CliOptions> parse_cli(const std::vector<std::string_view>& args) {
                 return fail(ErrorCode::InvalidArgument, "--thumbnail-dir must not be empty");
             }
             o.thumbnail_dir = std::string(*v);
+        } else if (a == "--trash-dir") {
+            auto v = value(a);
+            if (!v) {
+                return fail(v.error().code, v.error().message);
+            }
+            if (v->empty()) {
+                return fail(ErrorCode::InvalidArgument, "--trash-dir must not be empty");
+            }
+            o.trash_dir = std::string(*v);
         } else if (a == "--no-thumbnails") {
             o.config.enable_thumbnails = false;
         } else if (a == "--no-external-thumbnailers") {
@@ -294,6 +303,8 @@ std::string usage_text(std::string_view program) {
          "  --no-index        do not build, load or watch file-name indexes\n"
          "  --thumbnail-dir DIR  use DIR as the thumbnail cache (default: DIR of --cache-dir\n"
          "                    /thumbnails, else the shared $XDG_CACHE_HOME/thumbnails)\n"
+         "  --trash-dir DIR   keep the trash in DIR (tests; default: the XDG trash, which a\n"
+         "                    --frames run never uses)\n"
          "  --no-thumbnails   no list thumbnails, no thumbnail cache, no thumbnailers\n"
          "  --no-external-thumbnailers  never run the system's thumbnailer programs\n"
          "  --preview-cache-mb N  memory for decoded previews in MiB (default 256, min 16)\n"

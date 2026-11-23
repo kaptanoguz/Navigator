@@ -50,7 +50,7 @@ LineIcon icon_of(const SidebarRow& row) {
         case places::PlaceKind::Music: return LineIcon::Music;
         case places::PlaceKind::Pictures: return LineIcon::Pictures;
         case places::PlaceKind::Videos: return LineIcon::Videos;
-        case places::PlaceKind::Trash: return LineIcon::Folder;
+        case places::PlaceKind::Trash: return LineIcon::Trash;
         case places::PlaceKind::FileSystem: return LineIcon::Drive;
         }
         return LineIcon::Folder;
@@ -359,6 +359,14 @@ void SidebarView::draw_item(const SidebarFrame& f, const SidebarRow& row, std::s
         right -= pt.width() + std::round(p.px(8.0F));
     }
 
+    if (row.kind == SidebarRowKind::Place && row.place == places::PlaceKind::Trash &&
+        row.count > 0) {
+        // Phase 7: the number of trashed items, muted, where the usage percent sits elsewhere.
+        const ShapedText ct = p.shape(type::status, format_count(row.count));
+        p.draw(ct, std::round(right - ct.width()), std::round(line_mid + (0.5F * ct.cap_height())),
+               pal.text_muted);
+        right -= ct.width() + std::round(p.px(8.0F));
+    }
     if (rename_ && row.kind == SidebarRowKind::Bookmark && rename_->id == row.bookmark) {
         const RectF box =
             snap(RectF{tx - p.px(5.0F), rr.y + p.px(3.0F),
@@ -706,6 +714,15 @@ void SidebarView::draw(const SidebarFrame& f) {
         const bool hover =
             hovered == s.row &&
             (active_ == WidgetId::None || (active_ == WidgetId::Sidebar && active_index_ == s.row));
+        if (f.slots != nullptr && row.item() && row.online()) {
+            // Phase 7: places, bookmarks, volumes and the Trash row take dropped files.
+            const RectF hit = intersect(rr, list);
+            if (row.kind == SidebarRowKind::Place && row.place == places::PlaceKind::Trash) {
+                f.slots->push_back(DropSlot{hit, Path{}, SlotKind::Trash, 0, row.label});
+            } else if (!row.path.empty()) {
+                f.slots->push_back(DropSlot{hit, row.path, SlotKind::Sidebar, 0, row.label});
+            }
+        }
         if (f.icon_only) {
             if (s.clock) {
                 SidebarRow clock = row;
