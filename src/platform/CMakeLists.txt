@@ -10,6 +10,8 @@ add_library(navigator_platform STATIC
     launcher.cpp
     mime.cpp
     mountinfo.cpp
+    process_runner.cpp
+    program_dirs.cpp
     proc_mount_source.cpp
     user_dirs.cpp
     volume_monitor.cpp
