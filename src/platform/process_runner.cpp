@@ -325,7 +325,9 @@ Result<Outcome> execute(ExecPlan& plan, std::chrono::milliseconds timeout, std::
     const int wake_fd = wake.get();
     const std::stop_callback on_stop(stop, [wake_fd]() noexcept {
         const std::uint64_t one = 1;
-        (void)::write(wake_fd, &one, sizeof one);
+        // Best effort wake-up: a failed write only delays the poller until its timeout.
+        if (::write(wake_fd, &one, sizeof one) < 0) {
+        }
     });
 
     bool exited = false;
