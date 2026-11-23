@@ -519,6 +519,12 @@ TEST_CASE("process runner: bwrap arguments", "[process_runner]") {
     const auto tmpfs = std::find(lines.begin(), lines.end(), "--tmpfs");
     const auto bind = std::find(lines.begin(), lines.end(), "--bind");
     CHECK(tmpfs < bind);
+    // The root is remounted read-only after every bind, before the program.
+    const auto remount = std::find(lines.begin(), lines.end(), "--remount-ro");
+    REQUIRE(remount != lines.end());
+    CHECK(*(remount + 1) == "/");
+    CHECK(remount > bind);
+    CHECK(remount < dashdash);
 }
 
 TEST_CASE("process runner: real bwrap isolates files, network and environment",
@@ -557,6 +563,21 @@ TEST_CASE("process runner: real bwrap isolates files, network and environment",
         CHECK(sandboxed({"writefile", escape.native(), "1"}).exit_code == 4);
         CHECK_FALSE(stdfs::exists(escape));
     }
+    // Parents of bind targets that bwrap created on its root (e.g. the directory holding the
+    // probe binary, which may be under $HOME) and the root itself are read-only. A probe that
+    // lives under /tmp sits on the sandbox's private tmpfs instead: writable there, never on
+    // the host.
+    const Path probe_dir_escape = stdfs::path(kProbe).parent_path() / "escape";
+    const int probe_dir_exit = sandboxed({"writefile", probe_dir_escape.native(), "1"}).exit_code;
+    if (!probe_dir_escape.native().starts_with("/tmp/")) {
+        CHECK(probe_dir_exit == 4);
+    }
+    CHECK_FALSE(stdfs::exists(probe_dir_escape));
+    CHECK(sandboxed({"writefile", "/navigator-escape", "1"}).exit_code == 4);
+    // /tmp stays a private writable tmpfs: the write succeeds and never reaches the host.
+    const std::string private_tmp = "/tmp/navigator-sandbox-private-" + std::to_string(::getpid());
+    CHECK(sandboxed({"writefile", private_tmp, "1"}).exit_code == 0);
+    CHECK_FALSE(stdfs::exists(private_tmp));
 
     const Listener listener;
     CHECK(run_ok(*runner, probe({"connect", listener.port()})).exit_code == 0); // control

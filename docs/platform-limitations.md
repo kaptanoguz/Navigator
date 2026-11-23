@@ -186,7 +186,12 @@ being worked around. Contracts: `include/navigator/watch.hpp`, `include/navigato
   that does not exist), the result is a normal non-zero exit and the run is not retried. Inside
   the sandbox: no network (`--unshare-all` gives an empty network namespace), read-only `/usr`,
   `/etc` and `/lib*`/`/bin`/`/sbin` (as binds or symlinks), an empty tmpfs `/tmp`, a private
-  `/proc` and `/dev`, and only the listed read-only and writable paths. The environment is
+  `/proc` and `/dev`, and only the listed read-only and writable paths. bwrap builds its root on a
+  writable tmpfs and creates the parent directories of every bind target there (for a program
+  under `$HOME`, that includes `/home/<user>/...`). The runner therefore remounts `/` read-only
+  after all binds (`--remount-ro /`, which is not recursive). Writes then succeed only in
+  `writable_paths`, in the private `/tmp` (never visible on the host) and in `/dev` nodes such
+  as `/dev/null`. The environment is
   cleared except `PATH`, `HOME`, `LANG` and `LC_ALL`, and `HOME` usually does not exist inside.
   The program has to live in a bound path: system thumbnailers in `/usr` always do, while a
   program elsewhere has to be in `read_only_paths`.

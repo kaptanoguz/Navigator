@@ -471,6 +471,10 @@ std::vector<std::string> bwrap_args(const ProcessRequest& request, const std::st
     for (const Path& path : request.writable_paths) {
         out.insert(out.end(), {"--bind", path.native(), path.native()});
     }
+    // bwrap's root is a writable tmpfs on which it creates the parents of every bind target
+    // (e.g. /home/<user>/... for a program under $HOME). Remount the root read-only last; the
+    // remount is not recursive, so /tmp (tmpfs), /dev and the writable binds stay writable.
+    out.insert(out.end(), {"--remount-ro", "/"});
     if (!request.working_dir.empty()) {
         out.insert(out.end(), {"--chdir", request.working_dir.native()});
     }
