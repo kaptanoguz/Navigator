@@ -451,6 +451,15 @@ bool Workspace::execute(const Command& command) {
     case CommandId::FlattenVolume:
     case CommandId::ToggleTypesPopup:
     case CommandId::RebuildIndex: return false;
+    // Phase 6: the Inspector (shell level; ui::App).
+    case CommandId::Inspect:
+    case CommandId::ToggleInspectorLock:
+    case CommandId::InspectorZoomFit:
+    case CommandId::InspectorZoom1to1:
+    case CommandId::InspectorPlay:
+    case CommandId::CycleInspectorPlacement:
+    case CommandId::ToggleInspectorGrid:
+    case CommandId::ToggleInspectorMinimap: return false;
     // Phase 5: the active tab's view.
     case CommandId::ClearFilter:
     case CommandId::ToggleFlatten:

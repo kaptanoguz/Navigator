@@ -237,8 +237,10 @@ struct ProcessRequest {
     // LANG, LC_ALL kept) with read-only binds of /usr, /etc, /lib*, /bin, /sbin (as present),
     // --proc /proc, --dev /dev, --tmpfs /tmp, plus read_only_paths (--ro-bind) and
     // writable_paths (--bind), like GNOME's thumbnailer sandbox. Without bwrap the child runs
-    // unsandboxed with the limits above and ProcessResult::sandboxed is false. A bwrap setup
-    // failure is a non-zero exit like any other; it is not retried unsandboxed.
+    // unsandboxed with the limits above and ProcessResult::sandboxed is false. Each runner probes
+    // bwrap once (a trivial program with the same namespace flags); if the probe fails (e.g. user
+    // namespaces disabled), sandboxed requests run unsandboxed with sandboxed == false. After a
+    // successful probe a bwrap failure is a non-zero exit like any other and is not retried.
     bool sandbox = false;
     std::vector<Path> read_only_paths;
     std::vector<Path> writable_paths;
@@ -277,8 +279,9 @@ struct ProcessResult {
 // (argv[0] not found or not executable), Cancelled, PlatformError (pipe/fork/spawn failure;
 // message carries strerror text), OutOfMemory.
 //
-// Thread-safety: the default runner holds no mutable state; run() may be called concurrently
-// from several workers. Fakes document their own rule.
+// Thread-safety: the default runner's only mutable state is the cached bwrap probe result,
+// guarded by a mutex; run() may be called concurrently from several workers. Fakes document their
+// own rule.
 class IProcessRunner {
 public:
     IProcessRunner() = default;

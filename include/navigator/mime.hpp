@@ -82,6 +82,12 @@
 //   webm          video/webm                                       type.video
 //   avi           video/x-msvideo                                  type.video
 //   mov           video/quicktime                                  type.video
+//   3gp           video/3gpp                                       type.video
+//   mts m2ts      video/mp2t                                       type.video
+//   mpg mpeg      video/mpeg                                       type.video
+//   ogv           video/ogg                                        type.video
+//   wmv           video/x-ms-wmv                                   type.video
+//   flv           video/x-flv                                      type.video
 //   ttf           font/ttf                                         type.font
 //   otf           font/otf                                         type.font
 //   woff2         font/woff2                                       type.font
