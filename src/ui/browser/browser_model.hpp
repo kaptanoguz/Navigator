@@ -236,7 +236,9 @@ public:
     // Match mode of the current view (folder: Substring by default, flattened: Fuzzy).
     [[nodiscard]] search::MatchMode match_mode() const noexcept;
     void toggle_match_mode(); // search.toggle_fuzzy
-    // The compiled query the rows reflect (highlights use it).
+    // The newest compiled query (highlights use it). While a worker re-match or a debounced index
+    // query is pending, the shown rows may still be the previous query's for a frame or two; no
+    // wrong rows are ever shown, but highlights can lag.
     [[nodiscard]] const search::Query& query() const noexcept;
     // Bumps whenever the query or the type filter changes (view caches key on it).
     [[nodiscard]] std::uint64_t filter_generation() const noexcept { return filter_gen_; }
