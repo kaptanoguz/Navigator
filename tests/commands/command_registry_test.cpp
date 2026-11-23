@@ -24,8 +24,8 @@ constexpr auto kTestB = static_cast<CommandId>(901);
 // Phase 0: 3 ids; Phase 2: ToggleHidden, 5 navigation, 3 list, 6 cursor; Phase 3:
 // OpenInNewTab, 10 tab, 5 pane, 3 layout, 1 window; Phase 4: 2 view, GoTo, 1 sidebar,
 // 4 bookmarks, 2 recents, 1 edit; Phase 5: 2 list filter, 6 search; Phase 6: view.inspect,
-// 7 inspector.
-constexpr std::size_t kBuiltinCount = 18 + 20 + 11 + 8 + 8;
+// 7 inspector; Phase 7: 5 edit, 7 file, 3 ops, 3 trash.
+constexpr std::size_t kBuiltinCount = 18 + 20 + 11 + 8 + 8 + 18;
 
 struct Expected {
     CommandId id;
@@ -94,6 +94,28 @@ constexpr Expected kPhase6[] = {
     {CommandId::CycleInspectorPlacement, 1325, "inspector.cycle_placement"},
     {CommandId::ToggleInspectorGrid, 1326, "inspector.toggle_grid"},
     {CommandId::ToggleInspectorMinimap, 1327, "inspector.toggle_minimap"},
+};
+
+// Phase 7 ids with their frozen numeric values and names (include/navigator/commands.hpp).
+constexpr Expected kPhase7[] = {
+    {CommandId::Copy, 1281, "edit.copy"},
+    {CommandId::Cut, 1282, "edit.cut"},
+    {CommandId::Paste, 1283, "edit.paste"},
+    {CommandId::Undo, 1284, "edit.undo"},
+    {CommandId::Redo, 1285, "edit.redo"},
+    {CommandId::MoveToTrash, 1340, "file.trash"},
+    {CommandId::DeletePermanently, 1341, "file.delete_permanently"},
+    {CommandId::Rename, 1342, "file.rename"},
+    {CommandId::NewFolder, 1343, "file.new_folder"},
+    {CommandId::CopyToOtherPane, 1344, "file.copy_to_other_pane"},
+    {CommandId::MoveToOtherPane, 1345, "file.move_to_other_pane"},
+    {CommandId::OpenTerminalHere, 1346, "file.open_terminal_here"},
+    {CommandId::CancelOperation, 1347, "ops.cancel"},
+    {CommandId::TogglePauseOperation, 1348, "ops.toggle_pause"},
+    {CommandId::ToggleOperationsPanel, 1349, "ops.toggle_panel"},
+    {CommandId::OpenTrash, 1360, "trash.open"},
+    {CommandId::RestoreFromTrash, 1361, "trash.restore"},
+    {CommandId::EmptyTrash, 1362, "trash.empty"},
 };
 
 } // namespace
@@ -241,8 +263,8 @@ TEST_CASE("to_string(CommandId) values", "[to_string]") {
     CHECK(navigator::to_string(static_cast<CommandId>(1006)) == "unknown");
     CHECK(navigator::to_string(static_cast<CommandId>(1103)) == "unknown");
     for (const std::uint32_t gap :
-         {1117U, 1199U, 1210U, 1219U, 1225U, 1239U, 1243U, 1249U, 1251U, 1259U, 1265U,
-          1269U, 1272U, 1279U, 1281U, 1299U, 1308U, 1319U, 1328U, 1339U, 1340U}) {
+         {1117U, 1199U, 1210U, 1219U, 1225U, 1239U, 1243U, 1249U, 1251U, 1259U, 1265U, 1269U, 1272U,
+          1279U, 1286U, 1299U, 1308U, 1319U, 1328U, 1339U, 1350U, 1359U, 1363U, 1369U, 1370U}) {
         INFO("id " << gap);
         CHECK(navigator::to_string(static_cast<CommandId>(gap)) == "unknown");
     }
@@ -275,6 +297,8 @@ TEST_CASE("CommandId numeric values are stable", "[to_string]") {
     CHECK(navigator::NewTabArg::Home == 1);
     CHECK(navigator::CopyPathArg::None == 0);
     CHECK(navigator::CopyPathArg::CurrentFolder == 1);
+    CHECK(navigator::PasteArg::None == 0);
+    CHECK(navigator::PasteArg::IntoCursorFolder == 1);
 }
 
 TEST_CASE("Phase 3 ids: stable values, names, registered with cmd.<name>",
@@ -401,6 +425,51 @@ TEST_CASE("Phase 6 ids: stable values, names, registered with cmd.<name>",
         INFO("id " << v);
         CHECK(registry.find(static_cast<CommandId>(v)) == nullptr);
     }
+}
+
+TEST_CASE("Phase 7 ids: stable values, names, registered with cmd.<name>",
+          "[registry][builtin][phase7]") {
+    CommandRegistry registry;
+    REQUIRE(navigator::register_builtin_commands(registry));
+    std::uint32_t previous = 0;
+    for (const Expected& e : kPhase7) {
+        INFO("command " << e.name);
+        CHECK(static_cast<std::uint32_t>(e.id) == e.value);
+        CHECK(e.value > previous);
+        previous = e.value;
+        CHECK(navigator::to_string(e.id) == e.name);
+        const CommandInfo* by_id = registry.find(e.id);
+        REQUIRE(by_id != nullptr);
+        CHECK(by_id->name == e.name);
+        CHECK(by_id->title_key == std::string("cmd.") + std::string(e.name));
+        const CommandInfo* by_name = registry.find(e.name);
+        REQUIRE(by_name != nullptr);
+        CHECK(by_name->id == e.id);
+        // Header ranges: edit/clipboard 1280-1299, file operations and the operations panel
+        // 1340-1359, trash 1360-1369.
+        if (e.name.starts_with("edit.")) {
+            CHECK((e.value >= 1281 && e.value <= 1299));
+        } else if (e.name.starts_with("file.") || e.name.starts_with("ops.")) {
+            CHECK((e.value >= 1340 && e.value <= 1359));
+        } else {
+            CHECK(e.name.starts_with("trash."));
+            CHECK((e.value >= 1360 && e.value <= 1369));
+        }
+    }
+    // The rest of each Phase 7 range is still free: nothing registered there yet.
+    const auto free_range = [&](std::uint32_t first, std::uint32_t last) {
+        for (std::uint32_t v = first; v <= last; ++v) {
+            INFO("id " << v);
+            CHECK(registry.find(static_cast<CommandId>(v)) == nullptr);
+        }
+    };
+    free_range(1286, 1299);
+    free_range(1350, 1359);
+    free_range(1363, 1369);
+    // CopyPath (Phase 4) keeps 1280; the Phase 7 edit ids follow it.
+    CHECK(registry.find(CommandId::CopyPath) != nullptr);
+    CHECK(static_cast<std::uint32_t>(CommandId::CopyPath) + 1 ==
+          static_cast<std::uint32_t>(CommandId::Copy));
 }
 
 TEST_CASE("built-ins register in ascending CommandId order", "[registry][builtin]") {
