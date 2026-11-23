@@ -14,6 +14,12 @@
 // copy_path_text. Their effect checks drive those same headless pieces the way the shell does;
 // the shell's own key routing is covered end to end by tests/integration/places_app_smoke.sh
 // (key:CHORD script steps on the real binary).
+//
+// Phase 5: Ctrl+E (search.flatten) goes through Workspace::execute to the tab's BrowserModel and
+// walks the fixture with the real fs::Walker. Ctrl+F, Ctrl+Shift+E and Ctrl+Shift+F are the
+// shell's (filter focus, volume table + index service, types popup); the Workspace does not
+// handle them (checked) and their effect is driven on the BrowserModel calls the shell makes,
+// with a real create_name_index() of the fixture for the index-backed Ctrl+Shift+E.
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -36,13 +42,16 @@
 
 #include <navigator/commands.hpp>
 #include <navigator/fs.hpp>
+#include <navigator/index.hpp>
 #include <navigator/layout.hpp>
+#include <navigator/search.hpp>
 
 #include "browser/browser_model.hpp"
 #include "browser_support.hpp"
 #include "fixture.hpp"
 #include "path/copy_path.hpp"
 #include "path/path_entry.hpp"
+#include "search_support.hpp"
 #include "sidebar/places_model.hpp"
 #include "sidebar/sidebar_model.hpp"
 #include "workspace/workspace.hpp"
@@ -574,6 +583,172 @@ void add_phase4_checks(std::map<std::string, Check>& checks) {
     checks["edit.copy_path"] = check_copy_path;
 }
 
+// ---- Phase 5 ----------------------------------------------------------------------------------
+// Ctrl+E is a tab command (Workspace -> BrowserModel, real fs::Walker). Ctrl+F, Ctrl+Shift+E and
+// Ctrl+Shift+F are the shell's (focus, the volume table and index service, the types popup):
+// the Workspace does not handle them (checked) and the effect is driven on the headless pieces
+// the shell calls (App::Impl::focus_filter / handle_text, flatten_volume, the SetTypeVisible /
+// ToggleAllTypes intents).
+
+// Scene listing without hidden: alpha, beta, c.txt, f01..f30. The flattened subtree adds
+// alpha/inner.
+const std::set<std::string>& flat_scene() {
+    static const std::set<std::string> rels = [] {
+        std::set<std::string> s{"alpha", "beta", "c.txt", "alpha/inner"};
+        for (int i = 1; i <= 30; ++i) {
+            s.insert((i < 10 ? "f0" : "f") + std::to_string(i));
+        }
+        return s;
+    }();
+    return rels;
+}
+
+void check_focus_filter(Scene& s, const Command& c) {
+    BrowserModel& m = s.m();
+    m.set_filter_text("f1"); // an earlier filter
+    REQUIRE(row_names(m) == std::vector<std::string>{"f10", "f11", "f12", "f13", "f14", "f15",
+                                                     "f16", "f17", "f18", "f19"});
+    check_not_handled(s, c);
+    // The shell's focus_filter(select_all = true): the text is selected, so typing replaces it.
+    m.filter_edit().select_all();
+    CHECK(m.filter_edit().selected_text() == "f1");
+    REQUIRE(m.filter_edit().insert("C.T"));
+    m.filter_edited();
+    CHECK(m.filter_edit().text() == "C.T");
+    CHECK(m.match_mode() == search::MatchMode::Substring);    // folder filter default
+    CHECK(row_names(m) == std::vector<std::string>{"c.txt"}); // inline (33 < 20k), same frame
+    CHECK(m.source_count() == 33);
+    CHECK(row_cursor_name(m) == "c.txt");
+    // Enter on the cursor row opens the file (rows, not listing indices).
+    REQUIRE(s.exec(Command{CommandId::Activate, 0}));
+    REQUIRE(s.launcher.requests.size() == 1);
+    CHECK(s.launcher.requests[0].argv.back() == (s.t / "c.txt").string());
+    // Ctrl+A selects the shown rows only.
+    REQUIRE(s.exec(Command{CommandId::SelectAll, 0}));
+    CHECK(m.selected_count() == 1);
+    // Navigation clears the filter text (docs/keymap.md).
+    s.go(s.t / "alpha");
+    CHECK_FALSE(m.filter_active());
+    CHECK(row_names(m) == std::vector<std::string>{"inner"});
+    s.go(s.t.path());
+    CHECK(m.row_count() == 33);
+}
+
+void check_flatten(Scene& s, const Command& c) {
+    BrowserModel& m = s.m();
+    REQUIRE(s.exec(c));
+    REQUIRE(m.flattened());
+    CHECK(m.flatten_root() == s.t.path());
+    CHECK_FALSE(m.flatten_is_volume());
+    REQUIRE(m.settle_search(kSearchWait));
+    CHECK(row_rel_set(m) == flat_scene()); // .hidden is not shown
+    const ui::FlattenProgress p = m.flatten_progress();
+    CHECK_FALSE(p.from_index);
+    CHECK_FALSE(p.walking);
+    CHECK_FALSE(p.cancelled);
+    CHECK(p.found == flat_scene().size());
+    CHECK(m.match_mode() == search::MatchMode::Fuzzy); // flattened default
+    // Empty query: folders first (alpha, beta, inner), then names.
+    REQUIRE(m.row_count() == flat_scene().size());
+    CHECK(row_rels(m)[0] == "alpha");
+    CHECK(row_rels(m)[2] == "alpha/inner");
+    CHECK(row_rels(m)[3] == "c.txt");
+    // Fuzzy query "inr" finds the nested folder only.
+    m.set_filter_text("inr");
+    REQUIRE(m.settle_search(kSearchWait));
+    CHECK(row_rels(m) == std::vector<std::string>{"alpha/inner"});
+    CHECK(m.source_count() == flat_scene().size());
+    m.clear_filter();
+    REQUIRE(m.settle_search(kSearchWait));
+    CHECK(m.take_visits().empty()); // flatten never records Recents
+    // Again: leave; the folder listing is back, the folder unchanged.
+    REQUIRE(s.exec(c));
+    CHECK_FALSE(m.flattened());
+    CHECK(m.current_dir() == s.t.path());
+    CHECK(m.row_count() == 33);
+    CHECK(s.l().tab_count() == 1);
+}
+
+void check_flatten_volume(Scene& s, const Command& c) {
+    check_not_handled(s, c);
+    BrowserModel& m = s.m();
+    // The shell's flatten_volume() without a ready index: a walk of the volume root (the
+    // fixture stands in for the mount point the volume table would give).
+    m.flatten(ui::FlattenRequest{s.t.path(), true, nullptr});
+    REQUIRE(m.settle_search(kSearchWait));
+    CHECK(m.flatten_is_volume());
+    CHECK_FALSE(m.flatten_progress().from_index);
+    CHECK(row_rel_set(m) == flat_scene());
+    m.leave_flatten(); // the shell's toggle: same root again leaves
+    CHECK_FALSE(m.flattened());
+    // With a Ready index of that volume: answered by the index, the same rows.
+    const std::shared_ptr<search::IIndex> index = ready_index(index_options(s.t.path()));
+    m.flatten(ui::FlattenRequest{s.t.path(), true, index});
+    REQUIRE(m.settle_search(kSearchWait));
+    CHECK(m.flatten_is_volume());
+    CHECK(m.flatten_progress().from_index);
+    CHECK(m.flatten_progress().index_complete);
+    CHECK(row_rel_set(m) == flat_scene());
+    m.set_filter_text("f3");
+    REQUIRE(m.settle_search(kSearchWait));
+    // Ranked: the contiguous prefix "f3" (88) before the gapped f?3 names (61), then by name.
+    CHECK(row_names(m) == std::vector<std::string>{"f30", "f03", "f13", "f23"});
+    m.clear_filter();
+    REQUIRE(m.settle_search(kSearchWait));
+    m.leave_flatten();
+    CHECK(m.row_count() == 33);
+    index->stop();
+}
+
+void check_types(Scene& s, const Command& c) {
+    check_not_handled(s, c);
+    BrowserModel& m = s.m();
+    // The popup's rows: Folders, No extension, then .txt; the hidden file does not count.
+    const std::vector<search::TypeCount> rows = m.type_summary();
+    REQUIRE(rows.size() == 3);
+    CHECK(rows[0].key.kind == search::TypeKind::Folder);
+    CHECK(rows[0].count == 2);
+    CHECK(rows[1].key.kind == search::TypeKind::NoExtension);
+    CHECK(rows[1].count == 30);
+    CHECK(rows[2].key.extension == "txt");
+    CHECK(rows[2].count == 1);
+    // SetTypeVisible(txt, false) as the shell applies it.
+    search::TypeFilter tf = m.type_filter();
+    search::set_visible(tf, rows[2].key, false);
+    m.set_type_filter(tf);
+    CHECK(m.row_count() == 32);
+    CHECK(m.find_row("c.txt") == kNoRow);
+    CHECK(m.source_count() == 33);
+    // Persisted with the tab (session "hidden_types").
+    (void)s.ws->sync();
+    const layout::TabState* st = s.ws->session().layout.tab_state(s.ws->active_tab());
+    REQUIRE(st != nullptr);
+    CHECK(st->type_filter.hidden_extensions == std::vector<std::string>{"txt"});
+    // Kept across navigation, like show_hidden.
+    s.go(s.t / "alpha");
+    CHECK(m.type_filter().hidden_extensions == std::vector<std::string>{"txt"});
+    s.go(s.t.path());
+    CHECK(m.find_row("c.txt") == kNoRow);
+    // Escape never clears it.
+    m.escape();
+    m.escape();
+    CHECK(m.type_filter().active());
+    // ToggleAllTypes: not every present type is visible, so all become visible.
+    tf = m.type_filter();
+    const std::vector<search::TypeCount> present = m.type_summary();
+    search::toggle_all(tf, Span<const search::TypeCount>(present));
+    m.set_type_filter(tf);
+    CHECK_FALSE(m.type_filter().active());
+    CHECK(m.row_count() == 33);
+}
+
+void add_phase5_checks(std::map<std::string, Check>& checks) {
+    checks["list.filter"] = check_focus_filter;
+    checks["search.flatten"] = check_flatten;
+    checks["search.flatten_volume"] = check_flatten_volume;
+    checks["search.types"] = check_types;
+}
+
 std::map<std::string, Check> effect_checks() {
     std::map<std::string, Check> checks;
     checks["app.quit"] = check_not_handled;
@@ -847,6 +1022,7 @@ std::map<std::string, Check> effect_checks() {
     checks["pane.focus_next"] = focus_pane;
     checks["pane.focus_previous"] = focus_pane;
     add_phase4_checks(checks);
+    add_phase5_checks(checks);
     checks["pane.close"] = [](Scene& s, const Command& c) {
         REQUIRE(s.exec(c)); // the only pane: no-op
         s.settle();
@@ -877,13 +1053,14 @@ std::map<std::string, Check> effect_checks() {
 
 TEST_CASE("docs/keymap.md and load_default_keymap agree row for row", "[keymap][e2e]") {
     const DocTables doc = read_doc();
-    // Phase 0, Phase 2, Phase 3 and Phase 4 tables.
-    CHECK(doc.per_phase.size() == 4);
+    // Phase 0, Phase 2, Phase 3, Phase 4 and Phase 5 tables.
+    CHECK(doc.per_phase.size() == 5);
     CHECK(doc.per_phase.at(0) == 3);
     CHECK(doc.per_phase.at(2) == 25);
     CHECK(doc.per_phase.at(3) == 21);
     CHECK(doc.per_phase.at(4) == 5);
-    REQUIRE(doc.bound.size() == 54);
+    CHECK(doc.per_phase.at(5) == 4);
+    REQUIRE(doc.bound.size() == 58);
     Keymap keymap;
     REQUIRE(load_default_keymap(keymap));
     const Span<const KeyBinding> bindings = keymap.bindings();
@@ -909,17 +1086,19 @@ TEST_CASE("docs/keymap.md and load_default_keymap agree row for row", "[keymap][
     REQUIRE(register_builtin_commands(registry));
     // Phase 3: tab.close_left, layout.delete, window.new. Phase 4: sidebar.focus,
     // bookmarks.rename / move_up / move_down, recents.clear / toggle_tracking,
-    // view.toggle_view_lock (nav.focus_address_bar became Ctrl+L).
+    // view.toggle_view_lock (nav.focus_address_bar became Ctrl+L). Phase 5: list.clear_filter,
+    // search.toggle_fuzzy, search.cancel, search.rebuild_index.
     std::set<std::string> unbound_names;
     for (const DocRow& row : doc.unbound) {
         unbound_names.insert(row.command);
     }
-    CHECK(unbound_names == std::set<std::string>{"tab.close_left", "layout.delete", "window.new",
-                                                 "sidebar.focus", "bookmarks.rename",
-                                                 "bookmarks.move_up", "bookmarks.move_down",
-                                                 "recents.clear", "recents.toggle_tracking",
-                                                 "view.toggle_view_lock"});
-    REQUIRE(doc.unbound.size() == 10);
+    CHECK(unbound_names ==
+          std::set<std::string>{"tab.close_left", "layout.delete", "window.new", "sidebar.focus",
+                                "bookmarks.rename", "bookmarks.move_up", "bookmarks.move_down",
+                                "recents.clear", "recents.toggle_tracking", "view.toggle_view_lock",
+                                "list.clear_filter", "search.toggle_fuzzy", "search.cancel",
+                                "search.rebuild_index"});
+    REQUIRE(doc.unbound.size() == 14);
     for (const DocRow& row : doc.unbound) {
         INFO("keymap.md line " << row.line << ": " << row.command);
         CHECK(registry.find(row.command) != nullptr);
@@ -963,12 +1142,15 @@ TEST_CASE("Every default chord resolves to its command and has its effect on the
     }
 
     // Near misses do not resolve: extra modifiers, chords reserved for later phases (Ctrl+N:
-    // window.new, deferred; Ctrl+E, Ctrl+Shift+P, Ctrl+Shift+N, Ctrl+P, Ctrl+C) and unbound
-    // keys, including Phase 4 chords with an extra modifier.
+    // window.new, deferred; Ctrl+Shift+P, Ctrl+Shift+N, Ctrl+P, Ctrl+C) and unbound keys,
+    // including Phase 4 and Phase 5 chords with an extra or a missing modifier (Ctrl+E is
+    // search.flatten since Phase 5).
     for (const char* text :
-         {"Ctrl+N", "Ctrl+E", "Ctrl+Shift+P", "Ctrl+Shift+N", "Ctrl+P", "Ctrl+C", "Ctrl+Alt+Left",
-          "Alt+Shift+Left", "Delete", "Ctrl+Shift+F3", "Ctrl+F6", "Ctrl+Alt+T", "Shift+Enter",
-          "Ctrl+Shift+B", "Ctrl+Alt+L", "Ctrl+Shift+G", "Alt+D", "Ctrl+Alt+C"}) {
+         {"Ctrl+N",        "Ctrl+Shift+P",     "Ctrl+Shift+N", "Ctrl+P",        "Ctrl+C",
+          "Ctrl+Alt+Left", "Alt+Shift+Left",   "Delete",       "Ctrl+Shift+F3", "Ctrl+F6",
+          "Ctrl+Alt+T",    "Shift+Enter",      "Ctrl+Shift+B", "Ctrl+Alt+L",    "Ctrl+Shift+G",
+          "Alt+D",         "Ctrl+Alt+C",       "Ctrl+Alt+E",   "Alt+E",         "Ctrl+Alt+F",
+          "Alt+F",         "Ctrl+Alt+Shift+E", "Shift+F",      "Ctrl+Space",    "Ctrl+Comma"}) {
         INFO(text);
         CHECK_FALSE(resolve_command(keymap, registry, chord_of(text)));
     }
@@ -998,6 +1180,41 @@ TEST_CASE("Unbound Phase 3 commands through the workspace", "[keymap][e2e][works
     CHECK(s.exec(Command{CommandId::CloseTab, 0xFFFFFFF0U}));
     CHECK(s.exec(Command{CommandId::DuplicateTab, std::uint64_t{1} << 40}));
     CHECK(s.l().tab_count() == 1);
+}
+
+TEST_CASE("Unbound Phase 5 commands through the workspace", "[keymap][e2e][workspace][search]") {
+    Scene s;
+    BrowserModel& m = s.m();
+    // list.clear_filter (chip button, Escape cascade).
+    m.set_filter_text("f2");
+    REQUIRE(m.row_count() == 10); // f20..f29 (f02 has no contiguous "f2")
+    CHECK(s.exec(Command{CommandId::ClearFilter, 0}));
+    CHECK_FALSE(m.filter_active());
+    CHECK(m.row_count() == 33);
+    // search.toggle_fuzzy: "f2" in Fuzzy also finds the gapped f?2 names.
+    m.set_filter_text("f2");
+    CHECK(s.exec(Command{CommandId::ToggleFuzzy, 0}));
+    CHECK(m.match_mode() == search::MatchMode::Fuzzy);
+    REQUIRE(m.settle_search(kSearchWait));
+    CHECK(m.row_count() == 12); // + f02 and f12
+    CHECK(s.exec(Command{CommandId::ToggleFuzzy, 0}));
+    CHECK(m.match_mode() == search::MatchMode::Substring);
+    CHECK(m.row_count() == 10);
+    m.clear_filter();
+    // search.cancel: stops a running flatten walk and keeps the rows found so far.
+    REQUIRE(s.exec(Command{CommandId::ToggleFlatten, 0}));
+    CHECK(s.exec(Command{CommandId::CancelSearch, 0}));
+    CHECK_FALSE(m.flatten_progress().walking);
+    REQUIRE(m.settle_search(kSearchWait));
+    CHECK(m.row_count() <= flat_scene().size());
+    for (const std::string& rel : row_rels(m)) {
+        CHECK(flat_scene().contains(rel));
+    }
+    CHECK(s.exec(Command{CommandId::ToggleFlatten, 0}));
+    CHECK_FALSE(m.flattened());
+    // search.rebuild_index needs the App's index service.
+    CHECK_FALSE(s.exec(Command{CommandId::RebuildIndex, 0}));
+    CHECK(m.row_count() == 33);
 }
 
 TEST_CASE("Activate through the keymap never spawns a process", "[keymap][e2e][launcher]") {
