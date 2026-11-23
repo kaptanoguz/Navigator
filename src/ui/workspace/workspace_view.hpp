@@ -87,6 +87,10 @@ struct ShellFrame {
     // the index that covers a folder (whole-volume searches show it; empty: no index).
     layout::TabId filter_focus;
     std::function<std::optional<search::IndexStatus>(const Path&)> index_status;
+    // Phase 6: the Inspector card (drawn after the panes, before overlays, toasts and popups)
+    // and the list thumbnails source (null: glyphs only).
+    std::function<void()> draw_inspector;
+    RowThumbnailSource* thumbnails = nullptr;
 };
 
 enum class PointerCursor : std::uint8_t { Default, ResizeHorizontal, ResizeVertical };

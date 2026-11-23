@@ -97,7 +97,15 @@ Result<std::unique_ptr<FontCache>> FontCache::create() {
         auto f = find_font(family, weight);
         cache->files_.at(static_cast<std::size_t>(weight)) = f ? *f : *regular;
     }
+    // Phase 6: monospace for the Inspector's text view (fontconfig resolves the alias).
+    auto mono = find_font({"monospace", "DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono"},
+                          FontWeight::Regular);
+    cache->files_[3] = mono ? *mono : *regular;
     return cache;
+}
+
+const FontFile& FontCache::file_for(const TextStyle& style) const noexcept {
+    return style.mono ? files_[3] : files_.at(static_cast<std::size_t>(style.weight));
 }
 
 void FontCache::clear() {
@@ -121,7 +129,7 @@ Result<Font*> FontCache::open(const FontFile& file, int size_q) {
 
 Result<Font*> FontCache::get(const TextStyle& style, float scale) {
     const int q = quantize_size(std::max(1.0F, style.size * scale));
-    return open(files_.at(static_cast<std::size_t>(style.weight)), q);
+    return open(file_for(style), q);
 }
 
 Font* FontCache::fallback_font(char32_t codepoint, FontWeight weight, int size_q) {
@@ -211,7 +219,8 @@ std::shared_ptr<const TextLayout> FontCache::shape(const TextStyle& style, float
                                                    std::string_view language) {
     const int q = quantize_size(std::max(1.0F, style.size * scale));
     key_.clear();
-    const auto weight = static_cast<std::uint8_t>(style.weight);
+    const auto weight =
+        static_cast<std::uint8_t>(static_cast<unsigned>(style.weight) | (style.mono ? 0x80U : 0U));
     const auto tracking = std::bit_cast<std::uint32_t>(style.tracking);
     const std::uint8_t tabular = style.tabular ? 1U : 0U;
     append_bytes(key_, &weight, sizeof weight);
@@ -224,7 +233,7 @@ std::shared_ptr<const TextLayout> FontCache::shape(const TextStyle& style, float
     if (auto hit = layouts_.find(key_)) {
         return hit;
     }
-    auto primary = open(files_.at(static_cast<std::size_t>(style.weight)), q);
+    auto primary = open(file_for(style), q);
     if (!primary) {
         return std::make_shared<const TextLayout>();
     }

@@ -121,6 +121,12 @@ public:
     [[nodiscard]] const layout::SidebarState& sidebar() const noexcept { return session_.sidebar; }
     // Width is clamped to [kSidebarMinWidth, kSidebarMaxWidth]; a change bumps persist_serial.
     void set_sidebar(const layout::SidebarState& state);
+    // Phase 6: the window's Inspector state (persisted in the session only, like the sidebar).
+    [[nodiscard]] const layout::InspectorState& inspector() const noexcept {
+        return session_.inspector;
+    }
+    // Width / height are clamped to their ranges; a change bumps persist_serial.
+    void set_inspector(const layout::InspectorState& state);
 
     // Named layouts (synchronous; small files, user-initiated). Errors from layout.hpp;
     // Unsupported without a config root.

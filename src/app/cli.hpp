@@ -35,6 +35,11 @@ struct CliOptions {
     // Phase 5: --cache-dir DIR (raw bytes); empty: $XDG_CACHE_HOME/navigator. main() points
     // config.cache_dir at it. --no-index clears config.enable_index.
     std::string cache_dir;
+    // Phase 6: --thumbnail-dir DIR (raw bytes); empty: <cache_dir>/thumbnails, else the shared
+    // Freedesktop cache. main() points config.thumbnail_dir at it. --no-thumbnails clears
+    // config.enable_thumbnails, --no-external-thumbnailers config.enable_external_thumbnailers,
+    // --preview-cache-mb N sets config.preview_cache_bytes.
+    std::string thumbnail_dir;
     bool show_help = false;
     bool show_version = false;
     std::optional<Language> language;               // --lang overrides the environment

@@ -40,6 +40,25 @@
 
 namespace navigator::ui {
 
+// Phase 6 list thumbnails (implemented by inspector/list_thumbnails.hpp): the view asks for the
+// rows it draws and a few just off screen; a ready thumbnail replaces the type glyph.
+class RowThumbnailSource {
+public:
+    RowThumbnailSource() = default;
+    virtual ~RowThumbnailSource() = default;
+    RowThumbnailSource(const RowThumbnailSource&) = delete;
+    RowThumbnailSource& operator=(const RowThumbnailSource&) = delete;
+    RowThumbnailSource(RowThumbnailSource&&) = delete;
+    RowThumbnailSource& operator=(RowThumbnailSource&&) = delete;
+
+    // Draws the thumbnail of `row` into the glyph box `box` (px) and returns true, or returns
+    // false (not an image/video, not ready yet: the glyph is drawn). Requests it when missing.
+    virtual bool draw_row(Renderer& r, const Palette& pal, const BrowserModel& model,
+                          std::size_t row, const RectF& box, float scale, float dim) = 0;
+    // A row just off screen: requested with Prefetch priority, nothing drawn.
+    virtual void prefetch_row(const BrowserModel& model, std::size_t row, float box_px) = 0;
+};
+
 struct BrowserFrame {
     const Painter& painter;
     const Palette& palette;
@@ -72,6 +91,8 @@ struct BrowserFrame {
     // inactive), and the index of the volume a whole-volume search runs on (status bar).
     bool filter_focused = false;
     std::optional<search::IndexStatus> index_status;
+    // Phase 6: list thumbnails (null: type glyphs only).
+    RowThumbnailSource* thumbnails = nullptr;
 };
 
 // Performance overlay (F12) at the bottom-right of the window.

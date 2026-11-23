@@ -625,8 +625,16 @@ void BrowserView::draw_rows(const BrowserFrame& f, const Layout& l) {
         const float mid = std::round(y + (0.5F * l.row_h));
         const bool dir = fs::is_directory_like(e);
         const float dim = e.hidden ? 0.6F : 1.0F;
-        draw_entry_glyph(r, pal, e, l.name_x, std::round(mid - (0.5F * glyph)), glyph, dim,
-                         p.scale());
+        // Phase 6: an image / video thumbnail replaces the glyph once it has landed; it sits in
+        // a box 2dp larger than the glyph, centred on it, so the name column does not move.
+        const float thumb = std::round(p.px(metrics::icon_size + 2.0F));
+        const RectF thumb_box{std::round(l.name_x + (0.5F * glyph) - (0.5F * thumb)),
+                              std::round(mid - (0.5F * thumb)), thumb, thumb};
+        if (f.thumbnails == nullptr ||
+            !f.thumbnails->draw_row(r, pal, m, i, thumb_box, p.scale(), dim)) {
+            draw_entry_glyph(r, pal, e, l.name_x, std::round(mid - (0.5F * glyph)), glyph, dim,
+                             p.scale());
+        }
 
         const std::string name = display_name(e.name);
         // Narrow flattened panes: the parent path follows the name, muted, when there is room.
@@ -689,6 +697,17 @@ void BrowserView::draw_rows(const BrowserFrame& f, const Layout& l) {
             const ShapedText when =
                 fitter_.fit(p, type::row_numeric, date, l.date_r - l.date_x, Elide::End);
             p.draw(when, l.date_x, baseline, pal.text_secondary);
+        }
+    }
+    // Phase 6: thumbnails of the rows just off screen, so scrolling a little shows them at once.
+    if (f.thumbnails != nullptr) {
+        const float thumb = std::round(p.px(metrics::icon_size + 2.0F));
+        constexpr std::size_t kAhead = 8;
+        for (std::size_t i = last + 1; i < n && i <= last + kAhead; ++i) {
+            f.thumbnails->prefetch_row(m, i, thumb);
+        }
+        for (std::size_t k = 1; k <= kAhead && k <= first; ++k) {
+            f.thumbnails->prefetch_row(m, first - k, thumb);
         }
     }
 }
