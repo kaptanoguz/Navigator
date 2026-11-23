@@ -2,7 +2,8 @@
 
 Phase 0 gates are below. Phase 1 adds the gates in "Phase 1 additions", Phase 2 those in
 "Phase 2 additions", Phase 3 those in "Phase 3 additions", Phase 4 those in "Phase 4
-additions", Phase 5 those in "Phase 5 additions"; every earlier gate still applies.
+additions", Phase 5 those in "Phase 5 additions", Phase 6 those in "Phase 6 additions"; every
+earlier gate still applies.
 
 ## Phase 0
 
@@ -167,6 +168,38 @@ Notes:
 - The permission tests skip as root. Folders made unreadable get mode 0755 back before the
   fixture is removed.
 - Findings: `docs/qa-phase5.md`.
+
+## Phase 6 additions (Inspector, thumbnails, previews)
+
+Every earlier gate still applies. New suite `navigator_preview_integration_tests` (ctest prefix
+`integration.`, label `integration`; links `navigator_preview`, `navigator_platform`,
+`navigator_core`, no ui, no SDL): `thumbnail_interop_test.cpp`, `thumbnailer_e2e_test.cpp`,
+`preview_robustness_test.cpp` with helpers in `preview_support.hpp` (independent PNG chunk
+reader, a recording wrapper around the REAL process runner, fixture makers). The keymap e2e knows
+the Phase 6 table. New app script `integration.app_preview_rules`
+(`tests/integration/preview_app_smoke.sh`). Fixtures are made at run time with `ffmpeg`,
+`gdk-pixbuf-thumbnailer`, `ffmpegthumbnailer` and `md5sum`; a case SKIPs (the script exits 77)
+when its tool is missing. Every cache root is a temporary directory.
+
+| # | Gate | Command | Pass condition |
+|---|------|---------|----------------|
+| 41 | Keymap doc sync, all phases | `ctest --preset dev -R '^integration\..*(keymap\|chord\|text field)'` | 6 phase tables, 60 chords (3 + 25 + 21 + 5 + 4 + 2) equal `load_default_keymap()` row for row; 21 `(unbound)` rows (exact set, + the 7 `inspector.*`); `Space` / `Alt+KeypadEnter` are not handled by the Workspace and their effect is driven on `Workspace::set_inspector` + `inspector::Controller` with the app's own headless preview backend (text, then folder, then hidden); `Space` / `Shift+Space` typed into the filter field, the address bar and GoTo become text and never inspect |
+| 42 | Freedesktop interop | `ctest --preset dev -R 'integration\.(Thumbnails written\|A GNOME-style\|Failure markers\|A read-only cache)'` | Navigator's thumbnails: name = system `md5sum` of the GLib URI (`%C4%9F`, `%20`), class dir, longer side = class (no upscale), tEXt keys before IDAT (URI, MTime, Size, Mimetype, Image::Width/Height, Software), valid CRCs, 0600 file / 0700 dirs, no temporaries, decodable by ffmpeg, read back as a disk hit; a `gdk-pixbuf-thumbnailer -s 128` PNG with GNOME's keys added is Valid and reused untouched, Invalid with a wrong URI or no MTime, Stale after a touch and then overwritten; failure markers in `fail/navigator-1` (1x1, 0600) are honoured (KnownFailure, no decode), retried after a touch; another program's fail dir is ignored; a read-only root is used but never written |
+| 43 | External thumbnailers | `ctest --preset dev -R 'integration\.(Installed\|A hung\|Thumbnailer output\|At most max_concurrent\|A sandboxed)'` | installed gdk-pixbuf (TIFF, ICO) and ffmpegthumbnailer (clip made with the ffmpeg CLI) through the real runner: image produced, `sandboxed` == bubblewrap usable here, origin ExternalThumbnailer, cached and reused without a process; a hung fake is killed at the timeout with its whole process group, writes a failure marker, a cancel / shutdown kills it promptly with no marker; output over the cap, garbage, empty, missing, non-zero exit and signals fail; at most `max_concurrent` processes at once; the sandbox shows the input and the output dir only |
+| 44 | Robustness through the service | `ctest --preset dev -R 'integration\.(Corrupt\|Cancellation storm\|Memory budget)'` | ~240 truncated / bit-flipped / huge-header PNG, JPEG, WebP, GIF, BMP, MKV and odd text files x (thumbnail 128, Inspector 1024x768, 1:1) all complete, honour their bounds, Cancelled never delivered; the cache holds only complete, spec-keyed 0600 PNGs; a second run writes nothing; a 400-frame scrolling storm with a second submitting / cancelling / invalidating thread delivers the last window and drains; 24 full-resolution 1600x1200 images keep the cache within its 16 MiB budget (plus at most one unpolled completion per worker), raising / lowering the budget keeps / evicts at once |
+| 45 | Preview rules in the app | `ctest --preset dev -R app_preview_rules` | the Inspector reaches `ready` for PNG, a video (kind video), text and a folder, a TIFF without thumbnailers is a placeholder; `key:Space` shows / hides, `Alt+KeypadEnter` shows, `Space` / `Shift+Space` in the filter field never toggle; headless runs without `--thumbnail-dir` / `--cache-dir` create nothing under a temporary `HOME` / `XDG_CACHE_HOME` / `XDG_CONFIG_HOME` / `XDG_DATA_HOME` and never run the fake thumbnailer or the fake `bwrap` (markers); control: with `--thumbnail-dir` the fake runs and its failure marker lands there, with `--no-external-thumbnailers` it does not |
+| 46 | Flake, parallel, sanitizers | gates 18, 13, 14 and 15 with `-R '^integration\.'` (TSan: `-E app_`, or a `deadlock:libdbus-1.so` suppression for the app scripts) | all pass |
+
+Notes:
+
+- Thumbnailer tests use the real process runner; fake thumbnailers are `sh` scripts in the
+  fixture folder and run with `sandbox = false` (a bubblewrap sandbox would not see them), except
+  the sandbox case, which runs `/bin/sh -c` inside the sandbox.
+- The app script puts a fake `bwrap` first on `PATH` and a fake `.thumbnailer` in
+  `XDG_DATA_DIRS`; both only touch markers in the script's temporary folder.
+- Optimized GCC builds (RelWithDebInfo / Release, `_FORTIFY_SOURCE`) need
+  `-Wno-error=unused-result` until BUG-P6-1 is fixed (`docs/qa-phase6.md`).
+- Findings: `docs/qa-phase6.md`.
 
 ## Manual check (developer machine, not CI)
 

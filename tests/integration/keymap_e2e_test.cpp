@@ -764,7 +764,6 @@ void add_phase5_checks(std::map<std::string, Check>& checks) {
     checks["search.types"] = check_types;
 }
 
-
 // ---- Phase 6 ----------------------------------------------------------------------------------
 // view.inspect: the shell's App::Impl::inspector_command flips InspectorState::visible through
 // the Workspace (persisted) and shows / hides the inspector::Controller, which follows the
@@ -1206,15 +1205,27 @@ TEST_CASE("docs/keymap.md and load_default_keymap agree row for row", "[keymap][
     for (const DocRow& row : doc.unbound) {
         unbound_names.insert(row.command);
     }
-    CHECK(unbound_names ==
-          std::set<std::string>{"tab.close_left", "layout.delete", "window.new", "sidebar.focus",
-                                "bookmarks.rename", "bookmarks.move_up", "bookmarks.move_down",
-                                "recents.clear", "recents.toggle_tracking", "view.toggle_view_lock",
-                                "list.clear_filter", "search.toggle_fuzzy", "search.cancel",
-                                "search.rebuild_index", "inspector.toggle_lock",
-                                "inspector.zoom_fit", "inspector.zoom_1to1", "inspector.play",
-                                "inspector.cycle_placement", "inspector.toggle_grid",
-                                "inspector.toggle_minimap"});
+    CHECK(unbound_names == std::set<std::string>{"tab.close_left",
+                                                 "layout.delete",
+                                                 "window.new",
+                                                 "sidebar.focus",
+                                                 "bookmarks.rename",
+                                                 "bookmarks.move_up",
+                                                 "bookmarks.move_down",
+                                                 "recents.clear",
+                                                 "recents.toggle_tracking",
+                                                 "view.toggle_view_lock",
+                                                 "list.clear_filter",
+                                                 "search.toggle_fuzzy",
+                                                 "search.cancel",
+                                                 "search.rebuild_index",
+                                                 "inspector.toggle_lock",
+                                                 "inspector.zoom_fit",
+                                                 "inspector.zoom_1to1",
+                                                 "inspector.play",
+                                                 "inspector.cycle_placement",
+                                                 "inspector.toggle_grid",
+                                                 "inspector.toggle_minimap"});
     REQUIRE(doc.unbound.size() == 21);
     for (const DocRow& row : doc.unbound) {
         INFO("keymap.md line " << row.line << ": " << row.command);
@@ -1262,14 +1273,37 @@ TEST_CASE("Every default chord resolves to its command and has its effect on the
     // window.new, deferred; Ctrl+Shift+P, Ctrl+Shift+N, Ctrl+P, Ctrl+C) and unbound keys,
     // including Phase 4 and Phase 5 chords with an extra or a missing modifier (Ctrl+E is
     // search.flatten since Phase 5).
-    for (const char* text :
-         {"Ctrl+N",        "Ctrl+Shift+P",     "Ctrl+Shift+N", "Ctrl+P",        "Ctrl+C",
-          "Ctrl+Alt+Left", "Alt+Shift+Left",   "Delete",       "Ctrl+Shift+F3", "Ctrl+F6",
-          "Ctrl+Alt+T",    "Shift+Enter",      "Ctrl+Shift+B", "Ctrl+Alt+L",    "Ctrl+Shift+G",
-          "Alt+D",         "Ctrl+Alt+C",       "Ctrl+Alt+E",   "Alt+E",         "Ctrl+Alt+F",
-          "Alt+F",         "Ctrl+Alt+Shift+E", "Shift+F",      "Ctrl+Space",    "Ctrl+Comma",
-          "Shift+Space",   "Alt+Space",        "Ctrl+Shift+Space", "Alt+Enter", "Shift+KeypadEnter",
-          "Ctrl+Alt+KeypadEnter"}) {
+    for (const char* text : {"Ctrl+N",
+                             "Ctrl+Shift+P",
+                             "Ctrl+Shift+N",
+                             "Ctrl+P",
+                             "Ctrl+C",
+                             "Ctrl+Alt+Left",
+                             "Alt+Shift+Left",
+                             "Delete",
+                             "Ctrl+Shift+F3",
+                             "Ctrl+F6",
+                             "Ctrl+Alt+T",
+                             "Shift+Enter",
+                             "Ctrl+Shift+B",
+                             "Ctrl+Alt+L",
+                             "Ctrl+Shift+G",
+                             "Alt+D",
+                             "Ctrl+Alt+C",
+                             "Ctrl+Alt+E",
+                             "Alt+E",
+                             "Ctrl+Alt+F",
+                             "Alt+F",
+                             "Ctrl+Alt+Shift+E",
+                             "Shift+F",
+                             "Ctrl+Space",
+                             "Ctrl+Comma",
+                             "Shift+Space",
+                             "Alt+Space",
+                             "Ctrl+Shift+Space",
+                             "Alt+Enter",
+                             "Shift+KeypadEnter",
+                             "Ctrl+Alt+KeypadEnter"}) {
         INFO(text);
         CHECK_FALSE(resolve_command(keymap, registry, chord_of(text)));
     }

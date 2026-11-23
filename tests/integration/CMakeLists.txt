@@ -114,3 +114,46 @@ if(TARGET navigator)
         LABELS "integration;app"
     )
 endif()
+
+# Phase 6: the preview service end to end (navigator_preview_integration_tests): Freedesktop
+# interop with thumbnails made by a system tool (thumbnail_interop_test.cpp), the installed
+# .thumbnailer programs through the REAL process runner, timeouts and the output cap with fake
+# thumbnailer scripts (thumbnailer_e2e_test.cpp), corrupt / truncated / huge-header fixtures
+# through service + cache + thumbnail writer, cancellation storms and the memory budget
+# (preview_robustness_test.cpp). Fixtures are made at run time with ffmpeg /
+# gdk-pixbuf-thumbnailer (a case SKIPs without them); cache roots are temporary directories only.
+if(TARGET navigator_preview)
+    add_executable(navigator_preview_integration_tests
+        thumbnail_interop_test.cpp
+        thumbnailer_e2e_test.cpp
+        preview_robustness_test.cpp
+    )
+    target_link_libraries(navigator_preview_integration_tests
+        PRIVATE
+            navigator::preview
+            navigator::core
+            navigator::platform
+            navigator::options
+            Catch2::Catch2WithMain
+    )
+    catch_discover_tests(navigator_preview_integration_tests
+        TEST_PREFIX "integration."
+        DISCOVERY_MODE PRE_TEST
+        PROPERTIES TIMEOUT 180 LABELS integration
+    )
+endif()
+
+# Phase 6 headless app: Inspector on image / video / text / folder, key:Space routing (Space in
+# the filter field never inspects), no cache writes and no thumbnailer (or bwrap) spawns in
+# headless runs without --thumbnail-dir / --cache-dir, checked with fake programs that leave
+# markers; control runs with --thumbnail-dir (tests/integration/preview_app_smoke.sh).
+if(TARGET navigator)
+    add_test(NAME integration.app_preview_rules
+        COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/preview_app_smoke.sh $<TARGET_FILE:navigator>
+    )
+    set_tests_properties(integration.app_preview_rules PROPERTIES
+        TIMEOUT 180
+        SKIP_RETURN_CODE 77
+        LABELS "integration;app;preview"
+    )
+endif()
