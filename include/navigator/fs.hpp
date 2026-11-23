@@ -3,7 +3,8 @@
 // Purpose: directory listing, metadata, name comparison and sorting. The UI never walks the
 //          filesystem with std::filesystem directly; it goes through navigator::fs (and later
 //          navigator::IIndex).
-// Owner:   contracts (header); implementation in src/core (role: core-fs). Phase 1.
+// Owner:   contracts (header); implementation in src/core (role: core-fs). Phase 1; Phase 5
+//          adds fold_name_into(). Recursive enumeration lives in walk.hpp.
 // Thread-safety: every function here is reentrant and shares no mutable state, so any number of
 //                threads may call them concurrently. list_directory() and stat() perform blocking
 //                I/O: never call them on the UI thread (run them on a worker; the stop_token
@@ -197,6 +198,20 @@ struct SortOptions {
 // Folded form of `name` as UTF-8 (escaped bytes from step 1 are emitted unchanged, so the result
 // is valid UTF-8 iff the input was). Intended for search/filter matching and tests.
 [[nodiscard]] std::string fold_name(std::string_view name);
+
+// Phase 5 (search). Buffer-reusing form of fold_name() for hot loops (filtering, flatten, the
+// name index): replaces the contents of `out` with fold_name(name), reusing its capacity. When
+// `source_offsets` is not null its contents are replaced with out.size() + 1 entries:
+// source_offsets[i] is the byte offset in `name` where the input code point (or escaped byte,
+// step 1) that produced result byte i starts, and the final entry is name.size(). So the result
+// bytes [a, b) came from name bytes [source_offsets[a], source_offsets[b]) whenever a and b are
+// code point boundaries of the result.
+// Simple case folding (C + S) and the Turkish extension map ONE code point to ONE code point,
+// so the result has exactly as many code points as the input (escaped bytes count as one each);
+// byte lengths may differ (U+0130, two bytes, folds to 'i', one byte). Search relies on this
+// 1:1 property for its scoring positions. Pure; no allocation when the buffers are large enough.
+void fold_name_into(std::string_view name, std::string& out,
+                    std::vector<std::uint32_t>* source_offsets = nullptr);
 
 // Name order used by sort_entries(). Only `natural` and `case_insensitive` are read from options.
 //

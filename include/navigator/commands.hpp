@@ -40,7 +40,8 @@ namespace navigator {
 //   1250-1259  windows         (reserved: multi-window phase)
 //   1260-1279  sidebar, bookmarks, recents (Phase 4)
 //   1280-1299  edit / clipboard (Phase 4: copy path; file operations add copy/cut/paste here)
-//   1300+      reserved for later phases (file operations, search, ...)
+//   1300-1319  filter, flatten, name search, index (Phase 5)
+//   1320+      reserved for later phases (file operations, ...)
 // Every id except None is registered by register_builtin_commands() and appears in the palette.
 // `arg` meanings are listed per id; "arg: 0" means the command ignores it.
 enum class CommandId : std::uint32_t {
@@ -167,6 +168,39 @@ enum class CommandId : std::uint32_t {
                      //   or the current folder when nothing is selected, formatted by
                      //   path_input::format_paths_for_copy(PathQuoting::Auto).
                      //   arg: CopyPathArg flags
+
+    // Filter, flatten and index (Phase 5). docs/architecture.md "Phase 5" has the data flow and
+    // docs/keymap.md "Focus scoping (Phase 5)" the keys of the filter field. All act on the
+    // active tab of the active pane. arg: 0 for all.
+    FocusFilter = 1300,      // "list.filter"  shows the tab's filter field in the pane title bar
+                             //   (if collapsed) and gives it keyboard focus with its text
+                             //   selected. Typing a printable character while the list has focus
+                             //   does the same and inserts that character (except a leading
+                             //   Space; see docs/keymap.md). The filter applies on every edit and
+                             //   stays applied after the field loses focus.
+    ClearFilter = 1301,      // "list.clear_filter"  empties the filter text (the type filter is
+                             //   separate and stays); the chip's clear button. Focus unchanged.
+    ToggleFlatten = 1302,    // "search.flatten"  enters the flattened view of the tab's folder
+                             //   (recursive, streamed, cancellable; filter and type filter apply
+                             //   to it), or leaves it when it is active (cancelling a running
+                             //   walk). Ctrl+E (docs/features.md).
+    FlattenVolume = 1303,    // "search.flatten_volume"  flattened view rooted at the mount point
+                             //   of the volume holding the tab's folder ("whole drive"); served
+                             //   by the name index when it is ready. When the tab is already
+                             //   flattened from that root, leaves the flattened view.
+    ToggleTypesPopup = 1304, // "search.types"  opens (or closes) the types popup of the tab:
+                             //   one row per type present (folders, no extension, each
+                             //   extension) with counts and visibility toggles, and "toggle all"
+                             //   (search.hpp TypeFilter). Popup routing as in Phase 3/4.
+    ToggleFuzzy = 1305,      // "search.toggle_fuzzy"  switches the tab's match mode between
+                             //   Substring and Fuzzy for the current view (folder filter
+                             //   default Substring, flattened view default Fuzzy; runtime only).
+    CancelSearch = 1306,     // "search.cancel"  stops a running flatten walk or index query of
+                             //   the tab, keeping the rows found so far (progress bar button).
+                             //   Escape reaches the same effect through list.clear_selection
+                             //   (cascade in docs/keymap.md).
+    RebuildIndex = 1307,     // "search.rebuild_index"  RescanKind::Rebuild for the index of the
+                             //   volume holding the tab's folder; no-op when it is not indexed.
 };
 
 // Bit flags for the `arg` of CopyPath. Unknown bits are ignored (reserved).
@@ -297,6 +331,15 @@ Result<void> register_builtin_commands(CommandRegistry& registry);
 //   - When the sidebar or a popup has focus, the ui routes the resolved list.cursor_*,
 //     list.activate, list.open_in_new_tab and list.clear_selection commands to it instead of the
 //     active pane (Phase 3 popups already do this).
+//   - Phase 5 folder filter field: a text field that consumes FEWER keys, because most commands
+//     must keep working while it has focus (docs/features.md). It takes text input and Left,
+//     Right, Home, End (with Shift/Ctrl), Backspace (also when empty: never nav.up), Delete,
+//     Ctrl+Backspace, Ctrl+V, Ctrl+Z, and Ctrl+C / Ctrl+X only while it has a text selection.
+//     Escape is a field key (cancel a walk, then clear the text, then return focus to the list);
+//     Tab returns focus to the list. Everything else resolves through the keymap and goes to
+//     the active pane as usual: Up/Down/PageUp/PageDown (with Shift) move the list cursor,
+//     Enter / Ctrl+Enter activate the cursor row, Ctrl+A selects all shown rows, Ctrl+E
+//     flattens. Details: docs/keymap.md "Focus scoping (Phase 5)".
 // Multi-key sequences ("g g") and command aliases arrive in Phase 8 as an addition (e.g. a
 // KeySequence type and Keymap::bind_sequence); the single-chord API below stays.
 

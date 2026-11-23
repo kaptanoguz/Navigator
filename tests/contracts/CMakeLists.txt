@@ -30,6 +30,7 @@ set(NAVIGATOR_CONTRACT_HEADERS
     layout
     places
     path_input
+    walk
     detail/expected
 )
 
@@ -89,6 +90,13 @@ foreach(std IN ITEMS 20 23)
     _navigator_header_object(navigator_contract_phase4_cxx${std}
                              "${CMAKE_CURRENT_SOURCE_DIR}/phase4_usage.cpp" CXX ${std})
     list(APPEND _nav_check_targets navigator_contract_phase4_cxx${std})
+
+    # Phase 5 walk (flatten enumerator), search (matcher, ranking, type filter, filter
+    # pipeline), index (IIndex fake, default volumes, stable ids), TabState type filter,
+    # AppConfig index fields, search command ids (compile only).
+    _navigator_header_object(navigator_contract_phase5_cxx${std}
+                             "${CMAKE_CURRENT_SOURCE_DIR}/phase5_usage.cpp" CXX ${std})
+    list(APPEND _nav_check_targets navigator_contract_phase5_cxx${std})
 endforeach()
 
 # plugin.h from C11

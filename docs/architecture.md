@@ -22,6 +22,12 @@ layout.hpp -> fs.hpp (SortOptions), types;  src/core (layout impl) -> nlohmann_j
 path_input.hpp -> fs.hpp, types
 places.hpp -> volume.hpp (VolumeInfo/VolumeIdentity, inline helpers), platform.hpp (UserDirs
               value type only), types;  src/core (places impl) -> nlohmann_json (PRIVATE)
+walk.hpp -> fs.hpp, types                                    (Phase 5; src/core)
+search.hpp -> fs.hpp, walk.hpp (WalkEntry), types            (Phase 5; src/search)
+index.hpp -> search.hpp, volume.hpp (VolumeInfo/VolumeIdentity values, inline policy),
+             watch.hpp (WatcherFactory), fs.hpp, types       (Phase 5; src/search)
+layout.hpp -> search.hpp (TypeFilter value only; src/core calls nothing in src/search)
+src/search -> navigator_core (fold_name_into, compare_names, Walker); never src/platform
 ```
 
 `src/core` implements `places.hpp` and `path_input.hpp` without calling any `src/platform`
@@ -358,6 +364,145 @@ Work split for Phase 4: **contracts** (this diff) -> **core-fs** (`places.hpp`,
 bookmark across restart with a fake volume table, breadcrumb up) -> **design-reviewer**
 (sidebar, GoTo popup).
 
+## Phase 5: folder filter, flatten (Ctrl+E), fuzzy name search, name index
+
+### Ownership
+
+| Piece | Where | Role |
+|-------|-------|------|
+| `fs::fold_name_into` (offset-preserving fold) | `fs.hpp`, `src/core/names.cpp` | core-fs |
+| Recursive enumerator `fs::Walker` (BFS, batches, dev/ino cycle set, hidden policy, one volume, permission skips, cancellation) | `walk.hpp`, `src/core` (e.g. `walk.cpp`), `tests/core` | core-fs |
+| `TabState::type_filter` JSON (`"hidden_types"`), normalization on load | `layout.hpp`, `src/core/layout_json.cpp` | core-fs |
+| Query compilation, `Matcher` (substring + fuzzy DP, highlights), `ranks_before`, `TypeFilter` helpers, `summarize_types`, `filter_entries` | `search.hpp`, `src/search` (new module, library `navigator_search`), `tests/search` | search |
+| `IIndex`, `create_name_index` (service thread, scan/resume, verify, inotify, file format, queries) | `index.hpp`, `src/search`, `tests/search` | search |
+| Benchmark tool and `docs/perf/phase5-search.md` | `tools/search_bench` (CMake registration by integration) | search |
+| New ids, names, `to_string`, default chords | `src/commands`, `tests/commands` | commands |
+| Filter field, chip, empty state, flatten view (relative-path column, progress bar), types popup, match highlight, Escape cascade, type-to-filter, workers, index service wiring, status bar, i18n (`cmd.*`, `search.*`, `index.*`) | `src/ui`, `src/app` | ui |
+| `--no-index`, `--cache-dir DIR`; `add_subdirectory(src/search)` and `tests/search`; link `navigator_search` into ui | root `CMakeLists.txt`, `src/app/main.cpp` | integration |
+
+Split rationale: enumeration is filesystem policy (symlinks, mounts, permissions, hidden) and
+belongs with `fs::list_directory` in core; matching, ranking, the type filter and the index are
+search policy on top of it. `src/search` never calls `src/platform`: the index gets inotify
+through an injected `WatcherFactory` and the cache root as a value, so `tests/search` runs on
+fake watchers and temporary directories only.
+
+### View model per tab (ui-internal, extends `BrowserModel`)
+
+- **Filter**: text, compiled `search::Query`, mode (Substring by default), `Matcher`, and the
+  shown rows as indices into the listing (`FilterHit`). Runtime only; cleared by navigation.
+- **Type filter**: `TabState::type_filter` (persisted with the tab, copied by `tab.new` /
+  `tab.duplicate`, kept across navigation like `show_hidden`).
+- **Flatten**: root (the tab's folder, or the volume's mount point for `search.flatten_volume`),
+  source (Walk or Index), the directory table, the flat entries, `WalkStats` or `IndexStatus`
+  progress, mode (Fuzzy by default), and a generation. Runtime only.
+- The shown rows are always `listing -> hidden policy (listing/walk) -> type filter -> query`.
+  Status bar and chip: "12 of 340" where 340 counts the rows the hidden policy shows. No
+  matches: the Phase 2 empty-state style with a "Clear filter" keycap hint.
+- Order: the folder filter keeps the tab's sort order (rows never jump while typing). The
+  flattened view sorts with the tab's `SortOptions` (ties: relative parent path) when the query
+  is empty, and by `ranks_before` (relevance) when it is not; a column-header click switches to
+  that sort until the query changes.
+
+### Data flow
+
+```
+UI thread (per keystroke in the filter field)
+  compile_query(text, mode)
+  rows <= kUiThreadFilterLimit (20k): filter_entries() inline, same frame
+  otherwise: post (generation, query, snapshot of listing) to the filter worker;
+             old rows stay until the result for the latest generation arrives
+  narrows(prev, next): refilter only the previous hits (inline or worker)
+  highlights: Matcher::match() for VISIBLE rows only, cached per (row, generation)
+
+flatten worker (ui-internal jthread per tab, started by search.flatten)
+  source Walk:   Walker::open(root, show_hidden = tab, metadata = true, one volume)
+                 loop next_batch(stop): filter the batch with a worker-local Matcher
+                 -> mailbox {generation, new_dirs, entries, hits, stats}
+  source Index:  IIndex::query({query, under = root, types, show_hidden, limit}) on every
+                 query change (debounced ~50 ms, previous query cancelled); rows carry path +
+                 kind; Size/Modified are filled by fs::stat on a worker for visible rows only
+frame start (UI thread)
+  apply mailbox batches whose generation is current: append dirs/entries, merge hits
+  (relevance order: insert into the ranked list; the ui may cap the ranked list it keeps
+  to the best 100k and say so), update progress; stale generations are dropped
+```
+
+- Source choice (as implemented): `search.flatten` (folder subtree) always walks the disk, so
+  results are complete and carry full metadata. Only `search.flatten_volume` uses the index: when
+  an `IIndex` whose root is that volume's mount point is Ready or Verifying it queries the index
+  (hits capped, one stat per shown hit), otherwise it walks the volume root with progress. The
+  index of `/` is never used for a volume mounted below it. The ui may start an index only for
+  volumes `should_index_by_default` allows.
+- Query edits during a Walk flatten re-run the match over the flat entries already collected
+  (inline below 20k, else the filter worker) while the walk keeps appending; the walk is never
+  restarted for a query change. `ToggleHidden` and `nav.refresh` restart the walk.
+- Progress: a thin indeterminate bar under the pane title bar while a walk or index scan is
+  running, the running count in the status bar ("48 210 found, 3 folders skipped"); never modal.
+- Cancellation: `search.cancel` / the Escape cascade / leaving flatten / navigation /
+  closing the tab request stop on the worker's `std::stop_source` and bump the generation. The
+  walker stops within one directory chunk (walk.hpp "Cancellation latency"). The UI thread
+  never joins a worker that may be blocked in a syscall: cancelled jobs move to a reaper list
+  joined off the UI thread (or at quit with a bounded wait, then detached), as for listings.
+- Watch events: the root folder keeps its Phase 2 watcher; events apply to the folder listing
+  (and are matched against the active filter on insert). A flattened view is a snapshot; `F5`
+  refreshes it. Flatten never records Recents (design review).
+
+### Name index service
+
+```
+ui index service (ui-internal; UI thread owns the map, IIndex owns its threads)
+  on each volume snapshot (Phase 4 volume worker):
+    for v in volumes with should_index_by_default(v) (and AppConfig::enable_index):
+      id = index_stable_id(identity_of(v)); start create_name_index({root = v.mount_point,
+           identity, file = index_file(cache_root, identity), watcher_factory, budget, ...})
+    volumes that disappeared: stop() on a reaper thread, drop
+  on_status_change (service thread) -> SDL user event -> frame start reads status()
+IIndex service thread (one per volume): Loading -> Verifying | Scanning -> Ready (+ inotify,
+  periodic verify, debounced save) -> Stopped        (index.hpp "Lifecycle")
+```
+
+- Budgets: watch budget 8192 directories per index by default (shared user limit; the pane
+  watchers need only a handful); memory about 60 MB per million entries, at most 2M entries
+  per index by default; one service thread per index at background CPU/I/O priority; queries
+  run on the caller's worker, never on the service thread.
+- Cache: `$XDG_CACHE_HOME/navigator/index/<stable-id>.idx` (`AppConfig::cache_dir` overrides
+  the `navigator` root). Versioned binary, FNV-1a trailer, atomic write, rebuild on any
+  corruption, resumable partial scans (index.hpp "File format").
+- Defaults: local Root, Home and writable Internal volumes; never network, removable, virtual or
+  image filesystems (opt-in is a Phase 9 setting). `--no-index` disables everything.
+
+### Benchmark plan (`docs/perf/phase5-search.md`, owner search; qa re-runs)
+
+Generated tree in a temporary directory: 300k entries (about 30k directories, depth up to 12,
+names mixing ASCII, Turkish and NFD forms, 2% hidden directories with children, a few
+unreadable directories), Release build, warm and cold page cache (cold: `echo 3 >
+/proc/sys/vm/drop_caches` where permitted, else a note). Measure and record:
+
+1. Folder filter: `filter_entries` over 1k / 20k / 100k names, 1-, 3- and 8-character queries,
+   Substring and Fuzzy (target: 20k under 2 ms, which justifies `kUiThreadFilterLimit`).
+2. Walk: entries/s with `metadata` true and false; time to the first batch; cancel latency
+   (request stop at random points, max and p99 until `next_batch` returns Cancelled).
+3. Index: full scan time; save time and file size; **restart: load + verify versus a cold
+   walk** of the same tree (acceptance: the index is faster; record both numbers);
+   query latency for 1M synthetic entries (target under 100 ms).
+4. UI: frame times while a 300k flatten streams in (no frame over 33 ms attributable to
+   applying batches).
+
+### Deferred
+
+Content search (Phase 10), wildcard/regex syntax (never claimed), matching the relative path in
+flattened mode, user opt-in for indexing other volumes and a persisted default match mode
+(Phase 9 settings), recursive watching of a flattened view, GVfs/network indexing, fanotify.
+
+Work split for Phase 5: **contracts** (this diff) -> **core-fs** (`fold_name_into`, `Walker`,
+`hidden_types` JSON, `tests/core`), **search** (`src/search`, `tests/search`, benchmark) and
+**commands** (ids, names, keymap rows, `tests/commands`) in parallel with **ui** (against the
+headers; stubs until search lands) -> integration (`src/search` and `tests/search` subdirs,
+link `navigator_search`, `--no-index`, `--cache-dir`) -> **qa** (ranking gold tests, Unicode
+İ/ı and NFD, cancel, permission-denied skips, hidden-children exclusion in flattened mode,
+index corruption/rebuild, restart timing) -> **design-reviewer** (filter field, chip, flatten
+view, types popup, highlight contrast).
+
 ## Error policy
 
 - One policy: fallible functions return `navigator::Result<T>` (`types.hpp`). No exceptions across module boundaries.
@@ -376,6 +521,7 @@ bookmark across restart with a fake volume table, breadcrumb up) -> **design-rev
 - Pure Phase 4 helpers (`places::*` store members, resolution and JSON functions, `path_input::expand_user_path` / `parse_completion_input` / `match_completions` / `format_paths_for_copy`, `platform::parse_user_dirs`, volume identity/usage helpers) are callable from any thread. `path_input::fix_path_case` / `resolve_input` / `complete_path`, `places::load_*` / `save_*`, `platform::read_user_dirs` / `user_home` block (worker threads; the startup load and save on quit are the UI-thread exceptions, as for the session).
 - `layout::Session` is a value owned by the UI thread; the background session writer receives a copy. `layout::load_session`/`save_session`/`*_named_layout` block on file I/O; Phase 3's exceptions on the UI thread are the startup load and the save on quit.
 - Interfaces (`IWatcher`, `IVolumeMonitor`, `IMountSource`, `IAppLauncher`, `IIndex`, `IPreviewProvider`) document their own threading. `IWatcher`/`IVolumeMonitor` are single-thread-at-a-time objects with no internal thread (drained with `poll()`, optional blocking `wait()` / pollable `native_handle()`).
+- Phase 5: `search::*` free functions, `Query`, `TypeFilter` and the inline `index.hpp` helpers are pure (any thread, including the UI thread for the folder filter up to `kUiThreadFilterLimit` entries). A `search::Matcher` and an `fs::Walker` are single-thread-at-a-time objects; `Walker` blocks on I/O (workers only). An `IIndex` owns one service thread; `query()`/`status()` are callable from any thread concurrently, `start()`/`stop()`/`request_rescan()` from the owning (UI) thread.
 - Cancellation uses `std::stop_token`; a cancelled call fails with `ErrorCode::Cancelled`.
 
 ## Public headers
@@ -385,27 +531,29 @@ bookmark across restart with a fake volume table, breadcrumb up) -> **design-rev
 | `types.hpp` | `Path`, `FileId`, `Timestamp`, `Span`, `Arena` (decl), `ErrorCode`, `Error`, `Result`, `fail`, `ok` | Phase 0, concrete (`Timestamp` Phase 1) |
 | `detail/expected.hpp` | `std::expected` fallback used by `Result` | Phase 0, concrete |
 | `commands.hpp` | `CommandId`, `CursorArg`, `Command`, `CommandQueue`, `CommandInfo`, `CommandRegistry`; keymap: `Key`, `Modifiers` (+ operators, `has`), `KeyChord`, `to_string(Key/KeyChord)`, `parse_key_chord`, `KeyBinding`, `Keymap`, `load_default_keymap`, `resolve_command` | Phase 0; keymap + Phase 2 ids are a Phase 2 contract, implemented in `src/commands` (commands) |
-| `ui.hpp` | `AppConfig` (Phase 2: `animations`, `start_path`; Phase 3: `config_dir`, `restore_session`, `restore_window_geometry`, `save_session`), `Theme`, `FrameStats`, `App` (pimpl) | Phase 0, implemented in `src/ui`/`src/app` |
+| `ui.hpp` | `AppConfig` (Phase 2: `animations`, `start_path`; Phase 3: `config_dir`, `restore_session`, `restore_window_geometry`, `save_session`; Phase 5: `cache_dir`, `enable_index`), `Theme`, `FrameStats`, `App` (pimpl) | Phase 0, implemented in `src/ui`/`src/app` |
 | `places.hpp` | `places::LocationStatus`, `ResolvedLocation`, `is_tracked_volume`, `containing_volume`, `identity_for`, `resolve_location`, `deepest_containing`, `default_label`, `PlaceKind`, `label_key`, `Place`, `build_places`, `BookmarkId`, `Bookmark`, `BookmarkStore`, `RecentEntry`, `RecentsOptions`, `RecentsStore`, `bookmarks_to_json`/`_from_json`, `recents_to_json`/`_from_json`, `bookmarks_file`, `recents_file`, `load/save_bookmarks`, `load/save_recents`, constants | Phase 4 contract, implemented in `src/core` (core-fs) |
 | `path_input.hpp` | `path_input::normalize_absolute`, `EnvLookup`, `UserHomeLookup`, `ExpandContext`, `ExpandedPath`, `expand_user_path`, `CaseFix`, `fix_path_case`, `ResolvedInput`, `resolve_input`, `CompletionQuery`, `parse_completion_input`, `CompletionMatch`, `CompletionOptions`, `Completion`, `match_completions`, `complete_path`, `PathQuoting`, `quote_for_shell`, `format_paths_for_copy` | Phase 4 contract, implemented in `src/core` (core-fs) |
-| `layout.hpp` | `layout::PaneId`/`TabId`/`SplitId`, `TabState`, `SplitAxis`, `SplitEdge`, `axis_of`, `Tab`, `PaneNode`, `SplitNode`, `LayoutNode`, `TabLocation`, `SplitResult`, `Layout`, `ClosedTab`, `ClosedTabs`, `WindowGeometry`, `Session`, Phase 4 `SidebarSection`/`SidebarState` (+ width constants), `to_json`, `session_from_json`, `layout_to_json`, `layout_from_json`, `session_file`, `layouts_dir`, `load_session`, `save_session`, `is_valid_layout_name`, `save/load/list/delete_named_layout`, constants | Phase 3 contract, implemented in `src/core` (core-fs) |
+| `layout.hpp` | `layout::PaneId`/`TabId`/`SplitId`, `TabState`, `SplitAxis`, `SplitEdge`, `axis_of`, `Tab`, `PaneNode`, `SplitNode`, `LayoutNode`, `TabLocation`, `SplitResult`, `Layout`, `ClosedTab`, `ClosedTabs`, `WindowGeometry`, `Session`, Phase 4 `SidebarSection`/`SidebarState` (+ width constants), Phase 5 `TabState::type_filter` (JSON `"hidden_types"`), `to_json`, `session_from_json`, `layout_to_json`, `layout_from_json`, `session_file`, `layouts_dir`, `load_session`, `save_session`, `is_valid_layout_name`, `save/load/list/delete_named_layout`, constants | Phase 3 contract, implemented in `src/core` (core-fs) |
 | `i18n.hpp` | `Language`, `set_language`, `language`, `tr` | Phase 0, implemented in `src/ui` |
-| `fs.hpp` | `fs::DirEntry`, `EntryKind`, `ListOptions`, `list_directory` (+ `std::stop_token` overload), `stat`, `SortKey`, `SortOptions`, `sort_entries`, `compare_names`, `fold_name`, `to_display_name`, inline `is_hidden_name`/`extension`/`is_directory_like` | Phase 1 contract, implemented in `src/core` (core-fs) |
+| `fs.hpp` | `fs::DirEntry`, `EntryKind`, `ListOptions`, `list_directory` (+ `std::stop_token` overload), `stat`, `SortKey`, `SortOptions`, `sort_entries`, `compare_names`, `fold_name`, Phase 5 `fold_name_into`, `to_display_name`, inline `is_hidden_name`/`extension`/`is_directory_like` | Phase 1 contract, implemented in `src/core` (core-fs) |
 | `watch.hpp` | `WatchHandle`, `WatchEventKind`, `WatchEvent`, `IWatcher`, `create_inotify_watcher`, `WatcherFactory` | Phase 1 contract, implemented in `src/platform` (platform) |
 | `volume.hpp` | `MountEntry`, `parse_mountinfo`, `is_pseudo_filesystem`, `is_network_filesystem`, `VolumeKind`, `SpaceInfo`, `VolumeInfo`, `IMountSource`, `create_proc_mount_source`, `VolumeQuery`, `list_volumes`, `volume_for`, `VolumeEvent(Kind)`, `IVolumeMonitor`, `create_volume_monitor`; Phase 4 inline `used_fraction`, `VolumeIdentity`, `identity_of`, `volume_matches` | Phase 1 contract, implemented in `src/platform` (platform) |
 | `platform.hpp` | `platform::LaunchRequest`, `IAppLauncher`, `create_default_launcher`, `open_with_default` (+ launcher overload), `mime_type`, `UserDir`, `user_dir`; Phase 4 `UserDirs`, `parse_user_dirs`, `read_user_dirs`, `user_home`; stubs `move_to_trash`, `open_terminal` | Phase 2 contract (launcher, open, mime_type, user_dir Home/Config/Cache), Phase 4 (XDG user dirs, `user_home`), implemented in `src/platform` (platform) |
 | `mime.hpp` | `mime::k*` constants, `guess_from_name`, `guess_for_entry`, `type_label_key` (name table + Type-column i18n keys) | Phase 2 contract, implemented in `src/platform` (platform); label texts in the ui i18n catalogs |
-| `search.hpp` | `SearchQuery`, `MatchMode`, `SearchHit` | stub, search phase |
-| `index.hpp` | `IIndex` | stub, search phase |
+| `walk.hpp` | `fs::WalkOptions`, `WalkEntry`, `WalkSkip`, `WalkStats`, `WalkBatch`, `Walker`, constants | Phase 5 contract, implemented in `src/core` (core-fs) |
+| `search.hpp` | `search::MatchMode` (+ `to_string`), scoring constants, `Query`, `compile_query`, `narrows`, `HighlightRange`, `Match`, `Matcher`, `match`, `RankInfo`, `ranks_before`, `TypeKind`, `TypeKey`, `TypeFilter`, `TypeCount`, `type_key_of`, `allows`, `is_visible`, `set_visible`, `toggle_all`, `normalize`, `summarize_types`, `FilterHit`, `filter_entries` | Phase 5 contract, implemented in `src/search` (search) |
+| `index.hpp` | `search::IndexState` (+ `to_string`), `IndexStatus`, `RescanKind`, `IndexQuery`, `IndexHit`, `IndexResult`, `IIndex`, `NameIndexOptions`, `create_name_index`; inline `should_index_by_default`, `fnv1a64`, `index_stable_id`, `index_dir`, `index_file`; file format v1 | Phase 5 contract, implemented in `src/search` (search) |
 | `ops.hpp` | `OpKind`, `ConflictPolicy`, `OpRequest`, `OpProgress`, `OpId` | stub, ops phase |
 | `preview.hpp` | `PreviewRequest`, `PreviewResult`, `IPreviewProvider` | stub, preview phase |
 | `plugin.h` | C ABI: `NAVIGATOR_PLUGIN_ABI_VERSION`, `NavigatorPluginInfo`, entry symbol | stub |
 
-Stub functions are declared only; nothing may call them until their phase lands. Public headers never include SDL, GIO, ImGui, FreeType or HarfBuzz. `tests/contracts` compiles each header alone (C++20 and C++23, `-Wall -Wextra -Wpedantic -Werror`) plus `plugin.h` as C11, and compiles (never links) `result_usage.cpp`, `phase1_usage.cpp` (fake `IWatcher`/`IMountSource` implementations prove the interfaces are injectable) `phase2_usage.cpp` (keymap, fake `IAppLauncher`, mime, `AppConfig`) and `phase3_usage.cpp` (layout operations, closed tabs, session JSON/files, tab/pane command ids, `AppConfig` session fields) and `phase4_usage.cpp` (bookmarks offline/resync, recents, places, user dirs, GoTo expansion/completion, copy path, sidebar session state, Phase 4 command ids); target `navigator_header_check`.
+Stub functions are declared only; nothing may call them until their phase lands. Public headers never include SDL, GIO, ImGui, FreeType or HarfBuzz. `tests/contracts` compiles each header alone (C++20 and C++23, `-Wall -Wextra -Wpedantic -Werror`) plus `plugin.h` as C11, and compiles (never links) `result_usage.cpp`, `phase1_usage.cpp` (fake `IWatcher`/`IMountSource` implementations prove the interfaces are injectable) `phase2_usage.cpp` (keymap, fake `IAppLauncher`, mime, `AppConfig`) and `phase3_usage.cpp` (layout operations, closed tabs, session JSON/files, tab/pane command ids, `AppConfig` session fields) and `phase4_usage.cpp` (bookmarks offline/resync, recents, places, user dirs, GoTo expansion/completion, copy path, sidebar session state, Phase 4 command ids) and `phase5_usage.cpp` (walker batches, matcher/ranking, types popup helpers, a fake `IIndex`, default index policy and file location, `TabState::type_filter`, `AppConfig` index fields, Phase 5 command ids); target `navigator_header_check`.
 
 ## Commands
 
-- `CommandId` values are stable and never renumbered. Ranges: 1-999 app/view, 1000-1099 navigation, 1100-1199 list (activation, cursor, selection), 1200-1219 tabs, 1220-1239 panes, 1240-1249 named layouts, 1250-1259 windows, 1260-1279 sidebar/bookmarks/recents, 1280-1299 edit/clipboard, 1300+ later phases.
+- `CommandId` values are stable and never renumbered. Ranges: 1-999 app/view, 1000-1099 navigation, 1100-1199 list (activation, cursor, selection), 1200-1219 tabs, 1220-1239 panes, 1240-1249 named layouts, 1250-1259 windows, 1260-1279 sidebar/bookmarks/recents, 1280-1299 edit/clipboard, 1300-1319 filter/flatten/search/index, 1320+ later phases.
+  - Phase 5: `FocusFilter = 1300` (`list.filter`, `Ctrl+F`), `ClearFilter = 1301` (`list.clear_filter`), `ToggleFlatten = 1302` (`search.flatten`, `Ctrl+E`), `FlattenVolume = 1303` (`search.flatten_volume`, `Ctrl+Shift+E`), `ToggleTypesPopup = 1304` (`search.types`, `Ctrl+Shift+F`), `ToggleFuzzy = 1305` (`search.toggle_fuzzy`), `CancelSearch = 1306` (`search.cancel`), `RebuildIndex = 1307` (`search.rebuild_index`). All arg 0. Filter-field focus scoping, type-to-filter and the Escape cascade: `docs/keymap.md` "Phase 5 defaults".
   - Phase 4: `ToggleSidebar = 5` (`view.toggle_sidebar`), `ToggleViewLock = 6` (`view.toggle_view_lock`, stub), `GoTo = 1005` (`nav.goto`), `FocusAddressBar = 1004` now defined (inline path edit, `Ctrl+L`); `FocusSidebar = 1260` (`sidebar.focus`), `ToggleBookmark = 1261` (`bookmarks.toggle`), `RenameBookmark = 1262` (`bookmarks.rename`), `MoveBookmarkUp = 1263` (`bookmarks.move_up`), `MoveBookmarkDown = 1264` (`bookmarks.move_down`), `ClearRecents = 1270` (`recents.clear`), `ToggleRecentsTracking = 1271` (`recents.toggle_tracking`), `CopyPath = 1280` (`edit.copy_path`, arg `CopyPathArg`). Bookmark commands take 0 (focused row / active folder) or a `places::BookmarkId` value. `pane.focus_next/previous` include the visible sidebar in their cycle.
   - Phase 0: `None = 0`, `Quit = 1` (`app.quit`), `ToggleFpsOverlay = 2` (`view.toggle_fps_overlay`), `ToggleTheme = 3` (`view.toggle_theme`).
   - Phase 3: `OpenInNewTab = 1116` (`list.open_in_new_tab`); tabs 1200-1209: `NewTab` (`tab.new`, arg `NewTabArg`), `CloseTab` (`tab.close`), `DuplicateTab` (`tab.duplicate`), `CloseLeftTabs` (`tab.close_left`), `ReopenClosedTab` (`tab.reopen_closed`), `NextTab` (`tab.next`), `PreviousTab` (`tab.previous`), `SearchTabs` (`tab.search`), `MoveTabLeft` (`tab.move_left`), `MoveTabRight` (`tab.move_right`); panes 1220-1224: `SplitRight` (`pane.split_right`), `SplitDown` (`pane.split_down`), `FocusNextPane` (`pane.focus_next`), `FocusPreviousPane` (`pane.focus_previous`), `ClosePane` (`pane.close`); layouts 1240-1242: `SaveLayout` (`layout.save`), `LoadLayout` (`layout.load`), `DeleteLayout` (`layout.delete`); windows: `NewWindow = 1250` (`window.new`, reserved, unbound). Tab commands take arg 0 (active tab) or a `TabId` value, pane commands 0 or a `PaneId` value.
@@ -479,3 +627,13 @@ stubs: `fs::EntryKind`, `fs::DirEntry`, `fs::SortKey`, `fs::ListOptions`, `fs::l
   - **ui** (`ui.hpp`, comment only): `restore_session` / `save_session` also govern `bookmarks.json` / `recents.json`.
   - Known breakage until the parallel agents land: exhaustive `switch` over `CommandId` fails `-Werror=switch` in `src/commands/builtin_commands.cpp` (`to_string`, line 66), `src/ui/browser/browser_model.cpp` (`BrowserModel::execute`, line 728) and `src/ui/workspace/workspace.cpp` (line 258): 11 new enumerators each. `src/ui/shell/app.cpp` and `src/ui/workspace/popups.cpp` have `default:` and compile. Everything else in the tree compiles unchanged. Runtime tests that need updates by their owners: `tests/commands/keymap_test.cpp` (`read_keymap_doc` must also read the `## Phase 4 defaults` table; row counts 3 + 25 + 21 become 3 + 25 + 21 + 5; the expected `(unbound)` set loses `nav.focus_address_bar`, now `Ctrl+L`, and gains the seven Phase 4 unbound commands; until then the "(unbound) rows" test fails because the Phase 2 `(unbound)` row for `nav.focus_address_bar` was moved into a note), `tests/platform/desktop_test.cpp:277` (expects Unsupported for the XDG user dirs), `tests/core/layout_json_test.cpp` golden session text (new `"sidebar"` field once core writes it).
 - Phase 4 follow-up: `RecentsStore::restore(std::vector<RecentEntry>)` added so the JSON loader can restore visit counts without private access.
+- Phase 5 (contracts): folder filter, flatten, fuzzy name search, name index. `search.hpp` and `index.hpp` turned from stubs into contracts (no caller existed, so the breaking changes are free: `SearchQuery`/`SearchHit` replaced by `search::Query`/`Match`/`IndexHit`, `MatchMode::Glob` and `case_sensitive` dropped because there is no wildcard language and matching is always folded, `IIndex::add_root` replaced by one index per volume via `create_name_index`; everything moved into `navigator::search`). Otherwise additions only.
+  - **fs** (core-fs): `fold_name_into(name, out, offsets)`: buffer-reusing fold with folded-to-raw byte offsets; documents that the fold is 1:1 in code points.
+  - **walk** (new header, core-fs, `src/core`): `fs::Walker` breadth-first streaming enumerator with a directory table (entries reference parents by index), `WalkOptions {root, max_depth, follow_symlinks = false, cross_filesystems = false, show_hidden = false, skip_unreadable = true, metadata = true, batch_size, batch_latency, max_entries = 1M}`, `WalkStats` (visited, pending, skipped by permission / vanished / error / other fs / cycle, truncated, samples), dev/ino cycle set, hidden directories not entered unless show_hidden (File Pilot v0.5 fix), cancellation checked before each directory and every 1024 entries.
+  - **search** (search, new `src/search`): `compile_query` (trim, ASCII-space terms ANDed, cut at 256 bytes), `Matcher` substring/fuzzy with the documented scoring model and constants, byte highlight ranges, `ranks_before` deterministic ranking, `narrows`, `TypeFilter` (hidden types: folders, no extension, folded extensions), `summarize_types` (respects show_hidden), `toggle_all`, `filter_entries` over listings and walk batches, `kUiThreadFilterLimit = 20000`.
+  - **index** (search): `IIndex` lifecycle (`start`, `stop`, `request_rescan(Verify|Rebuild)`, thread-safe `status`/`query`), states Idle/Loading/Scanning/Verifying/Ready/Failed/Stopped, inotify watch budget with unwatched-directory bookkeeping and periodic mtime verify, `NameIndexOptions`, binary file format v1 (header, volume block, 48-byte directory and 16-byte entry records, name pool, FNV-1a trailer; corrupt -> delete and rebuild), `should_index_by_default` (Root, Home, writable Internal; never removable/network/virtual/image fs), `index_stable_id`, `index_file` under `$XDG_CACHE_HOME/navigator/index/`.
+  - **layout** (core-fs): `TabState::type_filter`; `<tab>` JSON gains optional `"hidden_types"` (additive, version stays 1, written only when active, lenient and normalized on load). `layout.hpp` now includes `search.hpp` for the value type only.
+  - **ui** (`ui.hpp`): `AppConfig::cache_dir`, `AppConfig::enable_index` (`--no-index`).
+  - **commands** (commands): ids 1300-1307 and names listed under "Commands"; new range 1300-1319. Default chords `Ctrl+F`, `Ctrl+E`, `Ctrl+Shift+E`, `Ctrl+Shift+F` (`docs/keymap.md` "Phase 5 defaults"); type-to-filter, filter-field focus scoping and the Escape cascade documented there and in `commands.hpp`.
+  - Known breakage until the parallel agents land: exhaustive `switch` over `CommandId` fails `-Werror=switch` (GCC 13 and Clang 18) in `src/commands/builtin_commands.cpp` (`to_string`, line 78), `src/ui/browser/browser_model.cpp` (line 751) and `src/ui/workspace/workspace.cpp` (line 258): 8 new enumerators each. Everything else in the tree compiles unchanged. Runtime tests that need updates by their owners once commands binds the rows: `tests/commands/keymap_test.cpp` (`read_keymap_doc` must also read `## Phase 5 defaults` and `phase_rows` grows to index 5; counts 3 + 25 + 21 + 5 + 4; the expected `(unbound)` sets gain `list.clear_filter`, `search.toggle_fuzzy`, `search.cancel`, `search.rebuild_index`; `Ctrl+E` leaves the "reserved chords stay free" list) and `tests/integration/keymap_e2e_test.cpp` (line ~881: `per_phase.size()` 4 -> 5 with `per_phase.at(5) == 4`, `bound.size()` 54 -> 58; the `(unbound)` set and its size 10 -> 14; `Ctrl+E` leaves the near-miss list at line 969). Until commands lands, the doc-vs-keymap tests fail because the doc has 4 rows the keymap does not bind yet. `tests/core/layout_json_test.cpp` golden text is unaffected (`"hidden_types"` is only written when active).
+- Phase 5 integration: `search.flatten` always walks; the index serves only `search.flatten_volume`. Headless `--frames`/`--bench-*` runs without `--cache-dir`/`--config-dir` never index and never read or write session, config or cache files.

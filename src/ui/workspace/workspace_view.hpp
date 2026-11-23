@@ -26,8 +26,10 @@
 #include <vector>
 
 #include <navigator/commands.hpp>
+#include <navigator/index.hpp>
 #include <navigator/layout.hpp>
 #include <navigator/places.hpp>
+#include <navigator/search.hpp>
 #include <navigator/types.hpp>
 #include <navigator/ui.hpp>
 
@@ -81,6 +83,10 @@ struct ShellFrame {
     // the panes and before toasts and popups (which cover it with their scrim).
     std::function<void()> draw_sidebar;
     std::function<void()> draw_sidebar_overlay;
+    // Phase 5: the tab whose filter field has the keyboard (invalid: none), and the status of
+    // the index that covers a folder (whole-volume searches show it; empty: no index).
+    layout::TabId filter_focus;
+    std::function<std::optional<search::IndexStatus>(const Path&)> index_status;
 };
 
 enum class PointerCursor : std::uint8_t { Default, ResizeHorizontal, ResizeVertical };
@@ -117,6 +123,9 @@ public:
     [[nodiscard]] bool popup_open() const noexcept { return popup_.kind != PopupKind::None; }
     [[nodiscard]] bool wants_text_input() const noexcept;
     void open_search_tabs(const Workspace& ws, const Path* home);
+    // Phase 5: the types popup of the active tab, below its types button (search.types).
+    void open_types_popup(const Workspace& ws);
+    [[nodiscard]] bool types_popup_open() const noexcept { return popup_.kind == PopupKind::Types; }
     void open_save_layout(const Workspace& ws);
     void open_layout_picker(const Workspace& ws, bool delete_mode);
     void close_popup() noexcept;
@@ -194,6 +203,7 @@ private:
         TabList, // overflow chevron of a strip
         GoTo,    // Phase 4 (nav.goto)
         Menu,    // Phase 4 generic context menu (sidebar rows)
+        Types,   // Phase 5 types popup (search.types)
     };
     struct MenuItem {
         std::string label;
@@ -228,6 +238,10 @@ private:
         float last_py = -1.0F;
         WidgetId pressed = WidgetId::None;
         std::size_t pressed_index = 0;
+        // Phase 5 types popup: the tab it filters and the rows of the last frame (row 0 of the
+        // highlight is "All types").
+        layout::TabId types_tab;
+        std::vector<search::TypeCount> type_rows;
     };
     struct TabSlot {
         layout::TabId id;
@@ -292,6 +306,11 @@ private:
     void draw_layout_picker(const ShellFrame& f);
     void draw_menu(const ShellFrame& f);
     void draw_goto(const ShellFrame& f);
+    void draw_types(const ShellFrame& f);
+    void toggle_type_row(std::size_t row, std::vector<Intent>& out) const;
+    [[nodiscard]] BrowserFrame browser_frame(const ShellFrame& f, const Strip& s, layout::TabId tab,
+                                             const BrowserModel& m, const Palette& pal,
+                                             const PointerInput& ptr) const;
     void draw_address_dropdown(const ShellFrame& f);
     RectF draw_card(const ShellFrame& f, float width, float height, float top);
     float draw_field(const ShellFrame& f, const RectF& box, std::string_view placeholder,

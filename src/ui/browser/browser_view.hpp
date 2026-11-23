@@ -18,11 +18,15 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include <navigator/commands.hpp>
+#include <navigator/index.hpp>
+#include <navigator/search.hpp>
 #include <navigator/types.hpp>
 #include <navigator/ui.hpp>
 
@@ -64,6 +68,10 @@ struct BrowserFrame {
     const TextEdit* address = nullptr;
     bool address_error = false;
     bool bookmarked = false; // the star button is filled
+    // Phase 5: this tab's filter field has the keyboard (accent ring, caret, list cursor drawn
+    // inactive), and the index of the volume a whole-volume search runs on (status bar).
+    bool filter_focused = false;
+    std::optional<search::IndexStatus> index_status;
 };
 
 // Performance overlay (F12) at the bottom-right of the window.
@@ -93,6 +101,11 @@ public:
     // Phase 4: the address field's rectangle (px) from the last draw in edit mode, or the
     // breadcrumb area otherwise (the dropdown hangs below it).
     [[nodiscard]] const RectF& address_rect() const noexcept { return address_rect_; }
+    // Phase 5: the types button (the types popup hangs below it) and the filter field.
+    [[nodiscard]] const RectF& types_rect() const noexcept { return types_rect_; }
+    [[nodiscard]] const RectF& filter_rect() const noexcept { return filter_rect_; }
+    // A spinner or progress bar is animating (keep frames coming).
+    [[nodiscard]] bool busy_animating() const noexcept { return spinning_; }
 
 private:
     struct Layout {
@@ -118,6 +131,12 @@ private:
         bool show_type = true;
         bool show_date = true;
         bool short_date = false;
+        // Phase 5: the flattened view's Folder column (or the parent path after the name in
+        // narrow panes).
+        bool show_folder = false;
+        bool inline_parent = false;
+        float folder_x = 0.0F;
+        float folder_r = 0.0F;
     };
     struct Crumb {
         std::string label;
@@ -143,6 +162,20 @@ private:
     void draw_scrollbar(const BrowserFrame& f, const Layout& l);
     void draw_empty_state(const BrowserFrame& f, const Layout& l);
     void draw_status(const BrowserFrame& f, const Layout& l);
+    // Phase 5 (browser_search_view.cpp).
+    void draw_filter_field(const BrowserFrame& f, const RectF& area, bool collapsed);
+    bool toggle_button(const BrowserFrame& f, const RectF& r, WidgetId id, int icon, bool on,
+                       std::string_view badge);
+    void draw_progress(const BrowserFrame& f, const Layout& l) const;
+    void draw_search_empty(const BrowserFrame& f, const Layout& l);
+    float draw_search_status(const BrowserFrame& f, const Layout& l, float x, float limit);
+    void draw_spinner(const BrowserFrame& f, float cx, float cy, float radius) const;
+    [[nodiscard]] float crumbs_width(const BrowserFrame& f) const;
+    [[nodiscard]] std::vector<std::pair<std::uint32_t, std::uint32_t>>
+    name_highlights(const BrowserFrame& f, const std::string& raw, const std::string& display,
+                    const std::string& shown);
+    [[nodiscard]] std::string folder_text(const BrowserFrame& f, std::size_t row) const;
+    void draw_tooltip(const BrowserFrame& f);
     float draw_key_hint(const BrowserFrame& f, std::string_view command, std::string_view label,
                         float center_x, float center_y, bool measure_only);
 
@@ -175,6 +208,18 @@ private:
     RectF address_rect_;
     std::size_t middle_crumb_ = static_cast<std::size_t>(-1);
     float address_scroll_ = 0.0F;
+
+    // Phase 5.
+    RectF types_rect_;
+    RectF filter_rect_;
+    float filter_scroll_ = 0.0F;
+    std::string tooltip_text_; // set while drawing a hovered control; drawn last, then cleared
+    RectF tooltip_anchor_;
+    double spin_ms_ = 0.0;
+    bool spinning_ = false;
+    std::uint64_t hl_gen_ = ~std::uint64_t{0};
+    search::Matcher hl_matcher_;
+    std::unordered_map<std::string, std::vector<search::HighlightRange>> hl_cache_;
 };
 
 } // namespace navigator::ui

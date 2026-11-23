@@ -9,11 +9,12 @@ namespace navigator::ui {
 std::vector<Path> copy_path_targets(const BrowserModel& model, bool current_folder) {
     std::vector<Path> out;
     if (!current_folder && model.selected_count() > 0) {
-        const std::vector<fs::DirEntry>& entries = model.entries();
+        // Rows, not entries (Phase 5): a filtered or flattened view copies what it shows.
         out.reserve(model.selected_count());
-        for (std::size_t i = 0; i < entries.size(); ++i) {
+        const std::size_t n = model.row_count();
+        for (std::size_t i = 0; i < n; ++i) {
             if (model.is_selected(i)) {
-                out.push_back(model.current_dir() / entries[i].name);
+                out.push_back(model.row_path(i));
             }
         }
     }

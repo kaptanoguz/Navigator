@@ -82,6 +82,10 @@ public:
     [[nodiscard]] std::vector<layout::TabId> visible_tabs() const;
     // Every visible tab has listed once and none is listing.
     [[nodiscard]] bool settled() const;
+    // Phase 5: a visible tab runs a walk, an index query or a filter job.
+    [[nodiscard]] bool searching() const;
+    // Phase 5, at quit: asks every walk to stop (none is ever joined here).
+    void cancel_walks() noexcept;
     [[nodiscard]] std::uint64_t layout_epoch() const noexcept { return epoch_; }
     // Increases whenever something persisted changes (layout edits, closed tabs, a tab's folder,
     // sort or hidden setting); cursor and scroll alone do not count. See sync().

@@ -6,6 +6,12 @@
 // anything unexpected falls back to its default). JSON nodes that cannot be used (unknown type,
 // too deep, not an object) become empty panes, which Layout::from_tree() drops together with
 // their size, so children and sizes stay aligned.
+//
+// "hidden_types" (Phase 5): src/core does not link src/search, so normalized_types() below
+// re-implements search::normalize(TypeFilter) from its documented rule (search.hpp TypeFilter /
+// layout.hpp "hidden_types"): drop empty or '/'- or NUL-containing items, fold with
+// fs::fold_name, sort by bytes, unique. The writer normalizes a copy too, so a filter the loader
+// would change is written as it would be read back (save -> load -> save is stable).
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -21,7 +27,9 @@
 #include <variant>
 #include <vector>
 
+#include <navigator/fs.hpp>
 #include <navigator/layout.hpp>
+#include <navigator/search.hpp>
 
 #include "json_util.hpp"
 
@@ -37,6 +45,24 @@ using core::json::InJson;
 using core::json::member;
 using core::json::OutJson;
 using core::json::parse_object;
+
+// ---- hidden types (Phase 5) ----------------------------------------------------------------
+
+// Mirrors search::normalize(TypeFilter) (see the file comment).
+search::TypeFilter normalized_types(search::TypeFilter filter) {
+    std::vector<std::string> out;
+    out.reserve(filter.hidden_extensions.size());
+    for (const std::string& ext : filter.hidden_extensions) {
+        if (ext.empty() || ext.find_first_of(std::string_view("/\0", 2)) != std::string::npos) {
+            continue;
+        }
+        out.push_back(fs::fold_name(ext));
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    filter.hidden_extensions = std::move(out);
+    return filter;
+}
 
 // ---- writing -------------------------------------------------------------------------------
 
@@ -69,6 +95,23 @@ OutJson tab_to_json(const TabState& tab) {
     sort["natural"] = tab.sort.natural;
     sort["case_insensitive"] = tab.sort.case_insensitive;
     out["sort"] = std::move(sort);
+    if (const search::TypeFilter types = normalized_types(tab.type_filter); types.active()) {
+        OutJson hidden = OutJson::object();
+        if (types.hide_folders) {
+            hidden["folders"] = true;
+        }
+        if (types.hide_no_extension) {
+            hidden["no_extension"] = true;
+        }
+        if (!types.hidden_extensions.empty()) {
+            OutJson extensions = OutJson::array();
+            for (const std::string& ext : types.hidden_extensions) {
+                extensions.push_back(bytes_to_json(ext));
+            }
+            hidden["extensions"] = std::move(extensions);
+        }
+        out["hidden_types"] = std::move(hidden);
+    }
     return out;
 }
 
@@ -167,6 +210,21 @@ TabState tab_from(const InJson& value) {
         tab.sort.natural = as_bool(member(*sort, "natural"), defaults.natural);
         tab.sort.case_insensitive =
             as_bool(member(*sort, "case_insensitive"), defaults.case_insensitive);
+    }
+    if (const InJson* hidden = member(value, "hidden_types");
+        hidden != nullptr && hidden->is_object()) {
+        search::TypeFilter types;
+        types.hide_folders = as_bool(member(*hidden, "folders"), false);
+        types.hide_no_extension = as_bool(member(*hidden, "no_extension"), false);
+        if (const InJson* extensions = member(*hidden, "extensions");
+            extensions != nullptr && extensions->is_array()) {
+            for (const InJson& item : *extensions) {
+                if (std::optional<std::string> ext = as_bytes(&item)) {
+                    types.hidden_extensions.push_back(std::move(*ext));
+                }
+            }
+        }
+        tab.type_filter = normalized_types(std::move(types));
     }
     return tab;
 }

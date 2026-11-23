@@ -317,6 +317,45 @@ std::vector<PaneDropArea> WorkspaceView::drop_areas() const {
 // Frame
 // ---------------------------------------------------------------------------------------------
 
+BrowserFrame WorkspaceView::browser_frame(const ShellFrame& f, const Strip& s, layout::TabId tab,
+                                          const BrowserModel& m, const Palette& pal,
+                                          const PointerInput& ptr) const {
+    const bool filter_focused = f.filter_focus == tab && s.active_pane;
+    std::optional<search::IndexStatus> index;
+    if (f.index_status && m.flatten_is_volume()) {
+        index = f.index_status(m.flatten_root());
+    }
+    return BrowserFrame{
+        .painter = f.painter,
+        .palette = pal,
+        .theme = f.theme,
+        .model = m,
+        .keymap = f.keymap,
+        .pointer = ptr,
+        .queue = f.queue,
+        .intents = f.intents,
+        .width = f.width,
+        .height = f.height,
+        .bounds = s.body,
+        .tab = tab.value,
+        // While the filter field has the keyboard the list cursor draws as inactive (B1).
+        .focused = f.focused && s.active_pane && f.list_keyboard && !filter_focused,
+        .pane_active = s.active_pane,
+        .marked = s.active_pane && f.workspace.layout().pane_count() > 1,
+        .animations = f.animations,
+        .density = f.density,
+        .dt_ms = f.dt_ms,
+        .now = f.now,
+        .home = f.home,
+        .address = address_.is_open() && address_.tab == tab.value ? &address_.edit() : nullptr,
+        .address_error = !address_.error().empty(),
+        .bookmarked =
+            f.bookmarks != nullptr && m.loaded() && f.bookmarks->contains(m.current_dir()),
+        .filter_focused = filter_focused && f.focused,
+        .index_status = std::move(index),
+    };
+}
+
 void WorkspaceView::update(const ShellFrame& f) {
     prune(f.workspace);
     last_now_ms_ = f.now_ms;
@@ -356,29 +395,7 @@ void WorkspaceView::update(const ShellFrame& f) {
             continue;
         }
         const Palette pal = pane_palette(f.palette, f.theme, s.dim);
-        BrowserFrame bf{
-            .painter = f.painter,
-            .palette = pal,
-            .theme = f.theme,
-            .model = *m,
-            .keymap = f.keymap,
-            .pointer = vp,
-            .queue = f.queue,
-            .intents = f.intents,
-            .width = f.width,
-            .height = f.height,
-            .bounds = s.body,
-            .tab = tab.value,
-            .focused = f.focused && s.active_pane && f.list_keyboard,
-            .pane_active = s.active_pane,
-            .marked = s.active_pane && f.workspace.layout().pane_count() > 1,
-            .animations = f.animations,
-            .density = f.density,
-            .dt_ms = f.dt_ms,
-            .now = f.now,
-            .home = f.home,
-            .address = address_.is_open() && address_.tab == tab.value ? &address_.edit() : nullptr,
-        };
+        const BrowserFrame bf = browser_frame(f, s, tab, *m, pal, vp);
         view(tab).update(bf);
     }
 }
@@ -428,33 +445,7 @@ void WorkspaceView::draw(const ShellFrame& f) {
         if (node->active_tab < node->tabs.size()) {
             const layout::TabId tab = node->tabs[node->active_tab].id;
             if (const BrowserModel* m = ws.model(tab); m != nullptr) {
-                BrowserFrame bf{
-                    .painter = p,
-                    .palette = pal,
-                    .theme = f.theme,
-                    .model = *m,
-                    .keymap = f.keymap,
-                    .pointer = vp,
-                    .queue = f.queue,
-                    .intents = f.intents,
-                    .width = f.width,
-                    .height = f.height,
-                    .bounds = s.body,
-                    .tab = tab.value,
-                    .focused = f.focused && s.active_pane && f.list_keyboard,
-                    .pane_active = s.active_pane,
-                    .marked = s.active_pane && f.workspace.layout().pane_count() > 1,
-                    .animations = f.animations,
-                    .density = f.density,
-                    .dt_ms = f.dt_ms,
-                    .now = f.now,
-                    .home = f.home,
-                    .address = address_.is_open() && address_.tab == tab.value ? &address_.edit()
-                                                                               : nullptr,
-                    .address_error = !address_.error().empty(),
-                    .bookmarked = f.bookmarks != nullptr && m->loaded() &&
-                                  f.bookmarks->contains(m->current_dir()),
-                };
+                const BrowserFrame bf = browser_frame(f, s, tab, *m, pal, vp);
                 r.set_clip(s.body);
                 view(tab).draw(bf);
                 r.set_clip(std::nullopt);

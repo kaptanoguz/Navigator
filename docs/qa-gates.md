@@ -2,7 +2,7 @@
 
 Phase 0 gates are below. Phase 1 adds the gates in "Phase 1 additions", Phase 2 those in
 "Phase 2 additions", Phase 3 those in "Phase 3 additions", Phase 4 those in "Phase 4
-additions"; every earlier gate still applies.
+additions", Phase 5 those in "Phase 5 additions"; every earlier gate still applies.
 
 ## Phase 0
 
@@ -141,6 +141,32 @@ Notes:
 - The GoTo cases set `HOME` and a few test variables before any worker starts; ctest runs each
   Catch2 case in its own process, so this never leaks into other cases.
 - Findings: `docs/qa-phase4.md`.
+
+## Phase 5 additions (folder filter, flatten, fuzzy search, name index)
+
+Every earlier gate still applies. `navigator_browser_integration_tests` gains
+`search_gold_test.cpp`, `flatten_e2e_test.cpp` and `index_lifecycle_test.cpp` (helpers in
+`search_support.hpp`; real `fs::Walker`, real `create_name_index`, real inotify); the keymap e2e
+knows the Phase 5 table. New app script `integration.app_index_cache_rules`
+(`tests/integration/index_app_smoke.sh`). The ui acceptance smoke
+`ui.smoke_flatten_cancels_without_freezing` (owner ui) is part of the gate.
+
+| # | Gate | Command | Pass condition |
+|---|------|---------|----------------|
+| 35 | Keymap doc sync, all phases | `ctest --preset dev -R '^integration\..*(keymap\|chord\|Unbound Phase 5)'` | 5 phase tables, 58 chords (3 + 25 + 21 + 5 + 4) equal `load_default_keymap()` row for row; 14 `(unbound)` rows (exact set); `Ctrl+E` flattens and leaves through `Workspace::execute`; `Ctrl+F`, `Ctrl+Shift+E`, `Ctrl+Shift+F` are not handled by the Workspace and their effect is checked on the BrowserModel calls the shell makes (filter text selected and replaced, walk- and index-backed volume flatten, types popup intents persisted in the tab); `list.clear_filter`, `search.toggle_fuzzy`, `search.cancel` are handled, `search.rebuild_index` is not |
+| 36 | Ranking gold | `ctest --preset dev -R 'integration\.Gold'` | hand-computed orders for `report`, `notes`, `rep 2024`, Turkish `istanbul` / `ışık` spellings, `izmir`, NFC `café` vs NFD `cafe`, invalid UTF-8 `badname`, identical in the reference (`Walker` + `Matcher` + `ranks_before`), the walk flatten, `IIndex::query` and the index-backed flatten, Substring and Fuzzy |
+| 37 | Hidden, permissions, types, cancel | `ctest --preset dev -R 'integration\.(Flatten\|The index-backed\|Permission\|An unreadable flatten\|Walk- and index\|Cancelling\|Typing during\|Index queries cancel)'` | no child of a hidden folder appears unless show_hidden (walk and index); unreadable folders listed, not entered, counted (2) with samples; walk- and index-backed rows and types popup agree; cancelled walks keep a breadth-first-complete, duplicate-free partial result and stop delivering; a cancelled index query is an error or the full result; `BUG-P5-*` cases are `[!mayfail]` (`docs/qa-phase5.md`) |
+| 38 | Index lifecycle | `ctest --preset dev -R 'integration\.Index:'` | cold scan saves a valid file (FNV trailer, 0600 in a 0700 dir, no temporaries); a restart loads it and verify shows changes made while stopped; flipped byte, truncated, empty, garbage, other version, bad magic and other-volume files are rejected, rebuilt and rewritten; inotify creations, renames and deletions (also in a new folder) reach an index-backed flattened view |
+| 39 | Cache rules in the app | `ctest --preset dev -R 'app_index_cache_rules\|smoke_flatten'` | headless runs without `--cache-dir` create nothing under a temporary `HOME` / `XDG_CACHE_HOME` / `XDG_CONFIG_HOME` (also with `NAVIGATOR_DEBUG_INDEX_ROOT` set); `--no-index` creates no `index/`; with `--cache-dir` the fixture-only index is one `.idx` (600, folder 700, magic), rebuilt after corruption; the 300k flatten smoke passes its frame and cancel bounds |
+| 40 | Flake, parallel, sanitizers | gates 18, 13, 14 and 15 with `-R '^integration\.'` | all pass |
+
+Notes:
+
+- App runs that use `--cache-dir` always set `NAVIGATOR_DEBUG_INDEX_ROOT` to a fixture: without
+  it the service would index the machine's real default volumes.
+- The permission tests skip as root. Folders made unreadable get mode 0755 back before the
+  fixture is removed.
+- Findings: `docs/qa-phase5.md`.
 
 ## Manual check (developer machine, not CI)
 

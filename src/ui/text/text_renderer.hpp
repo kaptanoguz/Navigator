@@ -14,6 +14,7 @@
 #include <memory>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <navigator/types.hpp>
@@ -77,7 +78,17 @@ public:
     // Draws every run of `layout` (each with its own font) with its origin at (x, baseline).
     void draw(const TextLayout& layout, float x, float baseline, const Color& color);
 
+    // Phase 5 match highlight: as draw(), but glyphs whose cluster (byte offset in the shaped
+    // string) falls in one of `ranges` (sorted, half-open [first, second)) use `highlight`.
+    void draw_ranges(const TextLayout& layout, float x, float baseline, const Color& color,
+                     const Color& highlight,
+                     const std::vector<std::pair<std::uint32_t, std::uint32_t>>& ranges);
+
 private:
+    void draw_run(Font& font, const ShapedRun& run, float x, float baseline, const Color& color,
+                  const Color* highlight,
+                  const std::vector<std::pair<std::uint32_t, std::uint32_t>>* ranges);
+
     Renderer* renderer_;
     GlyphAtlas* atlas_;
     std::vector<SDL_Vertex> vertices_;

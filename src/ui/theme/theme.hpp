@@ -93,6 +93,16 @@ struct Palette {
 
     // Phase 4.
     Color warning; // usage bars from 80% (danger from 90%); >= 3:1 on background (non-text)
+
+    // Phase 5.
+    // Matched characters in the Name column (design review Phase 4 notes: accent, never the row
+    // background). >= 4.5:1 on the list surface, its stripes, hover and both selection fills,
+    // active and dimmed; an underline carries the match too (not colour alone).
+    Color match;
+    Color chip;      // the filter count chip / active toggles: translucent accent fill
+    Color chip_text; // text on `chip` over the chrome background; >= 4.5:1
+    // Outline of an unchecked checkbox (a control state: >= 3:1 on popups and surfaces).
+    Color control_border;
 };
 
 [[nodiscard]] const Palette& palette(Theme theme) noexcept;

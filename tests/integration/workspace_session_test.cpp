@@ -30,6 +30,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <navigator/commands.hpp>
@@ -764,8 +765,16 @@ TEST_CASE("Only visible tabs own worker threads and watches", "[workspace][lazy]
             t / "d1" / ("bg" + std::to_string(i / 10) + std::to_string(i % 10)));
     }
     // Sanitizer runtimes (TSan) start a helper thread with the first thread of the process: make
-    // sure it exists before the baseline is taken.
-    std::thread([] {}).join();
+    // sure it exists before the baseline is taken. The warm-up thread itself can still be listed
+    // in /proc/self/task right after join() (seen on Clang builds): wait until its tid is gone,
+    // then take the baseline.
+    pid_t warm_tid = 0;
+    std::thread([&warm_tid] { warm_tid = static_cast<pid_t>(::gettid()); }).join();
+    const Path warm_task = Path("/proc/self/task") / std::to_string(warm_tid);
+    for (int i = 0; i < 500 && std::filesystem::exists(warm_task); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    REQUIRE_FALSE(std::filesystem::exists(warm_task));
     const std::size_t tasks_before = count_tasks();
     const std::size_t inotify_before = count_inotify_fds();
     std::size_t tasks_one_tab = 0;

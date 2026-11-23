@@ -54,6 +54,10 @@ constexpr Palette kDark{
     .tint_program = rgb(0x9AA3B5),
     .on_accent = rgb(0x0F1220),
     .warning = rgb(0xE5A93B),
+    .match = rgb(0xA3B6FF),
+    .chip = Color{0.557F, 0.651F, 1.0F, 0.16F},
+    .chip_text = rgb(0xB4C3FF),
+    .control_border = rgb(0x737A8C),
 };
 
 // Light: cool paper white, ink near-black, accent deepened for contrast on white.
@@ -100,6 +104,10 @@ constexpr Palette kLight{
     .tint_program = rgb(0x6B7385),
     .on_accent = rgb(0xFFFFFF),
     .warning = rgb(0xB06F00),
+    .match = rgb(0x2C49B8),
+    .chip = Color{0.247F, 0.388F, 0.859F, 0.12F},
+    .chip_text = rgb(0x2C49B8),
+    .control_border = rgb(0x868C99),
 };
 
 } // namespace
@@ -180,6 +188,10 @@ Palette mix(const Palette& a, const Palette& b, float t) noexcept {
         .tint_program = mix(a.tint_program, b.tint_program, t),
         .on_accent = mix(a.on_accent, b.on_accent, t),
         .warning = mix(a.warning, b.warning, t),
+        .match = mix(a.match, b.match, t),
+        .chip = mix(a.chip, b.chip, t),
+        .chip_text = mix(a.chip_text, b.chip_text, t),
+        .control_border = mix(a.control_border, b.control_border, t),
     };
 }
 

@@ -6,8 +6,11 @@
 // Thread-safety: UI thread only; lives for one frame.
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "render/renderer.hpp"
 #include "text/font_cache.hpp"
@@ -37,6 +40,18 @@ public:
 
     [[nodiscard]] ShapedText shape(const TextStyle& style, std::string_view utf8) const;
     void draw(const ShapedText& text, float x, float baseline, const Color& color) const;
+
+    // Phase 5: `text` with the byte ranges `ranges` (sorted, half-open, offsets into the shaped
+    // string) drawn in `highlight` and underlined by a hairline in `underline` (matched
+    // characters: never colour alone).
+    void draw_highlighted(const ShapedText& text, float x, float baseline, const Color& color,
+                          const Color& highlight, const Color& underline,
+                          const std::vector<std::pair<std::uint32_t, std::uint32_t>>& ranges,
+                          std::size_t text_size) const;
+    // Pen x extents (px, from the text origin) of the byte ranges, merged per range.
+    [[nodiscard]] static std::vector<std::pair<float, float>>
+    range_extents(const ShapedText& text, std::size_t text_size,
+                  const std::vector<std::pair<std::uint32_t, std::uint32_t>>& ranges);
 
 private:
     Renderer* renderer_;

@@ -19,3 +19,5 @@ if(NAVIGATOR_BUILD_TESTS)
     add_test(NAME tools.navigator_ls_missing_path COMMAND navigator-ls /nonexistent/navigator)
     set_tests_properties(tools.navigator_ls_missing_path PROPERTIES WILL_FAIL TRUE)
 endif()
+
+add_subdirectory(search_bench)

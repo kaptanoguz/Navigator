@@ -128,24 +128,45 @@ const GlyphAtlas::Entry* GlyphAtlas::get(Font& font, std::uint32_t glyph, int bi
 // ---------------------------------------------------------------------------------------------
 void TextRenderer::draw(Font& font, const ShapedRun& run, float x, float baseline,
                         const Color& color) {
+    draw_run(font, run, x, baseline, color, nullptr, nullptr);
+}
+
+void TextRenderer::draw_run(Font& font, const ShapedRun& run, float x, float baseline,
+                            const Color& color, const Color* highlight,
+                            const std::vector<std::pair<std::uint32_t, std::uint32_t>>* ranges) {
     if (run.glyphs.empty() || color.a <= 0.0F) {
         return;
     }
     const bool light = relative_luminance(color) > 0.35F;
+    const bool light_hl = highlight != nullptr && relative_luminance(*highlight) > 0.35F;
     const float base_y = std::round(baseline);
     const SDL_FColor c = to_sdl(color);
+    const SDL_FColor hc = highlight != nullptr ? to_sdl(*highlight) : c;
+    const auto in_range = [ranges](std::uint32_t cluster) {
+        if (ranges == nullptr) {
+            return false;
+        }
+        for (const auto& [b, e] : *ranges) {
+            if (cluster >= b && cluster < e) {
+                return true;
+            }
+        }
+        return false;
+    };
     const float inv = 1.0F / static_cast<float>(atlas_->size());
     vertices_.clear();
     indices_.clear();
     for (const ShapedGlyph& g : run.glyphs) {
+        const bool hl = in_range(g.cluster);
         const float gx = x + g.x;
         const float whole = std::floor(gx);
         const int bin = std::min(static_cast<int>((gx - whole) * GlyphAtlas::kSubpixelBins),
                                  GlyphAtlas::kSubpixelBins - 1);
-        const GlyphAtlas::Entry* e = atlas_->get(font, g.glyph, bin, light);
+        const GlyphAtlas::Entry* e = atlas_->get(font, g.glyph, bin, hl ? light_hl : light);
         if (e == nullptr || e->width == 0 || e->height == 0) {
             continue;
         }
+        const SDL_FColor col = hl ? hc : c;
         const float x0 = whole + static_cast<float>(e->left);
         const float y0 = base_y + std::round(g.y) - static_cast<float>(e->top);
         const float x1 = x0 + static_cast<float>(e->width);
@@ -155,13 +176,23 @@ void TextRenderer::draw(Font& font, const ShapedRun& run, float x, float baselin
         const float u1 = (e->u + static_cast<float>(e->width)) * inv;
         const float v1 = (e->v + static_cast<float>(e->height)) * inv;
         const auto base = static_cast<int>(vertices_.size());
-        vertices_.push_back(SDL_Vertex{{x0, y0}, c, {u0, v0}});
-        vertices_.push_back(SDL_Vertex{{x1, y0}, c, {u1, v0}});
-        vertices_.push_back(SDL_Vertex{{x1, y1}, c, {u1, v1}});
-        vertices_.push_back(SDL_Vertex{{x0, y1}, c, {u0, v1}});
+        vertices_.push_back(SDL_Vertex{{x0, y0}, col, {u0, v0}});
+        vertices_.push_back(SDL_Vertex{{x1, y0}, col, {u1, v0}});
+        vertices_.push_back(SDL_Vertex{{x1, y1}, col, {u1, v1}});
+        vertices_.push_back(SDL_Vertex{{x0, y1}, col, {u0, v1}});
         indices_.insert(indices_.end(), {base, base + 1, base + 2, base, base + 2, base + 3});
     }
     renderer_->draw_geometry(atlas_->texture(), vertices_, indices_);
+}
+
+void TextRenderer::draw_ranges(const TextLayout& layout, float x, float baseline,
+                               const Color& color, const Color& highlight,
+                               const std::vector<std::pair<std::uint32_t, std::uint32_t>>& ranges) {
+    for (const TextLayout::Run& run : layout.runs) {
+        if (run.font != nullptr) {
+            draw_run(*run.font, run.shaped, x + run.x, baseline, color, &highlight, &ranges);
+        }
+    }
 }
 
 void TextRenderer::draw(const TextLayout& layout, float x, float baseline, const Color& color) {

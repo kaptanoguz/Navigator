@@ -1,8 +1,10 @@
-// fold_name(), compare_names(), to_display_name() (navigator/fs.hpp, "Names").
+// fold_name(), fold_name_into(), compare_names(), to_display_name() (navigator/fs.hpp, "Names").
 #include <compare>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <navigator/fs.hpp>
 
@@ -54,9 +56,12 @@ namespace {
 
 } // namespace
 
-std::string fold_name(std::string_view name) {
-    std::string out;
-    out.reserve(name.size());
+void fold_name_into(std::string_view name, std::string& out,
+                    std::vector<std::uint32_t>* source_offsets) {
+    out.clear();
+    if (source_offsets != nullptr) {
+        source_offsets->clear();
+    }
     std::size_t i = 0;
     while (i < name.size()) {
         const core::Decoded d = next_code_point(name, i);
@@ -65,8 +70,22 @@ std::string fold_name(std::string_view name) {
         } else {
             core::append_utf8(out, core::fold_code_point(d.cp));
         }
+        if (source_offsets != nullptr) {
+            // One entry per result byte: every byte of this folded code point came from the
+            // input code point starting at i.
+            source_offsets->resize(out.size(), static_cast<std::uint32_t>(i));
+        }
         i += d.length;
     }
+    if (source_offsets != nullptr) {
+        source_offsets->push_back(static_cast<std::uint32_t>(name.size()));
+    }
+}
+
+std::string fold_name(std::string_view name) {
+    std::string out;
+    out.reserve(name.size());
+    fold_name_into(name, out);
     return out;
 }
 

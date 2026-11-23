@@ -74,6 +74,9 @@ struct Intent {
         BookmarkTab,          // tab = dragged tab, row = insertion index among bookmarks
         OpenPath,             // path, additive = new tab (context menus)
         CopyText,             // text: put on the clipboard (context menus, "Copy path")
+        // Phase 5 (types popup; applied by the App to the tab's model).
+        SetTypeVisible, // tab, index = search::TypeKind, text = extension, additive = visible
+        ToggleAllTypes, // tab
     };
     Kind kind = Kind::ClickRow;
     // The tab whose model a list intent applies to (layout::TabId value); set by the view.
@@ -123,6 +126,14 @@ enum class WidgetId : std::uint16_t {
     SidebarButton, // + button index
     Star,          // address bar bookmark button
     AddressField,  // click inside the address bar text
+    // Phase 5.
+    FilterField, // the pane's filter field (or its collapsed button)
+    FilterClear, // the count chip's clear button
+    FilterMode,  // substring / fuzzy toggle in the field
+    Flatten,     // flatten toggle (title bar)
+    Types,       // types popup button (title bar)
+    StopSearch,  // stop button in the status bar
+    TypesRow,    // a row of the types popup
 };
 
 } // namespace navigator::ui

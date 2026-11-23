@@ -30,6 +30,13 @@
 // pointer drag) or in max_frames mode the loop runs continuously (vsync). Otherwise it blocks in
 // SDL_WaitEventTimeout and redraws only when an event, a worker or a command dirtied the frame.
 //
+// Phase 5 (docs/architecture.md "Phase 5"): each pane's filter field is the fourth keyboard
+// owner (after popups, the address bar / rename field and the sidebar): it takes only its
+// editing keys (search/filter_rules.hpp) and everything else reaches the pane through the
+// keymap; SDL text input stays on so typing in the list starts the filter (type-to-filter).
+// The name-index service starts after the first frame and stops (bounded) at quit; it never
+// runs, reads or writes the cache in headless runs without --cache-dir, or with --no-index.
+//
 // Development-only environment (not part of the contract; set by navigator's hidden flags):
 //   NAVIGATOR_DEBUG_SCREENSHOT=<path.bmp>  save the last frame before present (needs max_frames)
 //   NAVIGATOR_DEBUG_SCALE=<float>          override the display scale (window size follows)
@@ -45,6 +52,14 @@
 //                                          key:Ctrl+A) through the same path as a key press;
 //                                          sbhover:ROW / sbfocus[:ROW] (sidebar rows);
 //                                          sbmenu:ROW (row context menu)
+//                                          Phase 5: filter:TEXT (focus + set the filter),
+//                                          waitsearch (hold until no visible search runs),
+//                                          waitfound:N (hold until a flatten found N),
+//                                          waitindex (hold until the folder's index is ready),
+//                                          blurfilter
+//   NAVIGATOR_DEBUG_SLOW_WALK=<ms>         flatten walks deliver small batches this slowly
+//   NAVIGATOR_DEBUG_INDEX_ROOT=<dir>       index only <dir>, as if it were a volume
+//   NAVIGATOR_DEBUG_BENCH_FLATTEN=1        flatten acceptance: flatten, cancel, report, quit
 //   NAVIGATOR_DEBUG_VOLUMES=<dir>          fake volume table for the sidebar (debug_volumes.hpp)
 //   NAVIGATOR_DEBUG_BENCH_SCROLL=1         scroll benchmark: logs frame times to stdout and quits
 // User-facing: NAVIGATOR_NO_ANIMATIONS=1 forces AppConfig::animations off.
@@ -59,6 +74,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -81,6 +97,9 @@
 #include "render/backend_name.hpp"
 #include "render/renderer.hpp"
 #include "render/sdl_handles.hpp"
+#include "search/filter_rules.hpp"
+#include "search/flatten_walk.hpp"
+#include "search/index_service.hpp"
 #include "shell/debug_volumes.hpp"
 #include "shell/painter.hpp"
 #include "shell/ui_settings.hpp"
@@ -225,6 +244,7 @@ struct App::Impl {
     std::unique_ptr<platform::IAppLauncher> launcher; // outlives the workspace
     std::unique_ptr<ui::PathWorker> path_worker;      // GoTo / address bar jobs
     std::unique_ptr<ui::SessionWriter> writer;        // outlives nothing it reads (copies)
+    std::unique_ptr<ui::IndexService> indexes;        // Phase 5; outlives the workspace
     std::unique_ptr<ui::Workspace> workspace;
     ui::WorkspaceView view;
     // Phase 4: sidebar data (stores, volume / probe workers, persistence) and view.
@@ -254,6 +274,22 @@ struct App::Impl {
     Uint32 wake_event = 0;
     bool focused = true;
     ui::Density density = ui::Density::Compact; // from ui::ui_settings() at create
+    // Phase 5: the tab whose filter field has the keyboard (only while it is the active tab),
+    // and the folder it showed when it got focus (navigation hands the keyboard back).
+    layout::TabId filter_tab;
+    Path filter_dir;
+    std::vector<std::string> indexed_mounts; // last volume set handed to the index service
+    bool first_frame_done = false;
+    // Flatten acceptance benchmark (NAVIGATOR_DEBUG_BENCH_FLATTEN).
+    bool bench_flatten = false;
+    int flat_phase = 0;
+    double flat_t0 = 0.0;
+    bool flat_filtered = false;
+    bool flat_cancelled = false;
+    double flat_cancel_ms = -1.0;
+    double flat_exit_ms = -1.0;
+    std::uint64_t flat_found = 0;
+    std::vector<double> flat_frames;
 
     std::string title;
     int max_frames = 0;
@@ -291,6 +327,17 @@ struct App::Impl {
     Result<void> init(const AppConfig& config);
     void handle_event(const SDL_Event& event);
     void handle_key(const KeyChord& chord, bool repeat);
+    void handle_text(std::string_view typed);
+    [[nodiscard]] bool filter_focused() const;
+    void focus_filter(bool select_all);
+    void filter_escape();
+    void flatten_volume() const;
+    [[nodiscard]] Path volume_root(const Path& dir) const;
+    [[nodiscard]] std::shared_ptr<search::IIndex> volume_index(const Path& dir, Path& root) const;
+    [[nodiscard]] bool shows_index_status() const;
+    void rebuild_index();
+    void sync_index_volumes();
+    void bench_flatten_step(double frame_ms);
     [[nodiscard]] ui::TextEdit* text_field() noexcept;
     void field_edited();
     bool route_sidebar(const Command& command);
@@ -494,9 +541,62 @@ Result<void> App::Impl::init(const AppConfig& config) {
         SDL_PushEvent(&e); // thread-safe
     };
     const std::function<void()> wake_fn = wo.model.wake;
+    if (const char* sw = env("NAVIGATOR_DEBUG_SLOW_WALK")) {
+        // Development: small, slow batches so a running flatten can be looked at.
+        const auto delay = std::chrono::milliseconds(std::max(1L, std::strtol(sw, nullptr, 10)));
+        wo.model.walk_factory =
+            [delay](const fs::WalkOptions& o) -> Result<std::unique_ptr<ui::WalkSource>> {
+            fs::WalkOptions slow = o;
+            slow.batch_size = 48;
+            Result<std::unique_ptr<ui::WalkSource>> inner = ui::default_walk_factory()(slow);
+            if (!inner) {
+                return inner;
+            }
+            struct Slow final : ui::WalkSource {
+                std::unique_ptr<ui::WalkSource> in;
+                std::chrono::milliseconds wait;
+                Result<bool> next_batch(fs::WalkBatch& out, std::stop_token stop) override {
+                    std::this_thread::sleep_for(wait);
+                    return in->next_batch(out, std::move(stop));
+                }
+                [[nodiscard]] const fs::WalkStats& stats() const noexcept override {
+                    return in->stats();
+                }
+            };
+            auto w = std::make_unique<Slow>();
+            w->in = std::move(*inner);
+            w->wait = delay;
+            return std::unique_ptr<ui::WalkSource>(std::move(w));
+        };
+    }
     wo.home = home;
     wo.row_dp = ui::density_metrics(density).row_height;
     wo.config_root = config_root;
+    // Phase 5: the name-index service. Headless runs without --cache-dir never index (and never
+    // touch ~/.cache), like the session rule above.
+    {
+        ui::IndexService::Options io;
+        io.enabled = config.enable_index && (config.max_frames <= 0 || !config.cache_dir.empty());
+        if (!config.cache_dir.empty()) {
+            io.cache_root = Path(std::string(config.cache_dir));
+        } else if (auto c = platform::user_dir(platform::UserDir::Cache); c) {
+            io.cache_root = *c / "navigator";
+        }
+        if (io.cache_root.empty()) {
+            io.enabled = false;
+        }
+        io.watcher_factory = [] { return create_inotify_watcher(); };
+        io.wake = wake_fn;
+        indexes = std::make_unique<ui::IndexService>(std::move(io));
+        if (const char* root = env("NAVIGATOR_DEBUG_INDEX_ROOT"); root != nullptr) {
+            VolumeIdentity id;
+            id.uuid = "debug-index";
+            id.root = "/";
+            id.mount_point = Path(root);
+            (void)indexes->add_root(Path(root), id);
+        }
+    }
+    bench_flatten = env("NAVIGATOR_DEBUG_BENCH_FLATTEN") != nullptr;
     workspace = std::make_unique<ui::Workspace>(std::move(wo));
     const layout::WindowGeometry saved_window =
         restored ? restored->window : layout::WindowGeometry{};
@@ -620,6 +720,15 @@ void App::Impl::final_save() {
     if (places) {
         places->final_save();
     }
+    // Phase 5: indexes save and stop off the UI thread within a bounded wait; walks still
+    // blocked in a syscall are left detached (walk.hpp).
+    if (workspace) {
+        workspace->cancel_walks();
+    }
+    if (indexes) {
+        indexes->shutdown(std::chrono::milliseconds(1500));
+    }
+    (void)ui::FlattenWalk::wait_for_exit(std::chrono::milliseconds(300));
     if (!writer) {
         return;
     }
@@ -639,8 +748,9 @@ bool App::Impl::counting() const noexcept {
 }
 
 bool App::Impl::continuous() const noexcept {
+    // Phase 5: a running search streams results and animates its progress.
     return max_frames > 0 || show_fps || fade_start_ms >= 0.0 || view.animating() || bench ||
-           sidebar.animating();
+           sidebar.animating() || (workspace && workspace->searching()) || bench_flatten;
 }
 
 float App::Impl::fade_progress(double t_ms) const noexcept {
@@ -674,11 +784,7 @@ void App::Impl::handle_event(const SDL_Event& event) {
     case SDL_EVENT_KEY_UP: pointer.mods = ui::translate_modifiers(event.key.mod); break;
     case SDL_EVENT_TEXT_INPUT:
         if (event.text.text != nullptr) {
-            if (sidebar.renaming() && !view.popup_open()) {
-                (void)sidebar.rename_edit()->insert(event.text.text);
-            } else {
-                view.text_input(event.text.text);
-            }
+            handle_text(event.text.text);
         }
         break;
     case SDL_EVENT_MOUSE_MOTION:
@@ -755,6 +861,43 @@ void App::Impl::handle_key(const KeyChord& chord, bool repeat) {
     if (chord == KeyChord{Key::Delete, Modifiers::None} && !repeat && view.delete_key(intents)) {
         return;
     }
+    // Phase 5: the filter field takes only its editing keys (docs/keymap.md "Focus scoping
+    // (Phase 5)"); arrows, Enter, Ctrl+A, Ctrl+E ... go on to the keymap and the pane.
+    if (filter_focused()) {
+        ui::BrowserModel& m = workspace->active_model();
+        ui::TextEdit& edit = m.filter_edit();
+        switch (ui::route_filter_key(chord, edit.has_selection())) {
+        case ui::FilterKey::Edit: {
+            const ui::FieldKeyResult r = ui::apply_field_key(edit, chord, [] {
+                std::string out;
+                if (char* t = SDL_GetClipboardText(); t != nullptr) {
+                    out = t;
+                    SDL_free(t);
+                }
+                return out;
+            });
+            dirty = true;
+            if (r.clipboard) {
+                set_clipboard(*r.clipboard);
+            }
+            if (r.changed) {
+                m.filter_edited();
+            }
+            return;
+        }
+        case ui::FilterKey::Escape:
+            if (!repeat) {
+                filter_escape();
+            }
+            dirty = true;
+            return;
+        case ui::FilterKey::ToList:
+            filter_tab = layout::TabId{};
+            dirty = true;
+            return;
+        case ui::FilterKey::Keymap: break;
+        }
+    }
     // Focus scoping step 1: a focused text field takes its editing keys first.
     if (ui::TextEdit* field = text_field(); field != nullptr) {
         const ui::FieldKeyResult r = ui::apply_field_key(*field, chord, [] {
@@ -797,6 +940,153 @@ ui::TextEdit* App::Impl::text_field() noexcept {
         return sidebar.rename_edit();
     }
     return view.active_field();
+}
+
+bool App::Impl::filter_focused() const {
+    return filter_tab.valid() && filter_tab == workspace->active_tab() && !view.popup_open() &&
+           !view.address_open() && !sidebar.renaming() && !sidebar_focus &&
+           workspace->model(filter_tab) != nullptr;
+}
+
+void App::Impl::focus_filter(bool select_all) {
+    ui::BrowserModel& m = workspace->active_model();
+    if (!m.loaded()) {
+        return;
+    }
+    focus_sidebar(false);
+    view.close_address_bar();
+    filter_tab = workspace->active_tab();
+    filter_dir = m.current_dir();
+    if (select_all) {
+        m.filter_edit().select_all();
+    }
+}
+
+void App::Impl::filter_escape() {
+    ui::BrowserModel& m = workspace->active_model();
+    const ui::FlattenProgress prog = m.flatten_progress();
+    const bool searching = m.flattened() && (prog.walking || (prog.from_index && prog.organizing));
+    switch (ui::filter_field_escape(searching, m.filter_active())) {
+    case ui::FieldEscape::CancelSearch: m.cancel_search(); return;
+    case ui::FieldEscape::ClearText: m.clear_filter(); return;
+    case ui::FieldEscape::ReturnFocus: filter_tab = layout::TabId{}; return;
+    }
+}
+
+void App::Impl::handle_text(std::string_view typed) {
+    if (sidebar.renaming() && !view.popup_open()) {
+        (void)sidebar.rename_edit()->insert(typed);
+        return;
+    }
+    if (view.wants_text_input()) {
+        view.text_input(typed);
+        return;
+    }
+    if (filter_focused()) {
+        ui::BrowserModel& m = workspace->active_model();
+        if (m.filter_edit().insert(typed)) {
+            m.filter_edited();
+        }
+        return;
+    }
+    // Type to filter (docs/keymap.md): the list has the keyboard, no Ctrl/Alt/Super held, not a
+    // leading Space. The typed text replaces the previous filter text.
+    const ui::KeyboardOwner owner = ui::keyboard_owner(
+        view.popup_open(), view.address_open() || sidebar.renaming(), sidebar_focus);
+    const Modifiers held = ui::translate_modifiers(SDL_GetModState());
+    if (ui::starts_type_to_filter(owner, held, typed)) {
+        ui::BrowserModel& m = workspace->active_model();
+        if (!m.loaded()) {
+            return;
+        }
+        focus_filter(false);
+        m.filter_edit().set({});
+        if (m.filter_edit().insert(typed)) {
+            m.filter_edited();
+        }
+    }
+}
+
+Path App::Impl::volume_root(const Path& dir) const {
+    const std::vector<VolumeInfo>& volumes = places->volumes();
+    if (const std::optional<std::size_t> at =
+            places::containing_volume(dir, Span<const VolumeInfo>(volumes));
+        at.has_value()) {
+        return volumes[*at].mount_point;
+    }
+    return dir.root_path().empty() ? Path("/") : dir.root_path();
+}
+
+std::shared_ptr<search::IIndex> App::Impl::volume_index(const Path& dir, Path& root) const {
+    // The index of the volume that HOLDS `dir`. The index of "/" does not cover a disk mounted
+    // below it (it never crosses filesystems), so a shallower root does not count.
+    root = volume_root(dir);
+    std::shared_ptr<search::IIndex> index = indexes->index_for(dir);
+    if (!index || index->root().native().size() < root.native().size()) {
+        return nullptr;
+    }
+    root = index->root();
+    return index;
+}
+
+bool App::Impl::shows_index_status() const {
+    for (const layout::TabId tab : workspace->visible_tabs()) {
+        const ui::BrowserModel* m = workspace->model(tab);
+        if (m != nullptr && m->flatten_is_volume()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void App::Impl::flatten_volume() const {
+    ui::BrowserModel& m = workspace->active_model();
+    if (!m.loaded() || m.current_dir().empty()) {
+        return;
+    }
+    Path root;
+    std::shared_ptr<search::IIndex> index = volume_index(m.current_dir(), root);
+    if (m.flattened() && m.flatten_root() == root && m.flatten_progress().volume) {
+        m.leave_flatten();
+        return;
+    }
+    if (index) {
+        const search::IndexState state = index->status().state;
+        if (state != search::IndexState::Ready && state != search::IndexState::Verifying) {
+            index.reset(); // not ready: walk the volume (progress shown); the index keeps going
+        }
+    }
+    m.flatten(ui::FlattenRequest{root, true, std::move(index)});
+}
+
+void App::Impl::rebuild_index() {
+    const ui::BrowserModel& m = workspace->active_model();
+    if (!indexes->enabled()) {
+        toast(std::string(tr("index.disabled")));
+        return;
+    }
+    Path root;
+    const bool indexed = m.loaded() && volume_index(m.current_dir(), root) != nullptr;
+    if (indexed && indexes->rebuild(m.current_dir())) {
+        toast(std::string(tr("index.rebuilding")));
+    } else {
+        toast(std::string(tr("index.not_indexed")));
+    }
+}
+
+void App::Impl::sync_index_volumes() {
+    if (!indexes || !indexes->enabled() || env("NAVIGATOR_DEBUG_INDEX_ROOT") != nullptr ||
+        !places->volumes_ready()) {
+        return;
+    }
+    std::vector<std::string> mounts;
+    for (const VolumeInfo& v : places->volumes()) {
+        mounts.push_back(v.mount_point.string() + "\n" + v.uuid.value_or(std::string{}));
+    }
+    if (mounts != indexed_mounts) {
+        indexed_mounts = std::move(mounts);
+        (void)indexes->set_volumes(places->volumes());
+    }
 }
 
 void App::Impl::field_edited() {
@@ -1218,6 +1508,12 @@ void App::Impl::execute(const Command& command) {
     if (sidebar_focus && route_sidebar(command)) {
         return;
     }
+    // Phase 5: commands that move the keyboard elsewhere take it from the filter field.
+    if (command.id == CommandId::FocusSidebar || command.id == CommandId::FocusAddressBar ||
+        command.id == CommandId::GoTo || command.id == CommandId::FocusNextPane ||
+        command.id == CommandId::FocusPreviousPane) {
+        filter_tab = layout::TabId{};
+    }
     if (command.id == CommandId::ClearSelection && view.dragging()) {
         view.cancel_drag(); // Escape during a tab drag
         return;
@@ -1282,6 +1578,17 @@ void App::Impl::execute(const Command& command) {
                                                                : "recents.tracking_off")));
         return;
     case CommandId::CopyPath: copy_path(command.arg); return;
+    // Phase 5.
+    case CommandId::FocusFilter: focus_filter(true); return;
+    case CommandId::ToggleTypesPopup:
+        if (view.types_popup_open()) {
+            view.close_popup();
+        } else {
+            view.open_types_popup(*workspace);
+        }
+        return;
+    case CommandId::FlattenVolume: flatten_volume(); return;
+    case CommandId::RebuildIndex: rebuild_index(); return;
     case CommandId::FocusNextPane:
     case CommandId::FocusPreviousPane: {
         if (!workspace->sidebar().visible) {
@@ -1470,6 +1777,24 @@ void App::Impl::apply_intents() {
             set_clipboard(in.text);
             toast(ui::substitute(tr("copy.copied_one"), "path", in.text));
             break;
+        case Kind::SetTypeVisible:
+            if (m != nullptr) {
+                search::TypeFilter tf = m->type_filter();
+                search::TypeKey key;
+                key.kind = static_cast<search::TypeKind>(std::min<std::size_t>(in.index, 2));
+                key.extension = key.kind == search::TypeKind::Extension ? in.text : std::string();
+                search::set_visible(tf, key, in.additive);
+                m->set_type_filter(std::move(tf));
+            }
+            break;
+        case Kind::ToggleAllTypes:
+            if (m != nullptr) {
+                search::TypeFilter tf = m->type_filter();
+                const std::vector<search::TypeCount> present = m->type_summary();
+                search::toggle_all(tf, Span<const search::TypeCount>(present));
+                m->set_type_filter(std::move(tf));
+            }
+            break;
         }
     }
 }
@@ -1510,6 +1835,25 @@ void App::Impl::run_script_step() {
     if (script_step >= script.size() || !workspace->settled() || view.paths_busy() ||
         !outcomes.empty() || !queue.empty()) {
         return;
+    }
+    {
+        const std::string& next = script[script_step];
+        if (next == "waitsearch" && workspace->searching()) {
+            return;
+        }
+        if (next.starts_with("waitfound:")) {
+            const ui::FlattenProgress prog = workspace->active_model().flatten_progress();
+            if (prog.walking && prog.found < std::strtoull(next.c_str() + 10, nullptr, 10)) {
+                return;
+            }
+        }
+        if (next == "waitindex") {
+            const auto index = indexes->index_for(workspace->active_model().current_dir());
+            if (index && index->status().state != search::IndexState::Ready &&
+                index->status().state != search::IndexState::Failed) {
+                return;
+            }
+        }
     }
     const std::vector<std::string> parts = split(script[script_step], ':');
     const std::string raw = script[script_step];
@@ -1557,11 +1901,14 @@ void App::Impl::run_script_step() {
     } else if (op == "blur") {
         focused = false;
     } else if (op == "type") {
-        if (sidebar.renaming() && !view.popup_open()) {
-            (void)sidebar.rename_edit()->insert(raw.substr(5));
-        } else {
-            view.text_input(raw.substr(5));
-        }
+        handle_text(raw.substr(5)); // the same path as SDL text input (type-to-filter too)
+    } else if (op == "filter") {
+        focus_filter(false);
+        model.set_filter_text(raw.substr(7));
+    } else if (op == "blurfilter") {
+        filter_tab = layout::TabId{};
+    } else if (op == "waitsearch" || op == "waitfound" || op == "waitindex") {
+        // Held before the step was taken (above).
     } else if (op == "focus") {
         workspace->activate_pane(pane_at_index(num(1)));
     } else if (op == "tab") {
@@ -1657,9 +2004,19 @@ void App::Impl::draw_frame(double t_ms, double dt_ms) {
         .sidebar_visible = false,
         .list_keyboard =
             ui::keyboard_owner(view.popup_open(), view.address_open() || sidebar.renaming(),
-                               sidebar_focus) == ui::KeyboardOwner::List,
+                               sidebar_focus) == ui::KeyboardOwner::List &&
+            !filter_focused(),
         .draw_sidebar = {},
         .draw_sidebar_overlay = {},
+        .filter_focus = filter_focused() && focused ? workspace->active_tab() : layout::TabId{},
+        .index_status = [this](const Path& dir) -> std::optional<search::IndexStatus> {
+            // `dir` is a flattened volume root: only that volume's own index speaks for it.
+            if (const std::shared_ptr<search::IIndex> i = indexes->index_for(dir);
+                i && i->root() == dir) {
+                return i->status();
+            }
+            return std::nullopt;
+        },
     };
     // Phase 4: the sidebar takes the left of the window; the panes get the rest.
     layout_sidebar(static_cast<float>(w), static_cast<float>(h));
@@ -1750,6 +2107,80 @@ void App::Impl::bench_step(double frame_ms, double build_ms) {
     }
 }
 
+void App::Impl::bench_flatten_step(double frame_ms) {
+    // Phase 5 acceptance (tests/ui/flatten_smoke.sh): flatten a large generated tree, keep
+    // rendering while it streams, cancel, check the walk thread exits, report, quit. Frame times
+    // cover the whole walk: applying batches, organizing results and drawing.
+    if (!workspace->settled()) {
+        return;
+    }
+    ui::BrowserModel& m = workspace->active_model();
+    const double t = now_ms();
+    switch (flat_phase) {
+    case 0:
+        queue.enqueue(CommandId::ToggleFlatten);
+        flat_t0 = t;
+        flat_phase = 1;
+        return;
+    case 1: {
+        flat_frames.push_back(frame_ms);
+        const ui::FlattenProgress prog = m.flatten_progress();
+        flat_found = prog.found;
+        if (!flat_filtered && prog.found >= 20000) {
+            flat_filtered = true; // a keystroke mid-walk re-matches everything collected so far
+            m.set_filter_text("re");
+        }
+        // Cancel mid-walk: after a good share of the tree streamed in, or a time cap.
+        if (prog.found >= 60000 || t - flat_t0 > 8000.0 || (!prog.walking && prog.found > 0)) {
+            flat_cancel_ms = t;
+            flat_cancelled = prog.walking;
+            queue.enqueue(CommandId::CancelSearch);
+            flat_phase = 2;
+        }
+        return;
+    }
+    case 2:
+        flat_frames.push_back(frame_ms);
+        if (ui::FlattenWalk::live_threads() == 0) {
+            flat_exit_ms = t - flat_cancel_ms;
+            flat_phase = 3;
+            flat_t0 = t;
+        } else if (t - flat_cancel_ms > 5000.0) {
+            flat_exit_ms = -1.0; // did not exit in time: reported as a failure
+            flat_phase = 3;
+            flat_t0 = t;
+        }
+        return;
+    case 3:
+        // Let the last rows land, then leave the view (freeing it is part of the measurement).
+        flat_frames.push_back(frame_ms);
+        if (!m.searching() || t - flat_t0 > 5000.0) {
+            std::printf("bench-flatten: found=%llu rows=%zu cancelled_midwalk=%d\n",
+                        static_cast<unsigned long long>(m.flatten_progress().found), m.row_count(),
+                        flat_cancelled ? 1 : 0);
+            queue.enqueue(CommandId::ToggleFlatten);
+            flat_phase = 4;
+            flat_t0 = t;
+        }
+        return;
+    case 4:
+        flat_frames.push_back(frame_ms);
+        if (t - flat_t0 < 250.0) {
+            return;
+        }
+        std::printf("bench-flatten: frames=%zu frame_avg_ms=%.2f frame_p95_ms=%.2f "
+                    "frame_max_ms=%.2f\n",
+                    flat_frames.size(), mean(flat_frames), percentile(flat_frames, 0.95),
+                    percentile(flat_frames, 1.0));
+        std::printf("bench-flatten: cancel_to_exit_ms=%.1f threads_left=%d\n", flat_exit_ms,
+                    ui::FlattenWalk::live_threads());
+        (void)std::fflush(stdout);
+        running = false;
+        return;
+    default: return;
+    }
+}
+
 void App::Impl::save_screenshot() const {
     ui::SurfacePtr shot{SDL_RenderReadPixels(sdl_renderer.get(), nullptr)};
     if (!shot) {
@@ -1825,6 +2256,11 @@ int App::run() {
         if (s.places->frame_start()) {
             s.dirty = true;
         }
+        s.sync_index_volumes();
+        // A background scan reports often: repaint only while a status bar shows the index.
+        if (s.indexes->frame_start() && s.shows_index_status()) {
+            s.dirty = true;
+        }
         if (std::vector<Path> visits = s.workspace->take_visits(); !visits.empty()) {
             const auto now = std::chrono::time_point_cast<std::chrono::nanoseconds>(
                 std::chrono::system_clock::now());
@@ -1860,6 +2296,11 @@ int App::run() {
         SDL_RenderPresent(s.sdl_renderer.get());
         s.dirty = false;
         first = false;
+        if (!s.first_frame_done) {
+            // Phase 5: indexes start only after the first frame is on screen.
+            s.first_frame_done = true;
+            s.indexes->start();
+        }
 
         // 4. Frame end: pointer intents, then queued commands (FIFO; commands they enqueue run
         //    next frame).
@@ -1867,6 +2308,13 @@ int App::run() {
         if (s.pointer.pressed && s.sidebar_focus &&
             !contains(s.sidebar_rect, s.pointer.x, s.pointer.y) && !s.view.popup_open()) {
             s.focus_sidebar(false);
+        }
+        // Phase 5: a press outside the filter field returns the keyboard to the list.
+        if (s.pointer.pressed && s.filter_focused()) {
+            const ui::BrowserView* fv = s.view.find_view(s.workspace->active_tab());
+            if (fv == nullptr || !contains(fv->filter_rect(), s.pointer.x, s.pointer.y)) {
+                s.filter_tab = layout::TabId{};
+            }
         }
         s.apply_intents();
         s.apply_outcomes();
@@ -1880,12 +2328,23 @@ int App::run() {
         }
         s.queue.drain([&s](const Command& c) { s.execute(c); });
         s.view.prune(*s.workspace);
+        // Navigation hands the keyboard back to the list (the filter text was cleared too).
+        if (s.filter_tab.valid()) {
+            const ui::BrowserModel* fm = s.workspace->model(s.filter_tab);
+            if (fm == nullptr || s.filter_tab != s.workspace->active_tab() ||
+                fm->current_dir() != s.filter_dir) {
+                s.filter_tab = layout::TabId{};
+            }
+        }
         (void)s.workspace->sync();
         s.persist_tick(now_ms());
         s.cursors.show(s.sidebar.resize_cursor() ? ui::PointerCursor::ResizeHorizontal
                                                  : s.view.cursor());
-        if ((s.view.wants_text_input() || s.sidebar.renaming()) != s.text_input_on) {
-            s.text_input_on = s.view.wants_text_input() || s.sidebar.renaming();
+        // Phase 5: text input stays on while the window has focus, so typing in a list starts
+        // its filter (type-to-filter); chords still arrive as key events.
+        const bool want_text = s.focused || s.view.wants_text_input() || s.sidebar.renaming();
+        if (want_text != s.text_input_on) {
+            s.text_input_on = want_text;
             if (s.text_input_on) {
                 SDL_StartTextInput(s.window.get());
             } else {
@@ -1904,6 +2363,10 @@ int App::run() {
         const double end_ms = now_ms();
         if (s.bench) {
             s.bench_step(end_ms - t_ms, built_ms - t_ms);
+        }
+        if (s.bench_flatten) {
+            // Whole loop turn: applying batches at frame start counts, not only drawing.
+            s.bench_flatten_step(end_ms - last_ms);
         }
         s.update_stats(end_ms - last_ms, end_ms);
         last_ms = end_ms;

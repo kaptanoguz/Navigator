@@ -13,6 +13,7 @@
 #include "browser/format.hpp"
 #include "i18n/catalog.hpp"
 #include "input/sdl_input.hpp"
+#include "search/filter_rules.hpp"
 #include "widgets/icons.hpp"
 #include "widgets/text_field.hpp"
 
@@ -151,8 +152,11 @@ void BrowserView::draw_top_bar(const BrowserFrame& f, const Layout& l) {
     const float icon = std::round(p.px(16.0F));
     const float t = std::max(1.0F, p.px(1.35F));
     float right = l.top.right() - margin;
-    const RectF star{right - b, y, b, b};
-    {
+    const TitleButtons shown_buttons = fit_title_buttons(
+        (right - x) / p.scale(), b / p.scale(), f.filter_focused || m.filter_active(),
+        m.type_filter().active(), m.flattened(), f.bookmarked);
+    const RectF star = shown_buttons.star ? RectF{right - b, y, b, b} : RectF{right, y, 0.0F, b};
+    if (shown_buttons.star) {
         const PointerInput& ptr = f.pointer;
         const bool inside = contains(star, ptr.x, ptr.y);
         if (inside && ptr.pressed && active_ == WidgetId::None) {
@@ -176,7 +180,48 @@ void BrowserView::draw_top_bar(const BrowserFrame& f, const Layout& l) {
     }
     // The view lock (view.toggle_view_lock) stays hidden until it does something (design
     // review Phase 4 O11).
-    right = star.x - std::round(p.px(6.0F));
+    right = star.x - std::round(p.px(4.0F));
+
+    // Phase 5: types and flatten toggles, then the filter field (design review Phase 4 notes:
+    // right of the breadcrumbs, left of the star; per pane).
+    const search::TypeFilter& tf = m.type_filter();
+    std::string badge;
+    if (tf.active()) {
+        const std::size_t hidden = (tf.hide_folders ? 1U : 0U) + (tf.hide_no_extension ? 1U : 0U) +
+                                   tf.hidden_extensions.size();
+        badge = format_count(hidden);
+    }
+    const float types_w =
+        badge.empty() ? b : std::round(b + p.shape(type::caption, badge).width() + p.px(6.0F));
+    if (shown_buttons.types) {
+        types_rect_ = RectF{right - types_w, y, types_w, b};
+        if (toggle_button(f, types_rect_, WidgetId::Types, 0, tf.active(), badge)) {
+            f.queue.enqueue(CommandId::ToggleTypesPopup);
+        }
+        right = types_rect_.x - gap;
+    } else {
+        types_rect_ = RectF{right, y, 0.0F, b}; // the popup still hangs from this corner
+    }
+    if (shown_buttons.flatten) {
+        const RectF flat_btn{right - b, y, b, b};
+        if (toggle_button(f, flat_btn, WidgetId::Flatten, m.flatten_is_volume() ? 2 : 1,
+                          m.flattened(), {})) {
+            f.queue.enqueue(CommandId::ToggleFlatten);
+        }
+        right = flat_btn.x;
+    }
+    right -= std::round(p.px(8.0F));
+
+    const float room = std::max(right - x, 0.0F);
+    const bool needed = f.filter_focused || m.filter_active();
+    const FilterBarLayout fb =
+        f.address != nullptr && !needed
+            ? FilterBarLayout{kFilterCollapsed, true}
+            : layout_filter_bar(room / p.scale(), crumbs_width(f) / p.scale(), needed);
+    const float field_w = std::round(p.px(fb.field));
+    filter_rect_ = RectF{right - field_w, y, field_w, b};
+    draw_filter_field(f, filter_rect_, fb.collapsed);
+    right = filter_rect_.x - std::round(p.px(8.0F));
 
     const RectF area{x, y, std::max(right - x, 0.0F), b};
     if (f.address != nullptr) {
@@ -185,6 +230,24 @@ void BrowserView::draw_top_bar(const BrowserFrame& f, const Layout& l) {
         address_rect_ = area;
         draw_breadcrumbs(f, area);
     }
+}
+
+float BrowserView::crumbs_width(const BrowserFrame& f) const {
+    if (f.model.current_dir().empty()) {
+        return 0.0F;
+    }
+    const Painter& p = f.painter;
+    const std::vector<CrumbPart> parts = crumb_parts(f.model.current_dir(), f.home);
+    const float pad = std::round(p.px(8.0F));
+    const float sep = std::round(p.px(14.0F));
+    float w = 0.0F;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        const bool current = i + 1 == parts.size();
+        const TextStyle& st =
+            current ? (f.pane_active ? type::crumb_current : type::crumb_quiet) : type::crumb;
+        w += p.shape(st, parts[i].label).width() + (2.0F * pad);
+    }
+    return w + (sep * static_cast<float>(parts.empty() ? 0 : parts.size() - 1));
 }
 
 void BrowserView::draw_address_field(const BrowserFrame& f, const RectF& area) {
@@ -211,8 +274,8 @@ void BrowserView::draw_breadcrumbs(const BrowserFrame& f, const RectF& area) {
     Renderer& r = p.renderer();
     const Palette& pal = f.palette;
     const PointerInput& ptr = f.pointer;
-    if (area.w <= 0.0F || f.model.current_dir().empty()) {
-        return;
+    if (area.w < p.px(24.0F) || f.model.current_dir().empty()) {
+        return; // an active filter took the room: the tab still names the folder
     }
     const std::vector<CrumbPart> parts = crumb_parts(f.model.current_dir(), f.home);
     const float pad = std::round(p.px(8.0F));
@@ -252,11 +315,23 @@ void BrowserView::draw_breadcrumbs(const BrowserFrame& f, const RectF& area) {
             collapsed = true;
         }
     }
+    // Ancestors go before the current folder elides (design review O5): "… › Documents",
+    // then "Documents" alone; only then does the current folder's name elide.
+    if (segs.size() > 1 && total() > area.w) {
+        Seg last = segs.back();
+        segs.clear();
+        ShapedText dots = p.shape(type::crumb, "\xE2\x80\xA6");
+        segs.push_back(Seg{dots, static_cast<std::size_t>(-1), dots.width() + (2.0F * pad)});
+        segs.push_back(std::move(last));
+        if (total() > area.w) {
+            segs.erase(segs.begin()); // only the current folder
+        }
+    }
     if (total() > area.w && !segs.empty()) {
         // Still too wide: elide the current folder's name.
         Seg& last = segs.back();
         const float others = total() - last.w;
-        const float room = std::max(area.w - others - (2.0F * pad), p.px(24.0F));
+        const float room = std::max(area.w - others - (2.0F * pad), 0.0F);
         last.text = fitter_.fit(p, f.pane_active ? type::crumb_current : type::crumb_quiet,
                                 parts[last.part].label, room, Elide::End);
         last.w = last.text.width() + (2.0F * pad);
@@ -505,16 +580,6 @@ void BrowserView::draw_status(const BrowserFrame& f, const Layout& l) {
         std::string text;
         bool strong;
     };
-    std::vector<Part> left;
-    if (m.loaded()) {
-        left.push_back({tr_count("status.items", m.entries().size()), false});
-        if (!m.show_hidden() && m.hidden_count() > 0) {
-            left.push_back({tr_count("status.hidden", m.hidden_count()), false});
-        }
-    }
-    if (m.busy()) {
-        left.push_back({std::string(tr("status.loading")), false});
-    }
     std::vector<Part> right;
     if (m.selected_count() > 0) {
         right.push_back({tr_count("status.selected", m.selected_count()), true});
@@ -536,14 +601,33 @@ void BrowserView::draw_status(const BrowserFrame& f, const Layout& l) {
                 p.draw(sep, cx, std::round(mid + (0.5F * sep.cap_height())), pal.text_muted);
                 cx += sep.width();
             }
-            const ShapedText& s = shaped[i];
-            p.draw(s, cx, std::round(mid + (0.5F * s.cap_height())),
+            const ShapedText& sh = shaped[i];
+            p.draw(sh, cx, std::round(mid + (0.5F * sh.cap_height())),
                    parts[i].strong ? pal.text_primary : pal.text_secondary);
-            cx += s.width();
+            cx += sh.width();
         }
+        return width;
     };
+    const float right_w = draw_parts(right, l.status.right() - margin, true);
+
+    // Phase 5: a filtered or flattened view reports matches and search progress instead.
+    if (m.loaded() && (m.flattened() || m.filter_active() || m.type_filter().active())) {
+        const float limit =
+            l.status.right() - margin - (right_w > 0.0F ? right_w + std::round(p.px(16.0F)) : 0.0F);
+        (void)draw_search_status(f, l, l.status.x + margin, limit);
+        return;
+    }
+    std::vector<Part> left;
+    if (m.loaded()) {
+        left.push_back({tr_count("status.items", m.entries().size()), false});
+        if (!m.show_hidden() && m.hidden_count() > 0) {
+            left.push_back({tr_count("status.hidden", m.hidden_count()), false});
+        }
+    }
+    if (m.busy()) {
+        left.push_back({std::string(tr("status.loading")), false});
+    }
     draw_parts(left, l.status.x + margin, false);
-    draw_parts(right, l.status.right() - margin, true);
 }
 
 // ---------------------------------------------------------------------------------------------

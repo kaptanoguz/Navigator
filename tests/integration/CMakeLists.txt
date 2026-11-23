@@ -29,12 +29,19 @@ catch_discover_tests(navigator_integration_tests
 # Phase 4: GoTo / address bar with the real path worker (goto_e2e_test.cpp), bookmarks and
 # recents across unmount / restart / remount on a fake volume table, and the three config-dir
 # writers racing (places_e2e_test.cpp).
+# Phase 5: ranking gold tests through walk, index and both flattened views
+# (search_gold_test.cpp), hidden policy / permission skips / type filter / cancel on real
+# walks and indexes (flatten_e2e_test.cpp), index file lifecycle with inotify
+# (index_lifecycle_test.cpp); helpers in search_support.hpp.
 if(TARGET navigator_ui_browser)
     add_executable(navigator_browser_integration_tests
         browser_race_test.cpp
         goto_e2e_test.cpp
         keymap_e2e_test.cpp
         places_e2e_test.cpp
+        flatten_e2e_test.cpp
+        index_lifecycle_test.cpp
+        search_gold_test.cpp
         workspace_session_test.cpp
     )
     target_link_libraries(navigator_browser_integration_tests
@@ -89,6 +96,20 @@ if(TARGET navigator)
         COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/places_app_smoke.sh $<TARGET_FILE:navigator>
     )
     set_tests_properties(integration.app_places_chords PROPERTIES
+        TIMEOUT 120
+        LABELS "integration;app"
+    )
+endif()
+
+# Phase 5 headless app: no cache writes in headless runs without --cache-dir (temporary HOME /
+# XDG dirs), --no-index writes nothing, the fixture-only index (NAVIGATOR_DEBUG_INDEX_ROOT; never
+# a real volume) is saved 0600 in a 0700 folder and rebuilt after corruption
+# (tests/integration/index_app_smoke.sh).
+if(TARGET navigator)
+    add_test(NAME integration.app_index_cache_rules
+        COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/index_app_smoke.sh $<TARGET_FILE:navigator>
+    )
+    set_tests_properties(integration.app_index_cache_rules PROPERTIES
         TIMEOUT 120
         LABELS "integration;app"
     )
