@@ -259,6 +259,102 @@ void Renderer::draw_texture(SDL_Texture* texture, const RectF& dst, float alpha)
     SDL_SetTextureAlphaModFloat(texture, 1.0F);
 }
 
+SDL_Texture* Renderer::create_image_texture(int width, int height) const {
+    if (width <= 0 || height <= 0) {
+        return nullptr;
+    }
+    SDL_Texture* t = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC,
+                                       width, height);
+    if (t != nullptr) {
+        SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND_PREMULTIPLIED);
+        SDL_SetTextureScaleMode(t, SDL_SCALEMODE_LINEAR);
+    }
+    return t;
+}
+
+bool Renderer::update_image_texture(SDL_Texture* texture, int y, int rows, const void* pixels,
+                                    int pitch) const {
+    if (texture == nullptr || rows <= 0 || pixels == nullptr) {
+        return false;
+    }
+    float w = 0.0F;
+    float h = 0.0F;
+    SDL_GetTextureSize(texture, &w, &h);
+    const SDL_Rect r{0, y, static_cast<int>(w), rows};
+    return SDL_UpdateTexture(texture, &r, pixels, pitch);
+}
+
+void Renderer::destroy_texture(SDL_Texture* texture) noexcept {
+    if (texture != nullptr) {
+        SDL_DestroyTexture(texture);
+    }
+}
+
+int Renderer::max_texture_size() const noexcept {
+    const SDL_PropertiesID props = SDL_GetRendererProperties(renderer_);
+    return static_cast<int>(
+        SDL_GetNumberProperty(props, SDL_PROP_RENDERER_MAX_TEXTURE_SIZE_NUMBER, 0));
+}
+
+void Renderer::draw_image(SDL_Texture* texture, const RectF& dst, float alpha, bool nearest,
+                          const std::optional<RectF>& src) {
+    if (texture == nullptr || alpha <= 0.0F || dst.w <= 0.0F || dst.h <= 0.0F) {
+        return;
+    }
+    const float a = std::min(alpha, 1.0F);
+    SDL_SetTextureColorModFloat(texture, a, a, a);
+    SDL_SetTextureAlphaModFloat(texture, a);
+    SDL_SetTextureScaleMode(texture, nearest ? SDL_SCALEMODE_NEAREST : SDL_SCALEMODE_LINEAR);
+    const SDL_FRect d{dst.x, dst.y, dst.w, dst.h};
+    if (src) {
+        const SDL_FRect s{src->x, src->y, src->w, src->h};
+        SDL_RenderTexture(renderer_, texture, &s, &d);
+    } else {
+        SDL_RenderTexture(renderer_, texture, nullptr, &d);
+    }
+    SDL_SetTextureColorModFloat(texture, 1.0F, 1.0F, 1.0F);
+    SDL_SetTextureAlphaModFloat(texture, 1.0F);
+}
+
+void Renderer::draw_image_rounded(SDL_Texture* texture, const RectF& dst, float radius, float alpha,
+                                  const RectF& uv) {
+    if (texture == nullptr || alpha <= 0.0F || dst.w <= 1.0F || dst.h <= 1.0F) {
+        return;
+    }
+    const float rad = std::min({radius, 0.5F * dst.w, 0.5F * dst.h});
+    const int seg = segments_for(rad);
+    contour(dst, rad, 0.5F, seg, ring_a_);  // opaque edge
+    contour(dst, rad, -0.5F, seg, ring_b_); // transparent fringe
+    const float a = std::min(alpha, 1.0F);
+    const auto vertex = [&dst, &uv](const SDL_FPoint& pt, float k) {
+        SDL_Vertex v{};
+        v.position = pt;
+        v.color = SDL_FColor{k, k, k, k}; // premultiplied: colour and alpha scale together
+        v.tex_coord = SDL_FPoint{uv.x + (uv.w * std::clamp((pt.x - dst.x) / dst.w, 0.0F, 1.0F)),
+                                 uv.y + (uv.h * std::clamp((pt.y - dst.y) / dst.h, 0.0F, 1.0F))};
+        return v;
+    };
+    vertices_.clear();
+    indices_.clear();
+    const auto n = static_cast<int>(ring_a_.size());
+    vertices_.push_back(vertex(SDL_FPoint{dst.center_x(), dst.center_y()}, a));
+    for (const SDL_FPoint& pt : ring_a_) {
+        vertices_.push_back(vertex(pt, a));
+    }
+    for (const SDL_FPoint& pt : ring_b_) {
+        vertices_.push_back(vertex(pt, 0.0F));
+    }
+    for (int i = 0; i < n; ++i) {
+        const int j = (i + 1) % n;
+        indices_.insert(indices_.end(), {0, 1 + i, 1 + j});
+        indices_.insert(indices_.end(), {1 + i, 1 + n + i, 1 + n + j});
+        indices_.insert(indices_.end(), {1 + i, 1 + n + j, 1 + j});
+    }
+    SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_LINEAR);
+    SDL_RenderGeometry(renderer_, texture, vertices_.data(), static_cast<int>(vertices_.size()),
+                       indices_.data(), static_cast<int>(indices_.size()));
+}
+
 void Renderer::stroke_line(float x0, float y0, float x1, float y1, float thickness,
                            const Color& color) {
     const float dx = x1 - x0;

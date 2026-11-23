@@ -2,6 +2,7 @@
 #include "workspace/workspace.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <ranges>
 #include <set>
@@ -450,7 +451,16 @@ bool Workspace::execute(const Command& command) {
     case CommandId::FocusFilter:
     case CommandId::FlattenVolume:
     case CommandId::ToggleTypesPopup:
-    case CommandId::RebuildIndex: return false;
+    case CommandId::RebuildIndex:
+    // Phase 6: the Inspector (shell level; ui::App).
+    case CommandId::Inspect:
+    case CommandId::ToggleInspectorLock:
+    case CommandId::InspectorZoomFit:
+    case CommandId::InspectorZoom1to1:
+    case CommandId::InspectorPlay:
+    case CommandId::CycleInspectorPlacement:
+    case CommandId::ToggleInspectorGrid:
+    case CommandId::ToggleInspectorMinimap: return false;
     // Phase 5: the active tab's view.
     case CommandId::ClearFilter:
     case CommandId::ToggleFlatten:
@@ -540,6 +550,19 @@ void Workspace::set_sidebar(const layout::SidebarState& state) {
     next.width = std::clamp(next.width, layout::kSidebarMinWidth, layout::kSidebarMaxWidth);
     if (!(next == session_.sidebar)) {
         session_.sidebar = next;
+        changed();
+    }
+}
+
+void Workspace::set_inspector(const layout::InspectorState& state) {
+    layout::InspectorState next = state;
+    next.width = std::clamp(std::isfinite(next.width) ? next.width : layout::kInspectorDefaultWidth,
+                            layout::kInspectorMinWidth, layout::kInspectorMaxWidth);
+    next.height =
+        std::clamp(std::isfinite(next.height) ? next.height : layout::kInspectorDefaultHeight,
+                   layout::kInspectorMinHeight, layout::kInspectorMaxHeight);
+    if (!(next == session_.inspector)) {
+        session_.inspector = next;
         changed();
     }
 }

@@ -12,6 +12,9 @@
 // layout.hpp "hidden_types"): drop empty or '/'- or NUL-containing items, fold with
 // fs::fold_name, sort by bytes, unique. The writer normalizes a copy too, so a filter the loader
 // would change is written as it would be read back (save -> load -> save is stable).
+//
+// "inspector" (Phase 6): the writer normalizes the state the same way (sizes clamped, unknown
+// placement -> Auto) and omits the field when the normalized state equals InspectorState{}.
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -379,6 +382,86 @@ SidebarState sidebar_from(const InJson* value) {
     return sidebar;
 }
 
+// ---- inspector (Phase 6) -------------------------------------------------------------------
+
+double clamp_extent(double value, double fallback, double lo, double hi) noexcept {
+    if (!std::isfinite(value)) {
+        return fallback;
+    }
+    return std::clamp(value, lo, hi);
+}
+
+// The state as the loader would read it back: sizes clamped, an out-of-range enum -> Auto.
+InspectorState normalized_inspector(InspectorState state) noexcept {
+    if (state.placement != InspectorPlacement::Right &&
+        state.placement != InspectorPlacement::Bottom) {
+        state.placement = InspectorPlacement::Auto;
+    }
+    state.width =
+        clamp_extent(state.width, kInspectorDefaultWidth, kInspectorMinWidth, kInspectorMaxWidth);
+    state.height = clamp_extent(state.height, kInspectorDefaultHeight, kInspectorMinHeight,
+                                kInspectorMaxHeight);
+    return state;
+}
+
+const char* placement_name(InspectorPlacement placement) noexcept {
+    switch (placement) {
+    case InspectorPlacement::Auto: return "auto";
+    case InspectorPlacement::Right: return "right";
+    case InspectorPlacement::Bottom: return "bottom";
+    }
+    return "auto";
+}
+
+// Integral values without a fraction, like the sidebar width.
+OutJson number_to_json(double value) {
+    if (value == std::floor(value)) {
+        return static_cast<std::int64_t>(value);
+    }
+    return value;
+}
+
+// Every field, in the documented order. The caller writes it only when != InspectorState{}.
+OutJson inspector_to_json(const InspectorState& state) {
+    OutJson out = OutJson::object();
+    out["visible"] = state.visible;
+    out["placement"] = placement_name(state.placement);
+    out["width"] = number_to_json(state.width);
+    out["height"] = number_to_json(state.height);
+    out["grid"] = state.show_grid;
+    out["minimap"] = state.show_minimap;
+    return out;
+}
+
+InspectorState inspector_from(const InJson* value) {
+    InspectorState state;
+    if (value == nullptr || !value->is_object()) {
+        return state;
+    }
+    const InspectorState defaults;
+    state.visible = as_bool(member(*value, "visible"), defaults.visible);
+    if (const InJson* placement = member(*value, "placement");
+        placement != nullptr && placement->is_string()) {
+        const auto& name = placement->get_ref<const std::string&>();
+        if (name == "right") {
+            state.placement = InspectorPlacement::Right;
+        } else if (name == "bottom") {
+            state.placement = InspectorPlacement::Bottom;
+        }
+    }
+    if (const InJson* width = member(*value, "width"); width != nullptr && width->is_number()) {
+        state.width = clamp_extent(width->get<double>(), kInspectorDefaultWidth, kInspectorMinWidth,
+                                   kInspectorMaxWidth);
+    }
+    if (const InJson* height = member(*value, "height"); height != nullptr && height->is_number()) {
+        state.height = clamp_extent(height->get<double>(), kInspectorDefaultHeight,
+                                    kInspectorMinHeight, kInspectorMaxHeight);
+    }
+    state.show_grid = as_bool(member(*value, "grid"), defaults.show_grid);
+    state.show_minimap = as_bool(member(*value, "minimap"), defaults.show_minimap);
+    return state;
+}
+
 } // namespace
 
 Result<std::string> to_json(const Session& session) {
@@ -401,6 +484,11 @@ Result<std::string> to_json(const Session& session) {
         }
         doc["closed_tabs"] = std::move(closed);
         doc["sidebar"] = sidebar_to_json(session.sidebar);
+        // Absent when default, so files of users who never open the Inspector are unchanged.
+        if (const InspectorState inspector = normalized_inspector(session.inspector);
+            inspector != InspectorState{}) {
+            doc["inspector"] = inspector_to_json(inspector);
+        }
         return dump(doc);
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::OutOfMemory, "out of memory while serializing the session");
@@ -440,6 +528,7 @@ Result<Session> session_from_json(std::string_view text) {
             }
         }
         session.sidebar = sidebar_from(member(*doc, "sidebar"));
+        session.inspector = inspector_from(member(*doc, "inspector"));
         return session;
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::OutOfMemory, "out of memory while reading the session");

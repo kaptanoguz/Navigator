@@ -110,6 +110,14 @@ constexpr Row kTable[] = {
     {"webm", "video/webm", "type.video"},
     {"avi", "video/x-msvideo", "type.video"},
     {"mov", "video/quicktime", "type.video"},
+    {"3gp", "video/3gpp", "type.video"},
+    {"mts", "video/mp2t", "type.video"},
+    {"m2ts", "video/mp2t", "type.video"},
+    {"mpg", "video/mpeg", "type.video"},
+    {"mpeg", "video/mpeg", "type.video"},
+    {"ogv", "video/ogg", "type.video"},
+    {"wmv", "video/x-ms-wmv", "type.video"},
+    {"flv", "video/x-flv", "type.video"},
     {"ttf", "font/ttf", "type.font"},
     {"otf", "font/otf", "type.font"},
     {"woff2", "font/woff2", "type.font"},
@@ -158,6 +166,25 @@ TEST_CASE("mime: every row of the name table", "[mime]") {
         CHECK(mime::guess_from_name("some.dots.in." + std::string(row.ext)) == row.mime);
         CHECK(mime::type_label_key(row.mime) == row.label);
     }
+}
+
+TEST_CASE("mime: Phase 6 video rows", "[mime]") {
+    CHECK(mime::guess_from_name("clip.3GP") == "video/3gpp");
+    CHECK(mime::guess_from_name("00001.MTS") == "video/mp2t");
+    CHECK(mime::guess_from_name("BDMV.m2Ts") == "video/mp2t");
+    CHECK(mime::guess_from_name("old.Mpg") == "video/mpeg");
+    CHECK(mime::guess_from_name("old.MPEG") == "video/mpeg");
+    CHECK(mime::guess_from_name("free.OGV") == "video/ogg");
+    CHECK(mime::guess_from_name("win.WmV") == "video/x-ms-wmv");
+    CHECK(mime::guess_from_name("flash.FLV") == "video/x-flv");
+    for (const char* name :
+         {"a.3gp", "a.mts", "a.m2ts", "a.mpg", "a.mpeg", "a.ogv", "a.wmv", "a.flv"}) {
+        CHECK(mime::type_label_key(mime::guess_from_name(name)) == "type.video");
+    }
+    // Still ambiguous and unknown; near misses are not matched.
+    CHECK(mime::guess_from_name("a.ts") == mime::kOctetStream);
+    CHECK(mime::guess_from_name("a.mpg2") == mime::kOctetStream);
+    CHECK(mime::guess_from_name("a.3gpp") == mime::kOctetStream);
 }
 
 TEST_CASE("mime: compound tar suffixes win over the last extension", "[mime]") {
@@ -272,7 +299,7 @@ TEST_CASE("mime: type_label_key for inode values and fallbacks", "[mime]") {
     // By top-level type for MIME strings outside the table.
     CHECK(mime::type_label_key("image/x-xcf") == "type.image");
     CHECK(mime::type_label_key("audio/x-aiff") == "type.audio");
-    CHECK(mime::type_label_key("video/mpeg") == "type.video");
+    CHECK(mime::type_label_key("video/x-ogm") == "type.video");
     CHECK(mime::type_label_key("text/x-tex") == "type.text");
     CHECK(mime::type_label_key("font/woff") == "type.font");
     CHECK(mime::type_label_key("application/x-unknown") == "type.file");

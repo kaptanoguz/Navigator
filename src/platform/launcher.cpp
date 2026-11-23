@@ -27,6 +27,7 @@
 
 #include "errno_util.hpp"
 #include "launcher_internal.hpp"
+#include "spawn_util.hpp"
 
 extern char** environ; // NOLINT(readability-redundant-declaration): POSIX, not in unistd.h
 
@@ -98,7 +99,11 @@ namespace platform {
 
 namespace {
 
+using platform_internal::close_fds_except;
+using platform_internal::compute_fd_limit;
 using platform_internal::errno_text;
+using platform_internal::FdGuard;
+using platform_internal::lift_fd;
 
 // What the grandchild reports through the status pipe before _exit().
 enum class Stage : int { Chdir = 1, Fork = 2, Exec = 3, Setsid = 4 };
@@ -106,36 +111,6 @@ enum class Stage : int { Chdir = 1, Fork = 2, Exec = 3, Setsid = 4 };
 struct ChildReport {
     int stage = 0;
     int err = 0;
-};
-
-// Raises `fd` to >= 3 (keeping O_CLOEXEC) so dup2() onto 0..2 can never alias it.
-int lift_fd(int fd) {
-    if (fd > 2) {
-        return fd;
-    }
-    const int lifted = ::fcntl(fd, F_DUPFD_CLOEXEC, 3);
-    ::close(fd);
-    return lifted;
-}
-
-class FdGuard {
-public:
-    explicit FdGuard(int fd = -1) noexcept : fd_(fd) {}
-    FdGuard(const FdGuard&) = delete;
-    FdGuard& operator=(const FdGuard&) = delete;
-    FdGuard(FdGuard&&) = delete;
-    FdGuard& operator=(FdGuard&&) = delete;
-    ~FdGuard() { reset(); }
-    [[nodiscard]] int get() const noexcept { return fd_; }
-    void reset(int fd = -1) noexcept {
-        if (fd_ >= 0) {
-            ::close(fd_);
-        }
-        fd_ = fd;
-    }
-
-private:
-    int fd_;
 };
 
 // Everything the forked processes touch, prepared up front (no allocation after fork).
@@ -163,30 +138,6 @@ void write_report(int fd, Stage stage, int err) noexcept {
         }
         done += static_cast<std::size_t>(n);
     }
-}
-
-void close_range_fallback(unsigned int first, unsigned int last_inclusive,
-                          unsigned int fd_limit) noexcept {
-    for (unsigned int fd = first; fd <= last_inclusive && fd < fd_limit; ++fd) {
-        ::close(static_cast<int>(fd));
-    }
-}
-
-void close_fds_except(int keep, unsigned int fd_limit) noexcept {
-    const auto keep_u = static_cast<unsigned int>(keep);
-#ifdef SYS_close_range
-    bool done = true;
-    if (keep_u > 3 && ::syscall(SYS_close_range, 3U, keep_u - 1, 0U) != 0) {
-        done = false;
-    }
-    if (done && ::syscall(SYS_close_range, keep_u + 1, ~0U, 0U) == 0) {
-        return;
-    }
-#endif
-    if (keep_u > 3) {
-        close_range_fallback(3, keep_u - 1, fd_limit);
-    }
-    close_range_fallback(keep_u + 1, UINT_MAX, fd_limit);
 }
 
 // Grandchild: becomes the program. Async-signal-safe calls only.
@@ -238,16 +189,6 @@ void close_fds_except(int keep, unsigned int fd_limit) noexcept {
         exec_program(plan, devnull, status_fd);
     }
     ::_exit(0);
-}
-
-unsigned int compute_fd_limit() noexcept {
-    rlimit limit{};
-    constexpr rlim_t kCap = 1U << 20U;
-    if (::getrlimit(RLIMIT_NOFILE, &limit) != 0 || limit.rlim_cur == RLIM_INFINITY ||
-        limit.rlim_cur > kCap) {
-        return static_cast<unsigned int>(kCap);
-    }
-    return static_cast<unsigned int>(limit.rlim_cur);
 }
 
 std::string_view stage_name(int stage) noexcept {

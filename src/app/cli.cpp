@@ -169,6 +169,31 @@ Result<CliOptions> parse_cli(const std::vector<std::string_view>& args) {
             o.cache_dir = std::string(*v);
         } else if (a == "--no-index") {
             o.config.enable_index = false;
+        } else if (a == "--thumbnail-dir") {
+            auto v = value(a);
+            if (!v) {
+                return fail(v.error().code, v.error().message);
+            }
+            if (v->empty()) {
+                return fail(ErrorCode::InvalidArgument, "--thumbnail-dir must not be empty");
+            }
+            o.thumbnail_dir = std::string(*v);
+        } else if (a == "--no-thumbnails") {
+            o.config.enable_thumbnails = false;
+        } else if (a == "--no-external-thumbnailers") {
+            o.config.enable_external_thumbnailers = false;
+        } else if (a == "--preview-cache-mb") {
+            auto v = value(a);
+            if (!v) {
+                return fail(v.error().code, v.error().message);
+            }
+            int n = 0;
+            if (!parse_int(*v, n) || n < 16 || n > 65536) {
+                return fail(ErrorCode::InvalidArgument,
+                            "--preview-cache-mb expects a size in MiB in [16, 65536], got '" +
+                                std::string(*v) + "'");
+            }
+            o.config.preview_cache_bytes = static_cast<std::uint64_t>(n) * 1024U * 1024U;
         } else if (a == "--bench-flatten") {
             auto v = value(a);
             if (!v) {
@@ -267,6 +292,11 @@ std::string usage_text(std::string_view program) {
          "  --cache-dir DIR   keep the file-name index in DIR/index\n"
          "                    (default: $XDG_CACHE_HOME/navigator)\n"
          "  --no-index        do not build, load or watch file-name indexes\n"
+         "  --thumbnail-dir DIR  use DIR as the thumbnail cache (default: DIR of --cache-dir\n"
+         "                    /thumbnails, else the shared $XDG_CACHE_HOME/thumbnails)\n"
+         "  --no-thumbnails   no list thumbnails, no thumbnail cache, no thumbnailers\n"
+         "  --no-external-thumbnailers  never run the system's thumbnailer programs\n"
+         "  --preview-cache-mb N  memory for decoded previews in MiB (default 256, min 16)\n"
          "  --fps, --no-fps   show or hide the performance overlay (default: hidden)\n"
          "  --no-animations   turn off UI animations such as smooth scrolling\n"
          "                    (also: NAVIGATOR_NO_ANIMATIONS=1)\n"

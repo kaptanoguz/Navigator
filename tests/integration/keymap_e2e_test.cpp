@@ -20,6 +20,13 @@
 // shell's (filter focus, volume table + index service, types popup); the Workspace does not
 // handle them (checked) and their effect is driven on the BrowserModel calls the shell makes,
 // with a real create_name_index() of the fixture for the index-backed Ctrl+Shift+E.
+//
+// Phase 6: Space and Alt+KeypadEnter (view.inspect) are the shell's: the Workspace does not
+// handle them (checked); the effect is driven on the headless pieces App::Impl::inspector_command
+// uses (Workspace::set_inspector, inspector::Controller with the same preview backend the app
+// builds, no disk cache, no thumbnailers). A Space typed into a focused text field is consumed
+// before the keymap (field_consumes_as_text) and becomes text; the shell's key routing itself
+// is covered end to end by tests/integration/preview_app_smoke.sh (key:Space script steps).
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -34,6 +41,8 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -44,13 +53,18 @@
 #include <navigator/fs.hpp>
 #include <navigator/index.hpp>
 #include <navigator/layout.hpp>
+#include <navigator/preview.hpp>
+#include <navigator/preview_service.hpp>
 #include <navigator/search.hpp>
 
 #include "browser/browser_model.hpp"
 #include "browser_support.hpp"
 #include "fixture.hpp"
+#include "inspector/inspector_controller.hpp"
+#include "inspector/preview_backend.hpp"
 #include "path/copy_path.hpp"
 #include "path/path_entry.hpp"
+#include "search/filter_rules.hpp"
 #include "search_support.hpp"
 #include "sidebar/places_model.hpp"
 #include "sidebar/sidebar_model.hpp"
@@ -63,6 +77,7 @@ using navigator::layout::TabId;
 using navigator::ui::BrowserModel;
 using navigator::ui::kNoRow;
 using navigator::ui::Workspace;
+namespace inspector = navigator::ui::inspector;
 
 #ifndef NAVIGATOR_KEYMAP_DOC
 #error "NAVIGATOR_KEYMAP_DOC must name docs/keymap.md"
@@ -749,6 +764,101 @@ void add_phase5_checks(std::map<std::string, Check>& checks) {
     checks["search.types"] = check_types;
 }
 
+// ---- Phase 6 ----------------------------------------------------------------------------------
+// view.inspect: the shell's App::Impl::inspector_command flips InspectorState::visible through
+// the Workspace (persisted) and shows / hides the inspector::Controller, which follows the
+// cursor and asks the preview service. The service is the app's own headless backend
+// (ui::create_preview_backend without a thumbnail root: no disk cache, no thumbnailers).
+
+// The app's item for the cursor row (App::Impl::item_for, without the volume lookup).
+inspector::Subject cursor_subject(const BrowserModel& m) {
+    inspector::Subject subject;
+    if (const fs::DirEntry* e = m.cursor_entry(); e != nullptr) {
+        inspector::Item item;
+        item.path = m.row_path(m.cursor());
+        item.entry = *e;
+        subject.cursor = std::move(item);
+    }
+    subject.selected_count = m.selected_count();
+    subject.selected_bytes = m.selected_bytes();
+    return subject;
+}
+
+// Ticks the controller and feeds it the service's completions until it is no longer busy.
+void pump_inspector(inspector::Controller& ctl, preview::IPreviewService* service, double& now_ms) {
+    std::vector<preview::Completion> done;
+    for (int i = 0; i < 400 && (ctl.busy() || ctl.status() == inspector::Status::Loading); ++i) {
+        now_ms += inspector::kFollowDebounceMs + 1.0;
+        ctl.tick(now_ms, 1);
+        if (service != nullptr) {
+            done.clear();
+            (void)service->poll(done);
+            for (const preview::Completion& c : done) {
+                (void)ctl.on_completion(c);
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+}
+
+void check_inspect(Scene& s, const Command& c) {
+    check_not_handled(s, c);
+    std::unique_ptr<preview::IPreviewService> service =
+        ui::create_preview_backend(ui::PreviewBackendOptions{});
+    CHECK((service != nullptr) == ui::preview_available());
+    inspector::Controller ctl(service.get());
+    double now_ms = 1000.0;
+    // The shell's toggle, as App::Impl::inspector_command(Inspect) does it.
+    const auto toggle = [&] {
+        layout::InspectorState st = s.ws->inspector();
+        st.visible = !st.visible;
+        s.ws->set_inspector(st);
+        ctl.set_visible(st.visible, now_ms);
+    };
+    BrowserModel& m = s.m();
+    m.click_row(m.find("c.txt"), Modifiers::None);
+    CHECK_FALSE(s.ws->inspector().visible); // default
+    const std::uint64_t serial = s.ws->persist_serial();
+    toggle();
+    CHECK(s.ws->inspector().visible);
+    CHECK(s.ws->persist_serial() != serial); // saved with the session
+    CHECK(ctl.visible());
+    ctl.follow(cursor_subject(m), now_ms);
+    pump_inspector(ctl, service.get(), now_ms);
+    REQUIRE(ctl.item() != nullptr);
+    CHECK(ctl.item()->path == s.t / "c.txt");
+    if (service) {
+        REQUIRE(ctl.status() == inspector::Status::Ready);
+        REQUIRE(ctl.result() != nullptr);
+        CHECK(ctl.result()->kind() == preview::PreviewKind::Text);
+        CHECK(ctl.submitted() >= 1);
+    }
+    // The cursor moves: the Inspector follows (a folder now).
+    m.click_row(m.find("alpha"), Modifiers::None);
+    ctl.follow(cursor_subject(m), now_ms);
+    pump_inspector(ctl, service.get(), now_ms);
+    REQUIRE(ctl.item() != nullptr);
+    CHECK(ctl.item()->path == s.t / "alpha");
+    if (service) {
+        REQUIRE(ctl.status() == inspector::Status::Ready);
+        CHECK(ctl.result()->kind() == preview::PreviewKind::Folder);
+    }
+    // Again: hidden, nothing outstanding; the listing is untouched.
+    toggle();
+    CHECK_FALSE(s.ws->inspector().visible);
+    CHECK_FALSE(ctl.visible());
+    CHECK_FALSE(ctl.busy());
+    CHECK(m.current_dir() == s.t.path());
+    CHECK(m.row_count() == 33);
+    if (service) {
+        service->shutdown();
+    }
+}
+
+void add_phase6_checks(std::map<std::string, Check>& checks) {
+    checks["view.inspect"] = check_inspect;
+}
+
 std::map<std::string, Check> effect_checks() {
     std::map<std::string, Check> checks;
     checks["app.quit"] = check_not_handled;
@@ -1023,6 +1133,7 @@ std::map<std::string, Check> effect_checks() {
     checks["pane.focus_previous"] = focus_pane;
     add_phase4_checks(checks);
     add_phase5_checks(checks);
+    add_phase6_checks(checks);
     checks["pane.close"] = [](Scene& s, const Command& c) {
         REQUIRE(s.exec(c)); // the only pane: no-op
         s.settle();
@@ -1053,14 +1164,15 @@ std::map<std::string, Check> effect_checks() {
 
 TEST_CASE("docs/keymap.md and load_default_keymap agree row for row", "[keymap][e2e]") {
     const DocTables doc = read_doc();
-    // Phase 0, Phase 2, Phase 3, Phase 4 and Phase 5 tables.
-    CHECK(doc.per_phase.size() == 5);
+    // Phase 0, Phase 2, Phase 3, Phase 4, Phase 5 and Phase 6 tables.
+    CHECK(doc.per_phase.size() == 6);
     CHECK(doc.per_phase.at(0) == 3);
     CHECK(doc.per_phase.at(2) == 25);
     CHECK(doc.per_phase.at(3) == 21);
     CHECK(doc.per_phase.at(4) == 5);
     CHECK(doc.per_phase.at(5) == 4);
-    REQUIRE(doc.bound.size() == 58);
+    CHECK(doc.per_phase.at(6) == 2);
+    REQUIRE(doc.bound.size() == 60);
     Keymap keymap;
     REQUIRE(load_default_keymap(keymap));
     const Span<const KeyBinding> bindings = keymap.bindings();
@@ -1087,18 +1199,34 @@ TEST_CASE("docs/keymap.md and load_default_keymap agree row for row", "[keymap][
     // Phase 3: tab.close_left, layout.delete, window.new. Phase 4: sidebar.focus,
     // bookmarks.rename / move_up / move_down, recents.clear / toggle_tracking,
     // view.toggle_view_lock (nav.focus_address_bar became Ctrl+L). Phase 5: list.clear_filter,
-    // search.toggle_fuzzy, search.cancel, search.rebuild_index.
+    // search.toggle_fuzzy, search.cancel, search.rebuild_index. Phase 6: the seven inspector.*
+    // header-button commands.
     std::set<std::string> unbound_names;
     for (const DocRow& row : doc.unbound) {
         unbound_names.insert(row.command);
     }
-    CHECK(unbound_names ==
-          std::set<std::string>{"tab.close_left", "layout.delete", "window.new", "sidebar.focus",
-                                "bookmarks.rename", "bookmarks.move_up", "bookmarks.move_down",
-                                "recents.clear", "recents.toggle_tracking", "view.toggle_view_lock",
-                                "list.clear_filter", "search.toggle_fuzzy", "search.cancel",
-                                "search.rebuild_index"});
-    REQUIRE(doc.unbound.size() == 14);
+    CHECK(unbound_names == std::set<std::string>{"tab.close_left",
+                                                 "layout.delete",
+                                                 "window.new",
+                                                 "sidebar.focus",
+                                                 "bookmarks.rename",
+                                                 "bookmarks.move_up",
+                                                 "bookmarks.move_down",
+                                                 "recents.clear",
+                                                 "recents.toggle_tracking",
+                                                 "view.toggle_view_lock",
+                                                 "list.clear_filter",
+                                                 "search.toggle_fuzzy",
+                                                 "search.cancel",
+                                                 "search.rebuild_index",
+                                                 "inspector.toggle_lock",
+                                                 "inspector.zoom_fit",
+                                                 "inspector.zoom_1to1",
+                                                 "inspector.play",
+                                                 "inspector.cycle_placement",
+                                                 "inspector.toggle_grid",
+                                                 "inspector.toggle_minimap"});
+    REQUIRE(doc.unbound.size() == 21);
     for (const DocRow& row : doc.unbound) {
         INFO("keymap.md line " << row.line << ": " << row.command);
         CHECK(registry.find(row.command) != nullptr);
@@ -1145,12 +1273,37 @@ TEST_CASE("Every default chord resolves to its command and has its effect on the
     // window.new, deferred; Ctrl+Shift+P, Ctrl+Shift+N, Ctrl+P, Ctrl+C) and unbound keys,
     // including Phase 4 and Phase 5 chords with an extra or a missing modifier (Ctrl+E is
     // search.flatten since Phase 5).
-    for (const char* text :
-         {"Ctrl+N",        "Ctrl+Shift+P",     "Ctrl+Shift+N", "Ctrl+P",        "Ctrl+C",
-          "Ctrl+Alt+Left", "Alt+Shift+Left",   "Delete",       "Ctrl+Shift+F3", "Ctrl+F6",
-          "Ctrl+Alt+T",    "Shift+Enter",      "Ctrl+Shift+B", "Ctrl+Alt+L",    "Ctrl+Shift+G",
-          "Alt+D",         "Ctrl+Alt+C",       "Ctrl+Alt+E",   "Alt+E",         "Ctrl+Alt+F",
-          "Alt+F",         "Ctrl+Alt+Shift+E", "Shift+F",      "Ctrl+Space",    "Ctrl+Comma"}) {
+    for (const char* text : {"Ctrl+N",
+                             "Ctrl+Shift+P",
+                             "Ctrl+Shift+N",
+                             "Ctrl+P",
+                             "Ctrl+C",
+                             "Ctrl+Alt+Left",
+                             "Alt+Shift+Left",
+                             "Delete",
+                             "Ctrl+Shift+F3",
+                             "Ctrl+F6",
+                             "Ctrl+Alt+T",
+                             "Shift+Enter",
+                             "Ctrl+Shift+B",
+                             "Ctrl+Alt+L",
+                             "Ctrl+Shift+G",
+                             "Alt+D",
+                             "Ctrl+Alt+C",
+                             "Ctrl+Alt+E",
+                             "Alt+E",
+                             "Ctrl+Alt+F",
+                             "Alt+F",
+                             "Ctrl+Alt+Shift+E",
+                             "Shift+F",
+                             "Ctrl+Space",
+                             "Ctrl+Comma",
+                             "Shift+Space",
+                             "Alt+Space",
+                             "Ctrl+Shift+Space",
+                             "Alt+Enter",
+                             "Shift+KeypadEnter",
+                             "Ctrl+Alt+KeypadEnter"}) {
         INFO(text);
         CHECK_FALSE(resolve_command(keymap, registry, chord_of(text)));
     }
@@ -1215,6 +1368,89 @@ TEST_CASE("Unbound Phase 5 commands through the workspace", "[keymap][e2e][works
     // search.rebuild_index needs the App's index service.
     CHECK_FALSE(s.exec(Command{CommandId::RebuildIndex, 0}));
     CHECK(m.row_count() == 33);
+}
+
+TEST_CASE("Space typed into a focused text field never inspects", "[keymap][e2e][inspector]") {
+    Scene s;
+    Keymap keymap;
+    REQUIRE(load_default_keymap(keymap));
+    CommandRegistry registry;
+    REQUIRE(register_builtin_commands(registry));
+    const KeyChord space = chord_of("Space");
+    const KeyChord shift_space = chord_of("Shift+Space");
+    // With the list focused Space is view.inspect (the binding the fields must shadow).
+    REQUIRE(command_of(keymap, registry, space).id == CommandId::Inspect);
+    // App::Impl::handle_key step 0: every focused field consumes Space and Shift+Space before the
+    // keymap; other Space chords are not text (Ctrl+Space is reserved and resolves to nothing).
+    CHECK(ui::field_consumes_as_text(space));
+    CHECK(ui::field_consumes_as_text(shift_space));
+    for (const char* text : {"Ctrl+Space", "Alt+Space", "Ctrl+Shift+Space", "Enter", "S"}) {
+        INFO(text);
+        CHECK_FALSE(ui::field_consumes_as_text(chord_of(text)));
+    }
+    // Type-to-filter never starts with a Space from the list (Space stays view.inspect) but a
+    // space inside the typed text is text.
+    CHECK_FALSE(ui::starts_type_to_filter(ui::KeyboardOwner::List, Modifiers::None, " "));
+    CHECK_FALSE(ui::starts_type_to_filter(ui::KeyboardOwner::List, Modifiers::Shift, " x"));
+    CHECK(ui::starts_type_to_filter(ui::KeyboardOwner::List, Modifiers::None, "f 1"));
+    CHECK_FALSE(ui::starts_type_to_filter(ui::KeyboardOwner::TextField, Modifiers::None, "f"));
+
+    std::unique_ptr<preview::IPreviewService> service =
+        ui::create_preview_backend(ui::PreviewBackendOptions{});
+    inspector::Controller ctl(service.get());
+    std::uint64_t inspects = 0;
+    const std::uint64_t serial = s.ws->persist_serial();
+    // The shell's key path for a focused field: consumed chords stop; anything else resolves.
+    const auto key = [&](const KeyChord& chord, bool field_focused) {
+        if (field_focused && ui::field_consumes_as_text(chord)) {
+            return;
+        }
+        if (const std::optional<Command> c = resolve_command(keymap, registry, chord);
+            c && c->id == CommandId::Inspect) {
+            ++inspects;
+            CHECK_FALSE(s.exec(*c));
+        }
+    };
+
+    // The folder filter: "f", Space, "1" -> the filter text "f 1" (SDL text input arrives after
+    // the key event; App::Impl::handle_text inserts it into the focused field).
+    BrowserModel& m = s.m();
+    m.filter_edit().set({});
+    const std::vector<std::pair<std::string_view, std::string_view>> keys{
+        {"F", "f"}, {"Space", " "}, {"1", "1"}};
+    for (const auto& [chord, typed] : keys) {
+        key(chord_of(chord), true);
+        if (m.filter_edit().insert(typed)) {
+            m.filter_edited();
+        }
+    }
+    key(shift_space, true);
+    CHECK(m.filter_edit().insert(" "));
+    m.filter_edited();
+    CHECK(m.filter_edit().text() == "f 1 ");
+    // Space separates query terms (Phase 5): "f" and "1" -> f01, f10..f19, f21.
+    CHECK(m.row_count() == 12);
+    // The address bar and GoTo (PathEntry fields) take it as text too.
+    double now_ms = 1000.0;
+    for (const ui::PathEntryMode mode : {ui::PathEntryMode::AddressBar, ui::PathEntryMode::GoTo}) {
+        ui::PathEntry e(mode);
+        e.open("", false, s.m().current_dir(), s.t.path(), {}, now_ms);
+        key(space, true);
+        CHECK(e.edit().insert("a b"));
+        e.changed(now_ms);
+        CHECK(e.edit().text() == "a b");
+    }
+    CHECK(inspects == 0);
+    CHECK_FALSE(s.ws->inspector().visible);
+    CHECK(s.ws->persist_serial() == serial);
+    CHECK_FALSE(ctl.visible());
+    CHECK(ctl.submitted() == 0);
+    // Control: the same Space with the list focused does reach view.inspect.
+    key(space, false);
+    CHECK(inspects == 1);
+    if (service) {
+        service->shutdown();
+    }
 }
 
 TEST_CASE("Activate through the keymap never spawns a process", "[keymap][e2e][launcher]") {

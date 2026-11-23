@@ -140,6 +140,7 @@ struct TextStyle {
     FontWeight weight = FontWeight::Regular;
     float tracking = 0.0F; // em; added after every glyph
     bool tabular = false;  // OpenType tnum
+    bool mono = false;     // Phase 6: the monospace family (fontconfig "monospace"), Regular only
 };
 
 namespace type {
@@ -166,6 +167,13 @@ inline constexpr TextStyle popup_title{14.0F, FontWeight::SemiBold, 0.0F, false}
 inline constexpr TextStyle popup_field{14.0F, FontWeight::Regular, 0.0F, false};
 inline constexpr TextStyle section{11.5F, FontWeight::Medium, 0.02F, false};
 inline constexpr TextStyle button{13.0F, FontWeight::Medium, 0.0F, false};
+// Phase 6 Inspector.
+inline constexpr TextStyle inspector_title{13.5F, FontWeight::SemiBold, 0.0F, false};
+inline constexpr TextStyle meta_group{11.0F, FontWeight::SemiBold, 0.04F, false};
+inline constexpr TextStyle meta_key{12.0F, FontWeight::Regular, 0.01F, false};
+inline constexpr TextStyle meta_value{12.0F, FontWeight::Regular, 0.0F, true};
+inline constexpr TextStyle code{12.5F, FontWeight::Regular, 0.0F, false, true};
+inline constexpr TextStyle code_gutter{11.5F, FontWeight::Regular, 0.0F, true, true};
 } // namespace type
 
 namespace radius {

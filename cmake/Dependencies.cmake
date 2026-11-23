@@ -10,6 +10,10 @@
 # Exported targets (stable names other modules rely on):
 #   SDL3::SDL3, Catch2::Catch2WithMain (+ include(Catch) works),
 #   Freetype::Freetype, harfbuzz::harfbuzz, Fontconfig::Fontconfig
+#   Preview decoders (cmake/PreviewDependencies.cmake): PNG::PNG, JPEG::JPEG,
+#   WebP::webp, WebP::webpdemux, Exif::Exif; optional Heif::heif,
+#   FFmpeg::{avformat,avcodec,swscale,avutil}, Rsvg::rsvg gated by
+#   NAVIGATOR_HAVE_HEIF / NAVIGATOR_HAVE_FFMPEG / NAVIGATOR_HAVE_RSVG.
 
 include(FetchContent)
 
@@ -125,3 +129,8 @@ else()
 endif()
 
 find_package(Fontconfig REQUIRED) # CMake's FindFontconfig -> Fontconfig::Fontconfig
+
+# --------------------------------------------------------------------------
+# Image / video decoders for src/preview (system or vcpkg; never fetched)
+# --------------------------------------------------------------------------
+include(PreviewDependencies)

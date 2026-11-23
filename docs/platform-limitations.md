@@ -1,4 +1,4 @@
-# Platform limitations (Phases 1-4)
+# Platform limitations (Phases 1-6)
 
 Owner: platform (`src/platform`). This page lists what the Linux watch and volume backends
 cannot see or do. Users and later phases should rely on these limits being real, not on them
@@ -142,3 +142,59 @@ being worked around. Contracts: `include/navigator/watch.hpp`, `include/navigato
   on the network. It is meant for the GoTo worker, never the UI thread.
 - `move_to_trash` and `open_terminal` are defined but always return `Unsupported` until their
   phases land, so nothing links against a missing symbol.
+
+## Data dirs, program lookup, thumbnail cache (Phase 6)
+
+- `data_dirs()` returns lexically normalized paths without a trailing `/`, so callers compare
+  them directly. Symlinked duplicates (`/usr/share` and a link to it) are not resolved and both
+  stay in the list.
+- `find_program()` checks the execute bit for the effective user (`faccessat` with
+  `AT_EACCESS`). A file on a `noexec` mount passes the check and then fails at exec time; the
+  runner reports that as `NotFound` (`EACCES` from `execve`).
+- `thumbnail_cache_dir()` is only a path. Nothing in `src/platform` creates it or checks
+  permissions; `src/preview` does that when it writes.
+
+## Bounded child processes (Phase 6, `IProcessRunner`)
+
+- **Exec rules.** argv[0] is resolved like `find_program()`, then made absolute, and run with
+  `execve`. A script without a `#!` line fails (`ENOEXEC`, `PlatformError`). It is never handed
+  to `/bin/sh`. That is the only place where we differ from `execvp`.
+- **Process group.** The child gets its own group, and timeout, cancel and normal exit all send
+  `SIGKILL` to it. A descendant that leaves the group (`setsid`, `setpgid`) escapes the kill.
+  Unsandboxed, such a process can survive. Sandboxed, it cannot outlive bwrap because the whole
+  pid namespace dies with it. After the direct child exits, the runner keeps reading its pipes
+  for at most 500 ms, so an escaped process holding them open cannot block a worker.
+- **Parent death.** `PR_SET_PDEATHSIG(SIGKILL)` is tied to the thread that forked. That thread
+  waits in `run()` until the child is reaped, so the signal only fires when Navigator dies.
+- **rlimits.** These are best effort. A value above the current hard limit is clamped to it,
+  because an unprivileged process can only lower limits. `RLIMIT_CPU` sends `SIGXCPU` at the soft
+  limit and `SIGKILL` one second later. `RLIMIT_FSIZE` sends `SIGXFSZ`, and the write fails with
+  `EFBIG` if the child ignores the signal. `RLIMIT_AS` counts virtual memory, so a
+  sanitizer-instrumented or JIT-heavy thumbnailer may fail even at modest caps.
+- **Exit detection.** The runner uses `pidfd_open` (Linux 5.3+) when it exists and otherwise
+  polls every 10 ms. If the application ignores `SIGCHLD`, children are reaped automatically, and
+  `exit_code` and `term_signal` then stay `-1` and `0`.
+- **Blocking.** A hung `chdir` into a dead network mount happens in the child, so the wall-clock
+  timeout still covers it. If the child is stuck in uninterruptible sleep (`D` state) when it is
+  killed, reaping waits until the kernel lets it go.
+- **Sandbox (bubblewrap).** When `bwrap` is in `$PATH`, the runner first probes it once per
+  runner instance. The probe runs `true` under the same namespace flags and system binds, and its
+  result is cached. If the probe fails (no unprivileged user namespaces, an AppArmor
+  `userns` restriction, a seccomp-filtered container), every sandboxed request in that runner
+  runs unsandboxed and reports `sandboxed = false`. Callers that require a sandbox must check
+  that flag. If a real run fails inside bwrap after the probe succeeded (for example a bind path
+  that does not exist), the result is a normal non-zero exit and the run is not retried. Inside
+  the sandbox: no network (`--unshare-all` gives an empty network namespace), read-only `/usr`,
+  `/etc` and `/lib*`/`/bin`/`/sbin` (as binds or symlinks), an empty tmpfs `/tmp`, a private
+  `/proc` and `/dev`, and only the listed read-only and writable paths. bwrap builds its root on a
+  writable tmpfs and creates the parent directories of every bind target there (for a program
+  under `$HOME`, that includes `/home/<user>/...`). The runner therefore remounts `/` read-only
+  after all binds (`--remount-ro /`, which is not recursive). Writes then succeed only in
+  `writable_paths`, in the private `/tmp` (never visible on the host) and in `/dev` nodes such
+  as `/dev/null`. The environment is
+  cleared except `PATH`, `HOME`, `LANG` and `LC_ALL`, and `HOME` usually does not exist inside.
+  The program has to live in a bound path: system thumbnailers in `/usr` always do, while a
+  program elsewhere has to be in `read_only_paths`.
+- **Tests.** `tests/platform` runs the real bwrap only when the probe succeeds on the machine
+  (`[bwrap]` tests skip otherwise). Argument construction and the fallback are always tested with
+  fake `bwrap` scripts.

@@ -36,6 +36,12 @@ enum class FilterKey : std::uint8_t {
 };
 [[nodiscard]] FilterKey route_filter_key(const KeyChord& chord, bool has_selection) noexcept;
 
+// Phase 6 (docs/keymap.md "Focus scoping (Phase 6)"): every focused text field (filter field,
+// address bar, GoTo, rename and name prompts) consumes Space and Shift+Space as text before the
+// keymap, so a typed space never fires view.inspect. The character itself arrives as SDL text
+// input.
+[[nodiscard]] bool field_consumes_as_text(const KeyChord& chord) noexcept;
+
 enum class FieldEscape : std::uint8_t { CancelSearch, ClearText, ReturnFocus };
 [[nodiscard]] FieldEscape filter_field_escape(bool search_running, bool has_text) noexcept;
 

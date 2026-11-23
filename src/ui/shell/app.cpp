@@ -75,6 +75,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -85,6 +86,8 @@
 #include <navigator/path_input.hpp>
 #include <navigator/places.hpp>
 #include <navigator/platform.hpp>
+#include <navigator/preview.hpp>
+#include <navigator/preview_service.hpp>
 #include <navigator/ui.hpp>
 #include <navigator/watch.hpp>
 
@@ -92,6 +95,12 @@
 #include "browser/browser_view.hpp"
 #include "i18n/catalog.hpp"
 #include "input/sdl_input.hpp"
+#include "inspector/inspector_controller.hpp"
+#include "inspector/inspector_view.hpp"
+#include "inspector/list_thumbnails.hpp"
+#include "inspector/preview_backend.hpp"
+#include "inspector/texture_cache.hpp"
+#include "inspector/thumbnail_scheduler.hpp"
 #include "path/copy_path.hpp"
 #include "path/path_worker.hpp"
 #include "render/backend_name.hpp"
@@ -236,6 +245,22 @@ struct App::Impl {
     std::unique_ptr<ui::text::FontCache> fonts;
     std::unique_ptr<ui::text::GlyphAtlas> atlas;
     std::unique_ptr<ui::text::TextRenderer> text;
+    // Phase 6: previews. The service's workers push SDL events (destroyed before SDL); textures
+    // live on the renderer (destroyed before it).
+    std::unique_ptr<preview::IPreviewService> previews;
+    std::unique_ptr<ui::inspector::TextureCache> textures;
+    ui::inspector::ThumbnailScheduler thumbs{nullptr};
+    std::unique_ptr<ui::inspector::ListThumbnails> list_thumbs;
+    ui::inspector::Controller inspector{nullptr};
+    ui::inspector::InspectorView inspector_view;
+    ui::inspector::DockLayout dock;
+    ui::inspector::InspectorOutput inspector_out;
+    std::vector<preview::Completion> completions;
+    std::unordered_map<std::string, preview::SourceLocation> locations; // by folder
+    std::size_t locations_volumes = static_cast<std::size_t>(-1);
+    bool inspector_focus = false;  // keyboard focus in the Inspector (after a click)
+    double inspector_max_ms = 0.0; // longest frame while the Inspector showed (dump)
+    std::uint64_t locked_seen_content = 0;
 
     CommandQueue queue;
     CommandRegistry registry;
@@ -372,6 +397,19 @@ struct App::Impl {
     void bench_step(double frame_ms, double build_ms);
     void save_screenshot() const;
     void update_stats(double frame_ms, double t_ms);
+    // Phase 6.
+    void init_previews(const AppConfig& config);
+    void previews_frame_start(double t_ms);
+    [[nodiscard]] ui::inspector::Subject inspector_subject() const;
+    [[nodiscard]] preview::SourceLocation location_for(const Path& path);
+    [[nodiscard]] ui::inspector::Item item_for(const ui::BrowserModel& m, std::size_t row);
+    bool route_inspector(const Command& command);
+    void inspector_command(const Command& command);
+    void set_inspector_visible(bool visible);
+    void draw_inspector(const ui::Painter& painter, const ui::Palette& pal,
+                        const ui::PointerInput& ptr, double t_ms, double dt_ms, Timestamp now);
+    void apply_inspector_output();
+    [[nodiscard]] bool previews_busy() const noexcept;
 };
 
 Result<void> App::Impl::init(const AppConfig& config) {
@@ -645,6 +683,7 @@ Result<void> App::Impl::init(const AppConfig& config) {
     places = std::make_unique<ui::PlacesModel>(std::move(po));
     places->load();
     places->set_sidebar_visible(workspace->sidebar().visible);
+    init_previews(config);
     return ok();
 }
 
@@ -750,7 +789,8 @@ bool App::Impl::counting() const noexcept {
 bool App::Impl::continuous() const noexcept {
     // Phase 5: a running search streams results and animates its progress.
     return max_frames > 0 || show_fps || fade_start_ms >= 0.0 || view.animating() || bench ||
-           sidebar.animating() || (workspace && workspace->searching()) || bench_flatten;
+           sidebar.animating() || (workspace && workspace->searching()) || bench_flatten ||
+           previews_busy();
 }
 
 float App::Impl::fade_progress(double t_ms) const noexcept {
@@ -859,6 +899,35 @@ void App::Impl::handle_key(const KeyChord& chord, bool repeat) {
     // Delete in the layout picker deletes the highlighted layout (popup-local, docs/keymap.md
     // "Popups"), before its filter field sees the key.
     if (chord == KeyChord{Key::Delete, Modifiers::None} && !repeat && view.delete_key(intents)) {
+        return;
+    }
+    // Phase 6: keys local to a focused Inspector (fit, 1:1, zoom, grid, minimap).
+    if (inspector_focus && inspector.visible() && !view.popup_open() && text_field() == nullptr) {
+        if (const std::optional<ui::inspector::LocalKey> k =
+                ui::inspector::inspector_local_key(chord);
+            k) {
+            dirty = true;
+            switch (*k) {
+            case ui::inspector::LocalKey::Fit: queue.enqueue(CommandId::InspectorZoomFit); break;
+            case ui::inspector::LocalKey::OneToOne:
+                queue.enqueue(CommandId::InspectorZoom1to1);
+                break;
+            case ui::inspector::LocalKey::ZoomIn: inspector_view.zoom_step(1); break;
+            case ui::inspector::LocalKey::ZoomOut: inspector_view.zoom_step(-1); break;
+            case ui::inspector::LocalKey::Grid:
+                queue.enqueue(CommandId::ToggleInspectorGrid);
+                break;
+            case ui::inspector::LocalKey::Minimap:
+                queue.enqueue(CommandId::ToggleInspectorMinimap);
+                break;
+            }
+            return;
+        }
+    }
+    // Phase 6: a focused text field takes Space / Shift+Space as text (the character comes as
+    // SDL text input), so typing a space never toggles the Inspector.
+    if (ui::field_consumes_as_text(chord) &&
+        (filter_focused() || text_field() != nullptr || view.wants_text_input())) {
         return;
     }
     // Phase 5: the filter field takes only its editing keys (docs/keymap.md "Focus scoping
@@ -994,6 +1063,10 @@ void App::Impl::handle_text(std::string_view typed) {
     const ui::KeyboardOwner owner = ui::keyboard_owner(
         view.popup_open(), view.address_open() || sidebar.renaming(), sidebar_focus);
     const Modifiers held = ui::translate_modifiers(SDL_GetModState());
+    // The Inspector's local keys (G, M, 0, 1, ...) never start type-to-filter.
+    if (inspector_focus && inspector.visible()) {
+        return;
+    }
     if (ui::starts_type_to_filter(owner, held, typed)) {
         ui::BrowserModel& m = workspace->active_model();
         if (!m.loaded()) {
@@ -1508,6 +1581,10 @@ void App::Impl::execute(const Command& command) {
     if (sidebar_focus && route_sidebar(command)) {
         return;
     }
+    // Phase 6: the Inspector takes list.* while it has the keyboard (docs/keymap.md).
+    if (inspector_focus && inspector.visible() && route_inspector(command)) {
+        return;
+    }
     // Phase 5: commands that move the keyboard elsewhere take it from the filter field.
     if (command.id == CommandId::FocusSidebar || command.id == CommandId::FocusAddressBar ||
         command.id == CommandId::GoTo || command.id == CommandId::FocusNextPane ||
@@ -1588,6 +1665,30 @@ void App::Impl::execute(const Command& command) {
         }
         return;
     case CommandId::FlattenVolume: flatten_volume(); return;
+    // Phase 6: the Inspector.
+    case CommandId::Inspect:
+    case CommandId::ToggleInspectorLock:
+    case CommandId::InspectorZoomFit:
+    case CommandId::InspectorZoom1to1:
+    case CommandId::InspectorPlay:
+    case CommandId::CycleInspectorPlacement:
+    case CommandId::ToggleInspectorGrid:
+    case CommandId::ToggleInspectorMinimap: inspector_command(command); return;
+    case CommandId::Refresh:
+        // F5 re-decodes what the Inspector and the visible thumbnails show.
+        if (previews) {
+            const ui::BrowserModel& m = workspace->active_model();
+            if (m.loaded()) {
+                previews->invalidate(m.current_dir(), preview::InvalidateMode::Memory);
+                thumbs.forget(m.current_dir());
+            }
+            if (const ui::inspector::Item* it = inspector.item(); it != nullptr) {
+                previews->invalidate(it->path, preview::InvalidateMode::Memory);
+                inspector.invalidate();
+            }
+        }
+        (void)workspace->execute(command);
+        return;
     case CommandId::RebuildIndex: rebuild_index(); return;
     case CommandId::FocusNextPane:
     case CommandId::FocusPreviousPane: {
@@ -1829,6 +1930,25 @@ void App::Impl::dump(const std::string& file) const {
         }
     }
     out << "closed " << workspace->closed_tabs().size() << "\n";
+    // Phase 6: the Inspector (smoke tests check what it shows and how long frames took).
+    static constexpr const char* kStatus[] = {"empty", "multi", "loading", "ready", "failed"};
+    static constexpr const char* kKind[] = {"placeholder", "image", "video", "text", "folder"};
+    const layout::InspectorState& st = workspace->inspector();
+    out << "inspector " << (inspector.visible() ? "visible" : "hidden") << " placement "
+        << (dock.placement == layout::InspectorPlacement::Bottom ? "bottom" : "right") << " status "
+        << kStatus[static_cast<std::size_t>(inspector.status())];
+    if (inspector.result() && inspector.result_is_current()) {
+        out << " kind " << kKind[static_cast<std::size_t>(inspector.result()->kind())];
+    }
+    if (const ui::inspector::Item* it = inspector.item(); it != nullptr) {
+        out << " item " << it->path.filename().string();
+    }
+    out << " locked " << (inspector.locked() ? 1 : 0) << " grid " << (st.show_grid ? 1 : 0)
+        << " minimap " << (st.show_minimap ? 1 : 0) << " zoom " << inspector_view.viewport().zoom()
+        << "\n";
+    out << "inspector_max_frame_ms " << inspector_max_ms << "\n";
+    out << "thumbnails slots " << thumbs.slot_count() << " textures "
+        << (textures ? textures->count() : 0) << "\n";
 }
 
 void App::Impl::run_script_step() {
@@ -1846,6 +1966,15 @@ void App::Impl::run_script_step() {
             if (prog.walking && prog.found < std::strtoull(next.c_str() + 10, nullptr, 10)) {
                 return;
             }
+        }
+        if (next == "waitpreview" &&
+            (inspector.busy() || inspector.status() == ui::inspector::Status::Loading ||
+             (textures && textures->uploading()) || inspector_view.animating())) {
+            return;
+        }
+        if (next == "waitthumbs" &&
+            (thumbs.pending_count() > 0 || (textures && textures->uploading()))) {
+            return;
         }
         if (next == "waitindex") {
             const auto index = indexes->index_for(workspace->active_model().current_dir());
@@ -1907,7 +2036,21 @@ void App::Impl::run_script_step() {
         model.set_filter_text(raw.substr(7));
     } else if (op == "blurfilter") {
         filter_tab = layout::TabId{};
-    } else if (op == "waitsearch" || op == "waitfound" || op == "waitindex") {
+    } else if (op == "inspect") {
+        // Cursor to NAME and show the Inspector (Space).
+        const std::size_t row = model.find(arg);
+        if (row != ui::kNoRow) {
+            model.click_row(row, Modifiers::None);
+        }
+        if (!inspector.visible()) {
+            set_inspector_visible(true);
+        }
+    } else if (op == "inspectorfocus") {
+        inspector_focus = true;
+    } else if (op == "hoverplay") {
+        inspector_view.debug_hover_play(); // screenshots: the Play button's tooltip
+    } else if (op == "waitsearch" || op == "waitfound" || op == "waitindex" ||
+               op == "waitpreview" || op == "waitthumbs") {
         // Held before the step was taken (above).
     } else if (op == "focus") {
         workspace->activate_pane(pane_at_index(num(1)));
@@ -1958,6 +2101,7 @@ void App::Impl::update_scale() {
         atlas->clear();
         view.clear_caches();
         sidebar.clear_caches();
+        inspector_view.clear_caches();
     }
 }
 
@@ -2017,12 +2161,23 @@ void App::Impl::draw_frame(double t_ms, double dt_ms) {
             }
             return std::nullopt;
         },
+        .draw_inspector = {},
+        .thumbnails = nullptr,
     };
     // Phase 4: the sidebar takes the left of the window; the panes get the rest.
     layout_sidebar(static_cast<float>(w), static_cast<float>(h));
     const bool sidebar_shown = sidebar_rect.w > 0.0F;
     frame.content = ui::RectF{sidebar_rect.w, 0.0F, static_cast<float>(w) - sidebar_rect.w,
                               static_cast<float>(h)};
+    // Phase 6: the Inspector docks right of or below the pane tree.
+    {
+        layout::InspectorState st = workspace->inspector();
+        st.visible = st.visible && inspector.visible();
+        dock =
+            ui::inspector::dock_inspector(st, frame.content, scale, static_cast<double>(w) / scale,
+                                          static_cast<double>(h) / scale);
+        frame.content = dock.list;
+    }
     // The theme switch lives in the full sidebar's top bar; icon-only leaves it in the strip.
     frame.sidebar_visible = sidebar_shown && !sidebar_icon_only;
     ui::PointerInput masked;
@@ -2053,8 +2208,22 @@ void App::Impl::draw_frame(double t_ms, double dt_ms) {
         frame.draw_sidebar = [this, &sf] { sidebar.draw(sf); };
         frame.draw_sidebar_overlay = [this, &sf] { sidebar.draw_overlay(sf); };
     }
+    // Phase 6: list thumbnails and the Inspector (drawn by the workspace view between the panes
+    // and the overlays, so popups and toasts cover it).
+    const bool masked_ptr = popup || view.dragging();
+    if (list_thumbs) {
+        list_thumbs->begin_frame(t_ms, animations);
+        frame.thumbnails = list_thumbs.get();
+    }
+    thumbs.begin_frame();
+    if (dock.inspector.w > 0.0F && textures) {
+        frame.draw_inspector = [this, &painter, &pal, masked_ptr, &masked, t_ms, dt_ms, now] {
+            draw_inspector(painter, pal, masked_ptr ? masked : pointer, t_ms, dt_ms, now);
+        };
+    }
     view.update(frame);
     view.draw(frame);
+    thumbs.end_frame();
 }
 
 void App::Impl::bench_step(double frame_ms, double build_ms) {
@@ -2210,6 +2379,294 @@ void App::Impl::update_stats(double frame_ms, double t_ms) {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Phase 6: Inspector and list thumbnails
+// ---------------------------------------------------------------------------------------------
+
+void App::Impl::init_previews(const AppConfig& config) {
+    ui::ThumbnailRootInput ti;
+    ti.thumbnail_dir = config.thumbnail_dir;
+    ti.cache_dir = config.cache_dir;
+    ti.headless = config.max_frames > 0;
+    ti.enable_thumbnails = config.enable_thumbnails;
+    if (config.enable_thumbnails && config.thumbnail_dir.empty() && config.cache_dir.empty() &&
+        config.max_frames <= 0) {
+        ti.platform_root = ui::platform_thumbnail_root();
+    }
+    ui::PreviewBackendOptions bo;
+    bo.thumbnail_root = ui::resolve_thumbnail_root(ti);
+    bo.external_thumbnailers = config.enable_thumbnails && config.enable_external_thumbnailers;
+    bo.cache_bytes = config.preview_cache_bytes;
+    const Uint32 wake_type = wake_event;
+    bo.wake = [wake_type] {
+        if (wake_type != 0) {
+            SDL_Event e{};
+            e.type = wake_type;
+            SDL_PushEvent(&e); // thread-safe
+        }
+    };
+    if (config.max_frames > 0 && config.thumbnail_dir.empty() && config.cache_dir.empty()) {
+        SDL_Log("Navigator: --frames without --thumbnail-dir/--cache-dir: thumbnail cache off");
+    }
+    previews = ui::create_preview_backend(bo);
+    textures = std::make_unique<ui::inspector::TextureCache>(
+        *renderer, std::max<std::size_t>(static_cast<std::size_t>(config.preview_cache_bytes),
+                                         ui::inspector::kDefaultTextureBudgetBytes));
+    thumbs.set_service(previews.get());
+    thumbs.set_enabled(config.enable_thumbnails);
+    inspector.set_service(previews.get());
+    list_thumbs = std::make_unique<ui::inspector::ListThumbnails>(
+        thumbs, *textures, [this](const Path& path) { return location_for(path); });
+    inspector.set_visible(workspace->inspector().visible, now_ms());
+}
+
+preview::SourceLocation App::Impl::location_for(const Path& path) {
+    const std::vector<VolumeInfo>& vols = places->volumes();
+    if (vols.size() != locations_volumes) {
+        locations.clear();
+        locations_volumes = vols.size();
+    }
+    const std::string dir = path.parent_path().native();
+    if (const auto it = locations.find(dir); it != locations.end()) {
+        return it->second;
+    }
+    preview::SourceLocation loc;
+    if (const std::optional<std::size_t> v =
+            places::containing_volume(path, Span<const VolumeInfo>(vols.data(), vols.size()));
+        v) {
+        loc.network = vols[*v].kind == VolumeKind::Network;
+        loc.removable = vols[*v].removable;
+    }
+    if (locations.size() > 4096) {
+        locations.clear();
+    }
+    locations.emplace(dir, loc);
+    return loc;
+}
+
+ui::inspector::Item App::Impl::item_for(const ui::BrowserModel& m, std::size_t row) {
+    ui::inspector::Item it;
+    it.path = m.row_path(row);
+    it.entry = m.row_entry(row);
+    it.location = location_for(it.path);
+    it.folder.show_hidden = m.show_hidden();
+    it.folder.sort = m.sort();
+    return it;
+}
+
+ui::inspector::Subject App::Impl::inspector_subject() const {
+    ui::inspector::Subject s;
+    const ui::BrowserModel& m = workspace->active_model();
+    if (!m.loaded()) {
+        return s;
+    }
+    auto* self = const_cast<App::Impl*>(this); // location cache only
+    const std::size_t cur = m.cursor();
+    if (cur < m.row_count()) {
+        s.cursor = self->item_for(m, cur);
+        for (std::size_t d = 1; d <= ui::inspector::kPrefetchNeighbours; ++d) {
+            if (cur + d < m.row_count()) {
+                s.neighbours.push_back(self->item_for(m, cur + d));
+            }
+            if (cur >= d) {
+                s.neighbours.push_back(self->item_for(m, cur - d));
+            }
+        }
+    }
+    s.selected_count = m.selected_count();
+    s.selected_bytes = m.selected_bytes();
+    return s;
+}
+
+void App::Impl::previews_frame_start(double t_ms) {
+    if (previews) {
+        completions.clear();
+        if (previews->poll(completions) > 0) {
+            for (const preview::Completion& c : completions) {
+                if (!inspector.on_completion(c)) {
+                    (void)thumbs.on_completion(c);
+                }
+            }
+            dirty = true;
+        }
+    }
+    if (textures && textures->upload(t_ms)) {
+        dirty = true;
+    }
+    if (inspector.visible()) {
+        const std::uint64_t before = inspector.serial();
+        inspector.follow(inspector_subject(), t_ms);
+        // A locked item that left its folder (deleted, renamed away) unlocks with a notice.
+        if (inspector.locked() && inspector.item() != nullptr) {
+            const ui::BrowserModel& m = workspace->active_model();
+            if (m.content_serial() != locked_seen_content) {
+                locked_seen_content = m.content_serial();
+                const ui::inspector::Item& it = *inspector.item();
+                if (m.loaded() && m.current_dir() == it.path.parent_path() &&
+                    m.find(it.path.filename().native()) == ui::kNoRow &&
+                    inspector.unlock_if_gone(false)) {
+                    toast(std::string(tr("inspector.unlocked_gone")));
+                }
+            }
+        }
+        inspector.tick(t_ms, thumbs.epoch());
+        if (inspector.serial() != before) {
+            dirty = true;
+        }
+    }
+}
+
+bool App::Impl::previews_busy() const noexcept {
+    return (inspector.visible() && (inspector.busy() || inspector_view.animating())) ||
+           (textures && textures->uploading()) || (list_thumbs && list_thumbs->fading()) ||
+           thumbs.pending_count() > 0;
+}
+
+void App::Impl::set_inspector_visible(bool visible) {
+    layout::InspectorState st = workspace->inspector();
+    st.visible = visible;
+    workspace->set_inspector(st);
+    inspector.set_visible(visible, now_ms());
+    if (!visible) {
+        inspector_focus = false;
+    }
+}
+
+bool App::Impl::route_inspector(const Command& command) {
+    switch (command.id) {
+    case CommandId::CursorUp:
+    case CommandId::CursorDown:
+    case CommandId::CursorPageUp:
+    case CommandId::CursorPageDown:
+    case CommandId::CursorHome:
+    case CommandId::CursorEnd: inspector_view.cursor(command.id); return true;
+    case CommandId::Activate: queue.enqueue(CommandId::InspectorPlay); return true;
+    case CommandId::ClearSelection: inspector_focus = false; return true;
+    case CommandId::Inspect: set_inspector_visible(false); return true;
+    default: return false;
+    }
+}
+
+void App::Impl::inspector_command(const Command& command) {
+    layout::InspectorState st = workspace->inspector();
+    switch (command.id) {
+    case CommandId::Inspect:
+        if (!st.visible) {
+            focus_sidebar(false);
+        }
+        set_inspector_visible(!st.visible);
+        return;
+    case CommandId::ToggleInspectorLock: inspector.toggle_lock(); return;
+    case CommandId::InspectorZoomFit: inspector_view.zoom_fit(); return;
+    case CommandId::InspectorZoom1to1: inspector_view.zoom_1to1(); return;
+    case CommandId::InspectorPlay: {
+        const ui::inspector::Item* it = inspector.item();
+        if (it == nullptr || fs::is_directory_like(it->entry) || !st.visible) {
+            return;
+        }
+        if (!launcher) {
+            toast(std::string(tr("inspector.play_failed")), true);
+            return;
+        }
+        if (Result<void> r = platform::open_with_default(it->path, *launcher); !r) {
+            toast(std::string(tr("inspector.play_failed")), true);
+        }
+        return;
+    }
+    case CommandId::CycleInspectorPlacement:
+        st.placement = layout::next_placement(st.placement);
+        workspace->set_inspector(st);
+        return;
+    case CommandId::ToggleInspectorGrid:
+        st.show_grid = !st.show_grid;
+        workspace->set_inspector(st);
+        return;
+    case CommandId::ToggleInspectorMinimap:
+        st.show_minimap = !st.show_minimap;
+        workspace->set_inspector(st);
+        return;
+    default: return;
+    }
+}
+
+void App::Impl::draw_inspector(const ui::Painter& painter, const ui::Palette& pal,
+                               const ui::PointerInput& ptr, double t_ms, double dt_ms,
+                               Timestamp now) {
+    if (dock.inspector.w <= 0.0F || dock.inspector.h <= 0.0F) {
+        return;
+    }
+    // The item's list thumbnail: a low-resolution placeholder while the image decodes.
+    const ui::inspector::TextureCache::Texture* placeholder = nullptr;
+    if (const ui::inspector::Item* it = inspector.item(); it != nullptr && textures) {
+        const float box = std::round(painter.px(ui::metrics::icon_size + 2.0F));
+        const auto side = static_cast<std::uint32_t>(std::max(1.0F, std::ceil(box)));
+        preview::PreviewRequest r =
+            ui::make_request(it->path, it->entry, preview::PreviewPurpose::Thumbnail,
+                             preview::PixelSize{side, side});
+        r.location = it->location;
+        placeholder = textures->get(ui::preview_key(r));
+    }
+    const layout::InspectorState& st = workspace->inspector();
+    const ui::inspector::InspectorFrame f{
+        .painter = painter,
+        .palette = pal,
+        .theme = theme,
+        .pointer = ptr,
+        .queue = queue,
+        .controller = inspector,
+        .state = st,
+        .textures = *textures,
+        .dock = dock.inspector,
+        .content = ui::RectF{dock.list.x, dock.list.y,
+                             dock.list.w + (dock.placement == layout::InspectorPlacement::Right
+                                                ? dock.inspector.w
+                                                : 0.0F),
+                             dock.list.h + (dock.placement == layout::InspectorPlacement::Bottom
+                                                ? dock.inspector.h
+                                                : 0.0F)},
+        .splitter = dock.splitter,
+        .placement = dock.placement,
+        .keyboard = inspector_focus,
+        .window_focused = focused,
+        .animations = animations,
+        .density = density,
+        .now_ms = t_ms,
+        .dt_ms = dt_ms,
+        .now = now,
+        .placeholder = placeholder,
+    };
+    inspector_view.draw(f, inspector_out);
+    inspector.set_view_target(inspector_view.fit_target(), inspector_view.wants_full_resolution(),
+                              t_ms);
+}
+
+void App::Impl::apply_inspector_output() {
+    ui::inspector::InspectorOutput out = std::move(inspector_out);
+    inspector_out = {};
+    if (out.resize) {
+        layout::InspectorState st = workspace->inspector();
+        if (dock.placement == layout::InspectorPlacement::Bottom) {
+            st.height = *out.resize;
+        } else {
+            st.width = *out.resize;
+        }
+        workspace->set_inspector(st);
+    }
+    if (out.pressed_inside && !view.popup_open()) {
+        inspector_focus = true;
+        focus_sidebar(false);
+        filter_tab = layout::TabId{};
+        view.close_address_bar();
+    } else if (pointer.pressed && inspector_focus &&
+               !contains(inspector_view.card(), pointer.x, pointer.y)) {
+        inspector_focus = false;
+    }
+    if (out.copy) {
+        set_clipboard(*out.copy);
+        toast(std::string(tr("inspector.copied")));
+    }
+}
+
 App::App(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 App::~App() = default;
 
@@ -2257,6 +2714,7 @@ int App::run() {
             s.dirty = true;
         }
         s.sync_index_volumes();
+        s.previews_frame_start(now_ms());
         // A background scan reports often: repaint only while a status bar shows the index.
         if (s.indexes->frame_start() && s.shows_index_status()) {
             s.dirty = true;
@@ -2318,6 +2776,7 @@ int App::run() {
         }
         s.apply_intents();
         s.apply_outcomes();
+        s.apply_inspector_output();
         for (const layout::TabId tab : s.workspace->visible_tabs()) {
             if (ui::BrowserModel* m = s.workspace->model(tab); m != nullptr) {
                 if (const ui::BrowserView* v = s.view.find_view(tab); v != nullptr) {
@@ -2338,8 +2797,15 @@ int App::run() {
         }
         (void)s.workspace->sync();
         s.persist_tick(now_ms());
+        if (s.textures) {
+            s.textures->end_frame();
+        }
         s.cursors.show(s.sidebar.resize_cursor() ? ui::PointerCursor::ResizeHorizontal
-                                                 : s.view.cursor());
+                       : s.inspector_view.resize_hot()
+                           ? (s.dock.placement == layout::InspectorPlacement::Bottom
+                                  ? ui::PointerCursor::ResizeVertical
+                                  : ui::PointerCursor::ResizeHorizontal)
+                           : s.view.cursor());
         // Phase 5: text input stays on while the window has focus, so typing in a list starts
         // its filter (type-to-filter); chords still arrive as key events.
         const bool want_text = s.focused || s.view.wants_text_input() || s.sidebar.renaming();
@@ -2367,6 +2833,9 @@ int App::run() {
         if (s.bench_flatten) {
             // Whole loop turn: applying batches at frame start counts, not only drawing.
             s.bench_flatten_step(end_ms - last_ms);
+        }
+        if (s.inspector.visible() && s.inspector.item() != nullptr) {
+            s.inspector_max_ms = std::max(s.inspector_max_ms, end_ms - t_ms);
         }
         s.update_stats(end_ms - last_ms, end_ms);
         last_ms = end_ms;

@@ -187,3 +187,27 @@ TEST_CASE("Index and cache flags (Phase 5)", "[cli]") {
     CHECK(help.find("--cache-dir") != std::string::npos);
     CHECK(help.find("--bench-flatten") == std::string::npos);
 }
+
+TEST_CASE("Phase 6 preview and thumbnail options", "[cli]") {
+    auto d = parse_cli({});
+    REQUIRE(d);
+    CHECK(d->thumbnail_dir.empty());
+    CHECK(d->config.enable_thumbnails);
+    CHECK(d->config.enable_external_thumbnailers);
+    CHECK(d->config.preview_cache_bytes == std::uint64_t{256} * 1024U * 1024U);
+
+    auto o = parse_cli({"--thumbnail-dir", "/tmp/thumbs", "--no-external-thumbnailers",
+                        "--preview-cache-mb", "64"});
+    REQUIRE(o);
+    CHECK(o->thumbnail_dir == "/tmp/thumbs");
+    CHECK(o->config.enable_thumbnails);
+    CHECK_FALSE(o->config.enable_external_thumbnailers);
+    CHECK(o->config.preview_cache_bytes == std::uint64_t{64} * 1024U * 1024U);
+    CHECK_FALSE(parse_cli({"--no-thumbnails"})->config.enable_thumbnails);
+
+    CHECK_FALSE(parse_cli({"--thumbnail-dir"}));
+    CHECK_FALSE(parse_cli({"--thumbnail-dir", ""}));
+    CHECK_FALSE(parse_cli({"--preview-cache-mb", "8"})); // below the 16 MiB minimum
+    CHECK_FALSE(parse_cli({"--preview-cache-mb", "lots"}));
+    CHECK(navigator::app::usage_text("navigator").find("--thumbnail-dir") != std::string::npos);
+}

@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -56,5 +57,39 @@ inline void write_file(const Path& path, std::string_view content) {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     out.write(content.data(), static_cast<std::streamsize>(content.size()));
 }
+
+// Sets or unsets one environment variable for a scope and restores the old value afterwards.
+class ScopedEnv {
+public:
+    explicit ScopedEnv(const char* name) : name_(name) {
+        if (const char* old = std::getenv(name)) {
+            old_ = old;
+        }
+    }
+    ScopedEnv(const char* name, const std::optional<std::string>& value) : ScopedEnv(name) {
+        if (value) {
+            set(*value);
+        } else {
+            unset();
+        }
+    }
+    ScopedEnv(const ScopedEnv&) = delete;
+    ScopedEnv& operator=(const ScopedEnv&) = delete;
+    ScopedEnv(ScopedEnv&&) = delete;
+    ScopedEnv& operator=(ScopedEnv&&) = delete;
+    ~ScopedEnv() {
+        if (old_) {
+            ::setenv(name_, old_->c_str(), 1);
+        } else {
+            ::unsetenv(name_);
+        }
+    }
+    void set(const std::string& value) const { ::setenv(name_, value.c_str(), 1); }
+    void unset() const { ::unsetenv(name_); }
+
+private:
+    const char* name_;
+    std::optional<std::string> old_;
+};
 
 } // namespace navigator::platform_test

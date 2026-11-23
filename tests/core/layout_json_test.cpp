@@ -466,3 +466,171 @@ TEST_CASE("json: sidebar state round-trips and loads leniently", "[layout][json]
     // Named layouts never carry the sidebar.
     CHECK(lay::layout_to_json(session.layout)->find("sidebar") == std::string::npos);
 }
+
+// ---- inspector (Phase 6) --------------------------------------------------------------------
+
+TEST_CASE("json: inspector state round-trips and is absent when default",
+          "[layout][json][inspector]") {
+    // Default state: no "inspector" key at all (existing goldens stay byte-identical).
+    CHECK(lay::to_json(lay::Session{})->find("inspector") == std::string::npos);
+    CHECK(lay::to_json(three_pane_session())->find("inspector") == std::string::npos);
+
+    lay::Session session = three_pane_session();
+    session.inspector.visible = true;
+    session.inspector.placement = lay::InspectorPlacement::Bottom;
+    session.inspector.width = 412.5;
+    session.inspector.height = 300.0;
+    session.inspector.show_grid = true;
+    session.inspector.show_minimap = false;
+    const Result<std::string> text = lay::to_json(session);
+    REQUIRE(text);
+    // Last key of the document, every field, documented order, integral numbers without ".0".
+    const std::string tail = R"(,
+  "inspector": {
+    "visible": true,
+    "placement": "bottom",
+    "width": 412.5,
+    "height": 300,
+    "grid": true,
+    "minimap": false
+  }
+}
+)";
+    REQUIRE(text->size() > tail.size());
+    CHECK(text->substr(text->size() - tail.size()) == tail);
+    const lay::Session back = must_load(*text);
+    CHECK(back.inspector == session.inspector);
+    CHECK(*lay::to_json(back) == *text);
+
+    // Any single non-default field makes it appear; each placement name round-trips.
+    for (const auto placement : {lay::InspectorPlacement::Auto, lay::InspectorPlacement::Right,
+                                 lay::InspectorPlacement::Bottom}) {
+        lay::Session one;
+        one.inspector.visible = true;
+        one.inspector.placement = placement;
+        const Result<std::string> one_text = lay::to_json(one);
+        REQUIRE(one_text);
+        CHECK(one_text->find(R"("inspector")") != std::string::npos);
+        CHECK(must_load(*one_text).inspector == one.inspector);
+    }
+    lay::Session minimap_off;
+    minimap_off.inspector.show_minimap = false;
+    CHECK(must_load(*lay::to_json(minimap_off)).inspector == minimap_off.inspector);
+
+    // Named layouts never carry the Inspector.
+    CHECK(lay::layout_to_json(session.layout)->find("inspector") == std::string::npos);
+}
+
+TEST_CASE("json: inspector loads leniently with clamping", "[layout][json][inspector]") {
+    const lay::InspectorState defaults;
+    CHECK(must_load("{}").inspector == defaults);
+    CHECK(must_load(R"({"inspector": null})").inspector == defaults);
+    CHECK(must_load(R"({"inspector": [true]})").inspector == defaults);
+    CHECK(must_load(R"({"inspector": "right"})").inspector == defaults);
+    CHECK(must_load(R"({"inspector": {}})").inspector == defaults);
+
+    // Wrong types fall back field by field; unknown fields are ignored.
+    const lay::Session odd = must_load(
+        R"({"inspector": {"visible": 1, "placement": "RIGHT", "width": "wide", "height": null,
+            "grid": "yes", "minimap": 0, "zoom": "fit", "locked": true}})");
+    CHECK(odd.inspector == defaults);
+    CHECK(must_load(R"({"inspector": {"placement": 2}})").inspector.placement ==
+          lay::InspectorPlacement::Auto);
+    CHECK(must_load(R"({"inspector": {"placement": "left"}})").inspector.placement ==
+          lay::InspectorPlacement::Auto);
+    CHECK(must_load(R"({"inspector": {"placement": "right"}})").inspector.placement ==
+          lay::InspectorPlacement::Right);
+
+    // Sizes clamp to the documented constants; integers and fractions are both numbers.
+    const auto width_of = [](const char* json) { return must_load(json).inspector.width; };
+    const auto height_of = [](const char* json) { return must_load(json).inspector.height; };
+    CHECK(width_of(R"({"inspector": {"width": 10}})") == lay::kInspectorMinWidth);
+    CHECK(width_of(R"({"inspector": {"width": -500}})") == lay::kInspectorMinWidth);
+    CHECK(width_of(R"({"inspector": {"width": 1e300}})") == lay::kInspectorMaxWidth);
+    CHECK(width_of(R"({"inspector": {"width": 500.75}})") == 500.75);
+    CHECK(height_of(R"({"inspector": {"height": 1}})") == lay::kInspectorMinHeight);
+    CHECK(height_of(R"({"inspector": {"height": 99999}})") == lay::kInspectorMaxHeight);
+    CHECK(height_of(R"({"inspector": {"height": 444}})") == 444.0);
+
+    const lay::Session full = must_load(
+        R"({"inspector": {"visible": true, "placement": "bottom", "width": 300, "height": 200,
+            "grid": true, "minimap": false}})");
+    CHECK(full.inspector.visible);
+    CHECK(full.inspector.placement == lay::InspectorPlacement::Bottom);
+    CHECK(full.inspector.width == 300.0);
+    CHECK(full.inspector.height == 200.0);
+    CHECK(full.inspector.show_grid);
+    CHECK_FALSE(full.inspector.show_minimap);
+
+    // A higher version is still read with these rules.
+    const lay::Session newer =
+        must_load(R"({"version": 7, "inspector": {"visible": true, "placement": "right"}})");
+    CHECK(newer.version == 7);
+    CHECK(newer.inspector.visible);
+    CHECK(newer.inspector.placement == lay::InspectorPlacement::Right);
+}
+
+TEST_CASE("json: inspector values the loader would repair are written repaired",
+          "[layout][json][inspector]") {
+    lay::Session wild;
+    wild.inspector.visible = true;
+    wild.inspector.width = 5000.0;
+    wild.inspector.height = 3.0;
+    Result<std::string> text = lay::to_json(wild);
+    REQUIRE(text);
+    CHECK(text->find(R"("width": 1200,)") != std::string::npos);
+    CHECK(text->find(R"("height": 160,)") != std::string::npos);
+    CHECK(*lay::to_json(must_load(*text)) == *text);
+
+    wild.inspector.width = std::numeric_limits<double>::quiet_NaN();
+    wild.inspector.height = -std::numeric_limits<double>::infinity();
+    wild.inspector.placement = static_cast<lay::InspectorPlacement>(9);
+    text = lay::to_json(wild);
+    REQUIRE(text);
+    CHECK(text->find(R"("placement": "auto",)") != std::string::npos);
+    CHECK(text->find(R"("width": 360,)") != std::string::npos);
+    CHECK(text->find(R"("height": 280,)") != std::string::npos);
+
+    // A state that only differs by values that normalize to the defaults is not written.
+    lay::Session only_nan;
+    only_nan.inspector.width = std::numeric_limits<double>::infinity();
+    only_nan.inspector.placement = static_cast<lay::InspectorPlacement>(200);
+    CHECK(lay::to_json(only_nan)->find("inspector") == std::string::npos);
+}
+
+TEST_CASE("inspector: resolve_inspector_placement table", "[layout][inspector]") {
+    using P = lay::InspectorPlacement;
+    struct Row {
+        P placement;
+        double width;
+        double height;
+        P expected;
+    };
+    const Row rows[] = {
+        {P::Right, 100.0, 2000.0, P::Right}, // explicit placements pass through
+        {P::Bottom, 4000.0, 100.0, P::Bottom}, {P::Auto, 1280.0, 800.0, P::Right}, // wide landscape
+        {P::Auto, 960.0, 960.0, P::Right},    // exactly the threshold, square
+        {P::Auto, 959.0, 500.0, P::Bottom},   // just under the width threshold
+        {P::Auto, 1000.0, 1001.0, P::Bottom}, // wide enough but portrait
+        {P::Auto, 800.0, 1280.0, P::Bottom},  // portrait
+        {P::Auto, 0.0, 0.0, P::Bottom},       // degenerate
+        {P::Auto, 3840.0, 2160.0, P::Right},
+    };
+    for (const Row& row : rows) {
+        INFO(row.width << "x" << row.height);
+        CHECK(lay::resolve_inspector_placement(row.placement, row.width, row.height) ==
+              row.expected);
+    }
+    static_assert(lay::resolve_inspector_placement(P::Auto, 1920.0, 1080.0) == P::Right);
+}
+
+TEST_CASE("inspector: next_placement cycles Auto -> Right -> Bottom -> Auto",
+          "[layout][inspector]") {
+    using P = lay::InspectorPlacement;
+    CHECK(lay::next_placement(P::Auto) == P::Right);
+    CHECK(lay::next_placement(P::Right) == P::Bottom);
+    CHECK(lay::next_placement(P::Bottom) == P::Auto);
+    CHECK(lay::next_placement(static_cast<P>(42)) == P::Auto);
+    static_assert(lay::next_placement(lay::next_placement(lay::next_placement(P::Auto))) ==
+                  P::Auto);
+}

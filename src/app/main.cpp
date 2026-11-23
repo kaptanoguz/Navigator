@@ -102,6 +102,7 @@ int main(int argc, char** argv) {
     config.start_path = options->start_path; // `options` outlives the App
     config.config_dir = options->config_dir;
     config.cache_dir = options->cache_dir;
+    config.thumbnail_dir = options->thumbnail_dir;
     int code = 1;
     {
         auto app = navigator::App::create(config);

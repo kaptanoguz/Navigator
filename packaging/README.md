@@ -18,7 +18,11 @@ Validate the desktop file with `desktop-file-validate packaging/linux/navigator.
 
 - **.deb** (Linux Mint 22 / Ubuntu 24.04 first): built with CPack or `debian/` tooling. Link
   against distro libraries (FreeType, HarfBuzz, Fontconfig, and SDL3 once the target distro ships
-  it); until then SDL3 is bundled privately. Release preset, LTO on.
+  it); until then SDL3 is bundled privately. Release preset, LTO on. Preview decoders are distro
+  libraries too: libpng16-16t64, libjpeg-turbo8, libwebp7 + libwebpdemux2, libexif12 as hard
+  dependencies; build the .deb with HEIF/FFmpeg/librsvg enabled (libheif1, libavformat60,
+  libavcodec60, libswscale7, libavutil58, librsvg2-2). Runtime package names should come from
+  `dpkg-shlibdeps`, not be hand-written.
 - **AppImage**: built from `cmake --install` into an AppDir, bundling SDL3 and anything not in the
   AppImage base set. Targets older glibc via an older build image.
 - **Flatpak**: GNOME runtime; SDL3 built as a module in the manifest. Filesystem access needs

@@ -23,6 +23,11 @@ bool starts_type_to_filter(KeyboardOwner owner, Modifiers held, std::string_view
     return true;
 }
 
+bool field_consumes_as_text(const KeyChord& chord) noexcept {
+    return chord.key == Key::Space &&
+           (chord.mods == Modifiers::None || chord.mods == Modifiers::Shift);
+}
+
 FilterKey route_filter_key(const KeyChord& chord, bool has_selection) noexcept {
     const Modifiers m = chord.mods;
     const bool plain = m == Modifiers::None;

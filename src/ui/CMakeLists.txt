@@ -10,6 +10,8 @@ find_package(Threads REQUIRED)
 # probe workers), sidebar rows, path entry (GoTo / address bar) with its worker, text editing.
 # Phase 5: rows (folder filter, type filter, flattened view), the flatten walk thread, the
 # search worker, the index service and the filter-field key rules (src/ui/search).
+# Phase 6: Inspector logic (controller, zoom math, text wrapping, metadata), the thumbnail
+# scheduler and the preview service glue (src/ui/inspector).
 # Unit-tested on fixture directories in tests/ui.
 add_library(navigator_ui_browser STATIC
     browser/browser_model.cpp
@@ -18,6 +20,12 @@ add_library(navigator_ui_browser STATIC
     browser/listing_worker.cpp
     browser/watch_worker.cpp
     i18n/i18n.cpp
+    inspector/inspector_controller.cpp
+    inspector/metadata.cpp
+    inspector/preview_backend.cpp
+    inspector/text_layout.cpp
+    inspector/thumbnail_scheduler.cpp
+    inspector/zoom.cpp
     path/copy_path.cpp
     path/path_entry.cpp
     path/path_worker.cpp
@@ -50,12 +58,21 @@ target_link_libraries(navigator_ui_browser
     PRIVATE
         navigator::options
 )
+# Phase 6: previews and thumbnails (src/preview). The ui codes against the frozen headers; a
+# tree without the preview module still builds (no service: type icons and "No preview").
+if(TARGET navigator_preview)
+    target_link_libraries(navigator_ui_browser PUBLIC navigator_preview)
+    target_compile_definitions(navigator_ui_browser PUBLIC NAVIGATOR_UI_HAVE_PREVIEW=1)
+endif()
 
 add_library(navigator_ui STATIC
     browser/browser_chrome.cpp
     browser/browser_search_view.cpp
     browser/browser_view.cpp
     input/sdl_input.cpp
+    inspector/inspector_view.cpp
+    inspector/list_thumbnails.cpp
+    inspector/texture_cache.cpp
     render/backend_name.cpp
     render/renderer.cpp
     shell/app.cpp
@@ -71,6 +88,7 @@ add_library(navigator_ui STATIC
     widgets/icons.cpp
     widgets/text_field.cpp
     widgets/text_fit.cpp
+    widgets/tooltip.cpp
     workspace/goto_popup.cpp
     workspace/popups.cpp
     workspace/types_popup.cpp

@@ -9,7 +9,39 @@
     "freetype",
     "harfbuzz",
     "fontconfig",
-    "nlohmann-json"
+    "nlohmann-json",
+    "libpng",
+    "libjpeg-turbo",
+    "libwebp",
+    "libexif"
   ],
+  "features": {
+    "heif": {
+      "description": "HEIF/HEIC/AVIF decoding via libheif (NAVIGATOR_WITH_HEIF)",
+      "dependencies": [
+        "libheif"
+      ]
+    },
+    "ffmpeg": {
+      "description": "Video thumbnails via FFmpeg (NAVIGATOR_WITH_FFMPEG)",
+      "dependencies": [
+        {
+          "name": "ffmpeg",
+          "default-features": false,
+          "features": [
+            "avcodec",
+            "avformat",
+            "swscale"
+          ]
+        }
+      ]
+    },
+    "svg": {
+      "description": "SVG rendering via librsvg (NAVIGATOR_WITH_RSVG); vcpkg ships the legacy 2.40 C port, distro librsvg is preferred",
+      "dependencies": [
+        "librsvg"
+      ]
+    }
+  },
   "builtin-baseline": "5d4a3dc90c0b3773f3bac81bf41297b54328f471"
 }

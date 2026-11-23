@@ -68,6 +68,27 @@ struct AppConfig {
     // in the background. false (`--no-index`; headless smoke tests): no index thread, no index
     // file is read or written, and the flattened view always walks the disk.
     bool enable_index = true;
+
+    // Phase 6: previews and thumbnails (preview.hpp, thumbnail.hpp, preview_service.hpp;
+    // docs/architecture.md "Phase 6").
+    // Freedesktop thumbnail cache root; copied by App::create. Empty: <cache_dir>/thumbnails
+    // when cache_dir is set (tests stay inside their temporary cache dir and never share),
+    // else platform::thumbnail_cache_dir() (~/.cache/thumbnails, shared with other programs).
+    // Headless rule (as for the session and the index): with max_frames > 0 and neither
+    // thumbnail_dir nor cache_dir set, the disk cache is disabled: nothing is read from or
+    // written to ~/.cache/thumbnails and no external thumbnailer runs.
+    std::string_view thumbnail_dir;
+    // Memory budget of the preview / thumbnail result cache in bytes (features.md "cache with
+    // configurable size"; `--preview-cache-mb N`). Raised to preview::kMinCacheBudgetBytes when
+    // lower. GPU textures are budgeted separately by the ui.
+    std::uint64_t preview_cache_bytes = std::uint64_t{256} * 1024U * 1024U;
+    // false (`--no-thumbnails`): no list thumbnails, no disk-cache reads or writes, no external
+    // thumbnailers. The Inspector still decodes the inspected item in memory.
+    bool enable_thumbnails = true;
+    // false (`--no-external-thumbnailers`; tests): never run /usr/share/thumbnailers entries;
+    // built-in decoders and existing cached thumbnails still work.
+    bool enable_external_thumbnailers = true;
+    // The thumbnail fade-in follows `animations` (features.md: no fade when animations are off).
 };
 
 struct FrameStats {

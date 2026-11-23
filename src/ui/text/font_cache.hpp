@@ -65,6 +65,8 @@ public:
     void clear();
 
     [[nodiscard]] const FontFile& regular_file() const noexcept { return files_[0]; }
+    // Phase 6: the monospace face (TextStyle::mono); the UI face when none was found.
+    [[nodiscard]] const FontFile& mono_file() const noexcept { return files_[3]; }
     [[nodiscard]] const LruCache<TextLayout>& shape_cache() const noexcept { return layouts_; }
 
 private:
@@ -82,7 +84,9 @@ private:
                       std::string_view language);
 
     std::shared_ptr<FontLibrary> library_;
-    std::array<FontFile, 3> files_; // Regular, Medium, SemiBold
+    [[nodiscard]] const FontFile& file_for(const TextStyle& style) const noexcept;
+
+    std::array<FontFile, 4> files_; // Regular, Medium, SemiBold, Monospace (Phase 6)
     std::array<std::unique_ptr<FontFallback>, 3> fallbacks_;
     std::array<bool, 3> fallback_tried_{};
     std::vector<Slot> fonts_;

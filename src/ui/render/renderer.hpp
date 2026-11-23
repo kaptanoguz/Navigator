@@ -49,6 +49,26 @@ public:
 
     void draw_texture(SDL_Texture* texture, const RectF& dst, float alpha = 1.0F);
 
+    // Phase 6 images (previews, thumbnails): premultiplied RGBA8 textures (byte order R, G, B, A;
+    // preview::ImageBuffer). create_image_texture returns nullptr on failure (SDL_GetError()).
+    [[nodiscard]] SDL_Texture* create_image_texture(int width, int height) const;
+    // Uploads rows [y, y + rows) from `pixels` (`pitch` bytes per row).
+    bool update_image_texture(SDL_Texture* texture, int y, int rows, const void* pixels,
+                              int pitch) const;
+    static void destroy_texture(SDL_Texture* texture) noexcept;
+    // Largest texture side the renderer accepts (0: unknown).
+    [[nodiscard]] int max_texture_size() const noexcept;
+    // Draws an image texture into `dst` (px), optionally from `src` (texture px). `alpha` fades
+    // a premultiplied texture correctly (colour and alpha scaled together); `nearest` samples
+    // without filtering (magnified pixels, the 1:1 pixel grid).
+    void draw_image(SDL_Texture* texture, const RectF& dst, float alpha, bool nearest,
+                    const std::optional<RectF>& src = std::nullopt);
+    // The whole image texture clipped to a rounded rectangle with an anti-aliased edge
+    // (thumbnails). `dst` is where the texture lands; the rounded shape is `dst` itself. `uv`
+    // selects the part of the texture (0..1 coordinates; a centre crop for extreme aspects).
+    void draw_image_rounded(SDL_Texture* texture, const RectF& dst, float radius, float alpha,
+                            const RectF& uv = RectF{0.0F, 0.0F, 1.0F, 1.0F});
+
     // Anti-aliased line segment from (x0, y0) to (x1, y1), `thickness` px, round caps.
     void stroke_line(float x0, float y0, float x1, float y1, float thickness, const Color& color);
 

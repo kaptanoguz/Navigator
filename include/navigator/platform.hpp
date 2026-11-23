@@ -1,7 +1,9 @@
 // navigator/platform.hpp
 //
 // Purpose: desktop integration: open with default app, trash, MIME lookup, terminal, XDG dirs
-//          (base dirs, user dirs from user-dirs.dirs), passwd home lookup.
+//          (base dirs, user dirs from user-dirs.dirs), passwd home lookup; Phase 6: thumbnail
+//          cache root, XDG data dirs, $PATH lookup, and a bounded child-process runner for
+//          external thumbnailers (IProcessRunner).
 //          Backends (GIO, portals, xdg-open, ...) stay inside src/platform; none leak here.
 //          Pure MIME guessing and Type-column labels live in navigator/mime.hpp.
 // Owner:   contracts (header); implementation in src/platform (role: platform).
@@ -12,7 +14,11 @@
 // Errors:  navigator::Result (types.hpp). No exceptions escape these functions.
 #pragma once
 
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -187,5 +193,109 @@ struct UserDirs {
 // Errors: InvalidArgument (empty name or one containing '/' or NUL), NotFound (no such user, or
 // the entry has an empty or relative home), PlatformError (NSS failure), OutOfMemory.
 [[nodiscard]] Result<Path> user_home(std::string_view user_name);
+
+// ---------------------------------------------------------------------------------------------
+// Phase 6: thumbnail cache location, data dirs, program lookup, bounded child processes
+// ---------------------------------------------------------------------------------------------
+
+// Freedesktop thumbnail cache root: user_dir(Cache) / "thumbnails" (~/.cache/thumbnails,
+// honours $XDG_CACHE_HOME). Shared with every other program that follows the Thumbnail
+// Managing Standard. Not required to exist. Errors: those of user_dir(Cache).
+// AppConfig::thumbnail_dir / cache_dir override it in the app (docs/architecture.md "Phase 6").
+[[nodiscard]] Result<Path> thumbnail_cache_dir();
+
+// XDG data directories in precedence order: $XDG_DATA_HOME if absolute (else Home/.local/share),
+// then each absolute entry of $XDG_DATA_DIRS (':'-separated; unset or empty:
+// "/usr/local/share:/usr/share"), relative entries skipped, duplicates (lexically normal) kept
+// once at their first position. Read on every call (no caching). Not required to exist.
+// Errors: those of user_dir(Home).
+[[nodiscard]] Result<std::vector<Path>> data_dirs();
+
+// $PATH lookup with execvp rules: a name containing '/' is checked as is; otherwise each
+// $PATH entry (empty entries = current directory, unset PATH = confstr(_CS_PATH)) is tried for
+// a regular file with an execute bit for the effective user (access X_OK). Blocking (stat).
+// Errors: InvalidArgument (empty name or a NUL byte), NotFound.
+[[nodiscard]] Result<Path> find_program(std::string_view name);
+
+// A child process that Navigator waits for (external thumbnailers), unlike LaunchRequest which
+// is detached. Never through a shell: argv is passed verbatim to execvp.
+struct ProcessRequest {
+    std::vector<std::string> argv; // argv[0] looked up as find_program() does
+    Path working_dir;              // empty: inherit
+    // Wall-clock limit; when it passes, the whole process group gets SIGKILL and the result says
+    // timed_out. Must be > 0.
+    std::chrono::milliseconds timeout{10'000};
+    // stdout and stderr are each captured up to this many bytes; the rest is read and discarded
+    // (the child never blocks on a full pipe) and output_truncated is set.
+    std::size_t max_capture_bytes = std::size_t{64} * 1024U;
+    // Best-effort resource limits set in the child before exec (setrlimit). 0: unchanged.
+    std::uint64_t address_space_bytes = 0; // RLIMIT_AS
+    std::chrono::seconds cpu_time{0};      // RLIMIT_CPU
+    std::uint64_t max_file_bytes = 0;      // RLIMIT_FSIZE (largest file the child may write)
+    // Sandbox (best effort): when true and `bwrap` (bubblewrap) is found by find_program, the
+    // child runs as bwrap --unshare-all --die-with-parent --new-session --clearenv (PATH, HOME,
+    // LANG, LC_ALL kept) with read-only binds of /usr, /etc, /lib*, /bin, /sbin (as present),
+    // --proc /proc, --dev /dev, --tmpfs /tmp, plus read_only_paths (--ro-bind) and
+    // writable_paths (--bind), like GNOME's thumbnailer sandbox. Without bwrap the child runs
+    // unsandboxed with the limits above and ProcessResult::sandboxed is false. Each runner probes
+    // bwrap once (a trivial program with the same namespace flags); if the probe fails (e.g. user
+    // namespaces disabled), sandboxed requests run unsandboxed with sandboxed == false. After a
+    // successful probe a bwrap failure is a non-zero exit like any other and is not retried.
+    bool sandbox = false;
+    std::vector<Path> read_only_paths;
+    std::vector<Path> writable_paths;
+};
+
+struct ProcessResult {
+    int exit_code = -1;  // WEXITSTATUS when the child exited normally, else -1
+    int term_signal = 0; // WTERMSIG when it was killed by a signal (incl. our SIGKILL), else 0
+    bool timed_out = false;
+    bool sandboxed = false;
+    bool output_truncated = false;
+    std::string stdout_text; // raw bytes
+    std::string stderr_text; // raw bytes (logged by callers, never shown untranslated)
+    std::chrono::milliseconds elapsed{0};
+
+    [[nodiscard]] bool succeeded() const noexcept {
+        return !timed_out && term_signal == 0 && exit_code == 0;
+    }
+};
+
+// Runs a child to completion with a timeout. Production code uses
+// create_default_process_runner(); tests inject a fake (tests/preview never spawns
+// thumbnailers).
+//
+// Contract of run() for every implementation:
+//   - Blocks the calling (worker) thread until the child is reaped. Never call it on the UI
+//     thread.
+//   - The child: stdin is /dev/null; stdout/stderr are pipes read by run(); no other inherited
+//     fds (close-on-exec / close_range); its own process group (setpgid) so a kill reaches its
+//     children; default signal dispositions and mask; Navigator's environment unless
+//     sandboxed; SIGKILL if Navigator dies (PR_SET_PDEATHSIG, best effort).
+//   - On timeout or when `stop` fires: SIGKILL to the process group, then reap. Timeout is a
+//     success with timed_out = true; stop is Cancelled.
+//   - Never leaves a zombie or a running child behind when it returns.
+// Errors: InvalidArgument (empty argv / argv[0], NUL in an argument, timeout <= 0), NotFound
+// (argv[0] not found or not executable), Cancelled, PlatformError (pipe/fork/spawn failure;
+// message carries strerror text), OutOfMemory.
+//
+// Thread-safety: the default runner's only mutable state is the cached bwrap probe result,
+// guarded by a mutex; run() may be called concurrently from several workers. Fakes document their
+// own rule.
+class IProcessRunner {
+public:
+    IProcessRunner() = default;
+    virtual ~IProcessRunner() = default;
+    IProcessRunner(const IProcessRunner&) = delete;
+    IProcessRunner& operator=(const IProcessRunner&) = delete;
+    IProcessRunner(IProcessRunner&&) = delete;
+    IProcessRunner& operator=(IProcessRunner&&) = delete;
+
+    [[nodiscard]] virtual Result<ProcessResult> run(const ProcessRequest& request,
+                                                    std::stop_token stop) = 0;
+};
+
+// Errors: OutOfMemory.
+[[nodiscard]] Result<std::unique_ptr<IProcessRunner>> create_default_process_runner();
 
 } // namespace navigator::platform

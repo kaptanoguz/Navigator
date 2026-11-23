@@ -353,6 +353,7 @@ BrowserFrame WorkspaceView::browser_frame(const ShellFrame& f, const Strip& s, l
             f.bookmarks != nullptr && m.loaded() && f.bookmarks->contains(m.current_dir()),
         .filter_focused = filter_focused && f.focused,
         .index_status = std::move(index),
+        .thumbnails = f.thumbnails,
     };
 }
 
@@ -483,6 +484,9 @@ void WorkspaceView::draw(const ShellFrame& f) {
         }
     }
 
+    if (f.draw_inspector) {
+        f.draw_inspector();
+    }
     if (f.draw_sidebar_overlay) {
         f.draw_sidebar_overlay();
     }
