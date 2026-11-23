@@ -208,3 +208,4 @@ video playback, see "Inspector (preview)"):
 | Video poster frame as list thumbnail and in the Inspector (FFmpeg libraries when built with them, otherwise the system's Freedesktop `.thumbnailer` entries such as ffmpegthumbnailer, sandboxed and time-limited) | 6 |
 | Video metadata in the Inspector: duration, resolution, frame rate, video and audio codecs, audio channels, container (FFmpeg builds) | 6 |
 | "Play" button on the video poster opens the default player (`xdg-open`); no in-app playback | 6 |
+| Page/first-page preview for other types (PDF, office documents, e-books, TIFF, RAW, …) through the system's Freedesktop `.thumbnailer` entries, shown as a "page preview" without image metadata; built-in PDF rendering remains future work | 6 |
