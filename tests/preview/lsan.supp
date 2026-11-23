@@ -1,0 +1,4 @@
+# LeakSanitizer suppressions for navigator_preview_tests: leaks inside third-party
+# encoders used only to generate fixtures (libx265 through libheif keeps an encoder
+# allocation alive after heif_encoder_release).
+leak:libx265.so
