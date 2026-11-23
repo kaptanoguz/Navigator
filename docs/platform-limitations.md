@@ -1,9 +1,10 @@
-# Platform limitations (Phases 1-6)
+# Platform limitations (Phases 1-7)
 
 Owner: platform (`src/platform`). This page lists what the Linux watch and volume backends
 cannot see or do. Users and later phases should rely on these limits being real, not on them
 being worked around. Contracts: `include/navigator/watch.hpp`, `include/navigator/volume.hpp`,
-`include/navigator/platform.hpp`, `include/navigator/mime.hpp`.
+`include/navigator/platform.hpp`, `include/navigator/mime.hpp`, `include/navigator/trash.hpp`,
+`include/navigator/transfer.hpp`.
 
 ## Directory watching (inotify)
 
@@ -198,3 +199,58 @@ being worked around. Contracts: `include/navigator/watch.hpp`, `include/navigato
 - **Tests.** `tests/platform` runs the real bwrap only when the probe succeeds on the machine
   (`[bwrap]` tests skip otherwise). Argument construction and the fallback are always tested with
   fake `bwrap` scripts.
+
+## Trash (Phase 7, `trash.hpp`)
+
+- **Same filesystem only.** An item goes to the trash on its own filesystem or nowhere
+  (`Unsupported`). The spec would allow copying it into the home trash; Navigator never does.
+  The ui then offers the separate, confirmed permanent delete.
+- **Which filesystem.** The home trash is used when the item's `st_dev` equals that of the home
+  trash (or of its nearest existing parent while it does not exist yet). Otherwise the topdir
+  is the mount point from the mount table (`volume_for`; a directory is looked up by itself, any
+  other item by its parent, never through a symlink), and it must have the item's `st_dev`. Bind
+  mounts of the same filesystem therefore share one trash per mount point, and a bind-mounted
+  subtree gets its own `.Trash-$uid` at the bind's mount point.
+- **Per-volume trash checks.** `$topdir/.Trash` counts only as a real directory (not a symlink)
+  with the sticky bit. `.Trash/$uid` must be a directory owned by the uid and writable; if it is
+  a symlink, foreign, or cannot be created, method (2) `.Trash-$uid` is used. An existing
+  `.Trash-$uid` that is a symlink, not a directory or foreign makes the volume `Unsupported`; it
+  is never repaired or replaced. `files/` and `info/` are opened with `O_NOFOLLOW`.
+- **Ownership on vfat / exfat / NTFS.** These filesystems report the mount's `uid=` option as the
+  owner of every file. A stick mounted for another user, or with `uid=0`, fails the owner check
+  and is `Unsupported`. udisks mounts use the logged-in user's uid, so they work.
+- **Read-only volumes** report `ReadOnlyFilesystem` (from `statvfs` or the mount table) before
+  anything is created.
+- **Race-free names.** `info/<name>.trashinfo` is reserved with `O_EXCL` before the rename, and
+  `files/<name>` is filled with `renameat2(RENAME_NOREPLACE)`. A `files/` entry without an info
+  file (left by another program) makes Navigator try the next name. Filesystems without
+  `RENAME_NOREPLACE` (some FUSE filesystems) fall back to check-then-rename. A program that
+  writes `files/<name>` without reserving the info file first can still race there.
+- **Long names** are cut at a UTF-8 code point boundary so that `<name>.trashinfo` fits 255
+  bytes. `Path=` always keeps the full original name.
+- **No `directorysizes`.** It is neither read nor written. Other programs re-validate its entries,
+  so a missing entry only costs them a tree walk.
+- **Identity on restore** is `(st_dev, st_ino)`. If another program empties the trash and a new
+  file reuses that inode under the same trash name, Navigator cannot tell the two apart.
+- **Info file left after a restore.** If the info file cannot be removed after a successful
+  restore, the restore still succeeds. The stale info file is then an orphan, and `list()` skips it.
+- **Listing** skips info files larger than 64 KiB, info files that are not regular files,
+  unparsable ones, relative `Path=` values in the home trash, values that escape their topdir,
+  and `files/` entries without an info file. They are counted as `orphans` and never deleted.
+- **Interop checks.** The tests run `gio trash` (local VFS, `HOME` and `XDG_DATA_HOME` inside a
+  fixture) and compare GIO's `.trashinfo` with Navigator's byte for byte, apart from the date.
+  The reverse direction (`gio trash --list` reading Navigator's files) cannot be pointed at a
+  fixture: `trash:///` needs `gvfsd-trash`, which serves the session's real trash. It is
+  therefore not automated. Nautilus and KDE formats are covered by fixture files.
+- **GVfs locations** (`sftp://`, `smb://` through GVfs, `trash://`) are not handled (Phase 10).
+
+## Clipboard formats (Phase 7, `transfer.hpp`)
+
+- **Pure code.** The functions only build and parse bytes. Ownership of the clipboard, and its
+  loss when another program copies, belong to the ui (SDL).
+- **Text form.** `text/plain` carries the paths only when every path is valid UTF-8 and has no
+  newline. Otherwise it carries the URIs, so a pasted name is never split or garbled.
+- **Remote URIs** (`sftp://`, `smb://`, `file://otherhost/`) on the clipboard are reported but
+  not pasted. Plain-text paths are never treated as files.
+- **`file:/path`** (RFC 8089 without an authority, as some KDE tools write) is accepted when
+  reading. Navigator itself always writes `file:///path`.

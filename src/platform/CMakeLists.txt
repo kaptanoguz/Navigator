@@ -1,6 +1,6 @@
 # navigator_platform (owner: platform): Linux integration behind include/navigator/watch.hpp,
-# volume.hpp, platform.hpp and mime.hpp. Only libc/Linux syscalls (inotify, poll, statvfs, fork/
-# exec, /proc, /sys, /dev); no GIO/GVfs, SDL or src/core internals.
+# volume.hpp, platform.hpp, mime.hpp, trash.hpp and transfer.hpp. Only libc/Linux syscalls
+# (inotify, poll, statvfs, fork/exec, rename, /proc, /sys, /dev); no GIO/GVfs, SDL or src/core.
 # Internal headers in this directory are seams for tests/platform.
 
 add_library(navigator_platform STATIC
@@ -11,6 +11,9 @@ add_library(navigator_platform STATIC
     mime.cpp
     mountinfo.cpp
     process_runner.cpp
+    transfer.cpp
+    trash.cpp
+    trash_format.cpp
     program_dirs.cpp
     proc_mount_source.cpp
     user_dirs.cpp

@@ -29,6 +29,7 @@ using navigator::Result;
 using navigator::platform::IAppLauncher;
 using navigator::platform::LaunchRequest;
 using navigator::platform::UserDir;
+using navigator::platform_test::ScopedEnv;
 using navigator::platform_test::TempDir;
 using navigator::platform_test::write_file;
 namespace stdfs = std::filesystem;
@@ -341,6 +342,14 @@ TEST_CASE("user_dir: XDG user directories from $XDG_CONFIG_HOME/user-dirs.dirs",
 }
 
 TEST_CASE("later-phase stubs fail with Unsupported", "[stubs]") {
-    CHECK(platform::move_to_trash("/nonexistent").error().code == ErrorCode::Unsupported);
     CHECK(platform::open_terminal("/").error().code == ErrorCode::Unsupported);
+}
+
+TEST_CASE("move_to_trash of a missing path is NotFound and creates nothing", "[trash]") {
+    // Phase 7: move_to_trash is the trash.hpp wrapper (trash_test.cpp covers it fully). The
+    // home trash is pointed into a fixture so the real ~/.local/share/Trash is never touched.
+    TempDir dir;
+    ScopedEnv data("XDG_DATA_HOME", (dir / "xdg").native());
+    CHECK(platform::move_to_trash(dir / "nonexistent").error().code == ErrorCode::NotFound);
+    CHECK_FALSE(stdfs::exists(dir / "xdg"));
 }
