@@ -52,6 +52,15 @@ FilterKey route_filter_key(const KeyChord& chord, bool has_selection) noexcept {
     }
 }
 
+std::string_view scope_label_key(SearchScope scope) noexcept {
+    switch (scope) {
+    case SearchScope::Folder: return {};
+    case SearchScope::Subfolders: return "filter.scope_subfolders";
+    case SearchScope::Drive: return "filter.scope_drive";
+    }
+    return {};
+}
+
 FieldEscape filter_field_escape(bool search_running, bool has_text) noexcept {
     if (search_running) {
         return FieldEscape::CancelSearch;

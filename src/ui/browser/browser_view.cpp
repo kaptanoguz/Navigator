@@ -291,6 +291,7 @@ void BrowserView::draw(const BrowserFrame& f) {
     }
 
     draw_status(f, l);
+    draw_tooltip(f);
     if (f.pointer.released) {
         active_ = WidgetId::None;
     }
@@ -632,8 +633,7 @@ void BrowserView::draw_rows(const BrowserFrame& f, const Layout& l) {
         float name_room = l.name_r - l.text_x;
         std::string parent;
         if (l.inline_parent) {
-            // Relative to the root here: repeating the root on every row would be noise.
-            parent = m.flatten_is_volume() ? folder_text(f, i) : display_name(m.row_parent(i));
+            parent = folder_text(f, i);
             const float natural = p.shape(type::row, name).width();
             name_room = std::min(name_room, std::max(natural, name_room * 0.6F));
         }

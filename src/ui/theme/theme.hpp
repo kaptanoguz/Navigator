@@ -101,6 +101,8 @@ struct Palette {
     Color match;
     Color chip;      // the filter count chip / active toggles: translucent accent fill
     Color chip_text; // text on `chip` over the chrome background; >= 4.5:1
+    // Outline of an unchecked checkbox (a control state: >= 3:1 on popups and surfaces).
+    Color control_border;
 };
 
 [[nodiscard]] const Palette& palette(Theme theme) noexcept;

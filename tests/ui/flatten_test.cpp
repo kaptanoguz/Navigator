@@ -10,6 +10,7 @@
 #include <navigator/platform.hpp>
 
 #include "bench_fixture.hpp"
+#include "search/filter_rules.hpp"
 #include "search_test_util.hpp"
 #include "ui_fixture.hpp"
 
@@ -339,6 +340,33 @@ TEST_CASE("An index refresh keeps cursor and selection by path", "[flatten][inde
     CHECK(m.row_parent(m.cursor()) == "b");
     CHECK(m.selected_count() == 1);
     CHECK(m.is_selected(m.cursor()));
+}
+
+TEST_CASE("A drive search keeps its scope through typing and refreshes", "[flatten][scope]") {
+    TempDir t;
+    auto index = std::make_shared<FakeIndex>(t.path());
+    index->set_names({"a/report.txt", "zebra.txt"});
+    BrowserModel::Options o;
+    o.index_debounce = std::chrono::milliseconds(0);
+    BrowserModel m(std::move(o));
+    open_listed(m, t.path());
+    m.flatten(FlattenRequest{t.path(), true, index});
+    REQUIRE(m.settle_search(kSearchWait));
+    const auto scope = [&] { return search_scope(m.flattened(), m.flatten_is_volume()); };
+    CHECK(scope() == SearchScope::Drive);
+    m.set_filter_text("r");
+    m.set_filter_text("rep");
+    REQUIRE(m.settle_search(kSearchWait));
+    CHECK(scope() == SearchScope::Drive);
+    index->set_names({"a/report.txt", "b/report.txt"});
+    REQUIRE(pump_until(m, [&] { return m.row_count() == 2; }));
+    CHECK(scope() == SearchScope::Drive);
+    m.leave_flatten();
+    CHECK(scope() == SearchScope::Folder);
+    m.flatten(FlattenRequest{});
+    CHECK(scope() == SearchScope::Subfolders);
+    m.set_filter_text("x");
+    CHECK(scope() == SearchScope::Subfolders);
 }
 
 TEST_CASE("The acceptance tree is parents-first and exactly N entries", "[flatten][fixture]") {

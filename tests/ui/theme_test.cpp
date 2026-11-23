@@ -191,6 +191,16 @@ TEST_CASE("Inactive panes differ visibly from the active one in both themes", "[
     }
 }
 
+TEST_CASE("Unchecked checkboxes read as controls (3:1)", "[theme]") {
+    for (const Theme t : {Theme::Dark, Theme::Light}) {
+        const Palette& p = palette(t);
+        INFO((t == Theme::Dark ? "dark" : "light"));
+        CHECK(contrast_ratio(p.control_border, p.surface_raised) >= 3.0F); // the types popup
+        CHECK(contrast_ratio(p.control_border, p.surface) >= 3.0F);
+        CHECK(contrast_ratio(p.control_border, p.background) >= 3.0F);
+    }
+}
+
 TEST_CASE("Phase 5 match highlight and filter chip stay AA everywhere they are drawn", "[theme]") {
     const auto over = [](const Color& base, const Color& overlay) {
         const float a = overlay.a;

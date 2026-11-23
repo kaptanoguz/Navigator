@@ -13,6 +13,7 @@
 #include "browser/format.hpp"
 #include "i18n/catalog.hpp"
 #include "input/sdl_input.hpp"
+#include "search/filter_rules.hpp"
 #include "search/highlight_map.hpp"
 #include "search/index_status.hpp"
 #include "widgets/icons.hpp"
@@ -67,8 +68,11 @@ bool BrowserView::toggle_button(const BrowserFrame& f, const RectF& rect, Widget
     const float t = std::max(1.0F, p.px(1.35F));
     const float ix =
         badge.empty() ? std::round(rect.center_x() - (0.5F * sz)) : std::round(rect.x + p.px(7.5F));
-    draw_line_icon(r, icon == 0 ? LineIcon::Funnel : LineIcon::Flatten, ix,
-                   std::round(rect.center_y() - (0.5F * sz)), sz, t, ink, pal.background);
+    const LineIcon glyph = icon == 0   ? LineIcon::Funnel
+                           : icon == 2 ? LineIcon::Drive // the whole-drive variant of flatten
+                                       : LineIcon::Flatten;
+    draw_line_icon(r, glyph, ix, std::round(rect.center_y() - (0.5F * sz)), sz, t, ink,
+                   pal.background);
     if (!badge.empty()) {
         const ShapedText b = p.shape(type::keycap, badge);
         p.draw(b, ix + sz + std::round(p.px(4.0F)),
@@ -123,9 +127,33 @@ void BrowserView::draw_filter_field(const BrowserFrame& f, const RectF& area, bo
                               inside ? pal.keycap_border : pal.keycap_border.with_alpha(0.55F));
     }
     const float mid = box.center_y();
-    const float glyph_x = box.x + std::round(p.px(13.0F));
-    draw_search_glyph(r, glyph_x, mid - p.px(0.5F), p.px(4.6F), std::max(1.0F, p.px(1.4F)),
-                      has_text || focused ? pal.accent : pal.text_muted, fill);
+    float glyph_x = box.x + std::round(p.px(13.0F));
+    const SearchScope scope = search_scope(m.flattened(), m.flatten_is_volume());
+    if (scope == SearchScope::Folder) {
+        draw_search_glyph(r, glyph_x, mid - p.px(0.5F), p.px(4.6F), std::max(1.0F, p.px(1.4F)),
+                          has_text || focused ? pal.accent : pal.text_muted, fill);
+    } else {
+        // Scope chip (design review B1): stays while typing. Drive is a solid accent pill with
+        // the drive glyph, subfolders the quiet translucent chip; narrow fields keep the glyph.
+        const bool drive = scope == SearchScope::Drive;
+        const ShapedText label = p.shape(type::keycap, tr(scope_label_key(scope)));
+        const float ch = std::round(p.px(20.0F));
+        const float icon = std::round(p.px(12.0F));
+        const bool with_label = box.w >= p.px(200.0F);
+        const float cw =
+            std::round(icon + p.px(12.0F) + (with_label ? label.width() + p.px(5.0F) : 0.0F));
+        const RectF chip = snap(RectF{box.x + std::round(p.px(4.0F)), mid - (0.5F * ch), cw, ch});
+        r.fill_rounded_rect(chip, p.px(radius::sm), drive ? pal.accent : pal.chip);
+        const Color ink = drive ? pal.on_accent : pal.chip_text;
+        draw_line_icon(r, drive ? LineIcon::Drive : LineIcon::Flatten,
+                       chip.x + std::round(p.px(6.0F)), std::round(mid - (0.5F * icon)), icon,
+                       std::max(1.0F, p.px(1.2F)), ink, drive ? pal.accent : fill);
+        if (with_label) {
+            p.draw(label, chip.x + std::round(p.px(6.0F)) + icon + std::round(p.px(5.0F)),
+                   std::round(mid + (0.5F * label.cap_height())), ink);
+        }
+        glyph_x = chip.right() + std::round(p.px(-3.0F));
+    }
 
     // Right-hand contents, right to left.
     float right = box.right() - std::round(p.px(5.0F));
@@ -200,11 +228,14 @@ void BrowserView::draw_filter_field(const BrowserFrame& f, const RectF& area, bo
             }
             if (in_mode) {
                 r.fill_rounded_rect(mr, p.px(radius::sm), pal.control_hover);
+                // The mode in words on hover (design review O6), drawn after the list.
+                tooltip_text_ = std::string(tr(fuzzy ? "filter.fuzzy_on" : "filter.fuzzy_off"));
+                tooltip_anchor_ = mr;
             }
             const ShapedText g = p.shape(type::numeric, "\xE2\x89\x88"); // U+2248
             p.draw(g, std::round(mr.center_x() - (0.5F * g.width())),
                    std::round(mr.center_y() + (0.5F * g.cap_height())),
-                   fuzzy ? pal.chip_text : (in_mode ? pal.text_primary : pal.text_muted));
+                   fuzzy ? pal.chip_text : (in_mode ? pal.text_primary : pal.text_secondary));
             right = mode.x - std::round(p.px(3.0F));
         }
     } else if (box.w >= p.px(170.0F)) {
@@ -230,11 +261,9 @@ void BrowserView::draw_filter_field(const BrowserFrame& f, const RectF& area, bo
         f.queue.enqueue(CommandId::FocusFilter);
     }
 
-    std::string_view placeholder = "filter.placeholder";
-    if (m.flattened()) {
-        placeholder =
-            m.flatten_progress().volume ? "filter.placeholder_volume" : "filter.placeholder_flat";
-    }
+    // The scope chip names what is searched; the placeholder only invites typing.
+    const std::string_view placeholder =
+        m.flattened() ? std::string_view("filter.placeholder_search") : "filter.placeholder";
     TextFieldStyle st;
     st.text = &type::row;
     st.caret_height_dp = 15.0F;
@@ -269,12 +298,10 @@ void BrowserView::draw_progress(const BrowserFrame& f, const Layout& l) const {
         return;
     }
     const FlattenProgress prog = m.flatten_progress();
-    std::optional<float> fraction;
-    if (prog.volume && f.index_status && f.index_status->state == search::IndexState::Scanning) {
-        fraction = index_scan_fraction(*f.index_status);
-    }
+    // Walks and index queries are indeterminate; an index-backed view only queries a ready
+    // index, so the bar never shows the index's own scan (one engine at a time).
     const bool running = prog.walking || prog.organizing;
-    if (!running && !fraction) {
+    if (!running) {
         return;
     }
     const Painter& p = f.painter;
@@ -284,11 +311,6 @@ void BrowserView::draw_progress(const BrowserFrame& f, const Layout& l) const {
     const RectF track = snap(RectF{l.panel.x + rad, l.panel.y + std::max(1.0F, p.px(1.0F)),
                                    l.panel.w - (2.0F * rad), h});
     r.fill_rounded_rect(track, 0.5F * h, f.palette.accent.with_alpha(0.14F));
-    if (fraction && !running) {
-        r.fill_rounded_rect(RectF{track.x, track.y, std::round(track.w * *fraction), h}, 0.5F * h,
-                            f.palette.accent);
-        return;
-    }
     // Indeterminate: a segment eases across the track (never modal: the list stays usable).
     // Without animations the segment rests in view.
     const double t = f.animations ? std::fmod(spin_ms_ / 1300.0, 1.0) : 0.45;
@@ -417,7 +439,8 @@ float BrowserView::draw_search_status(const BrowserFrame& f, const Layout& l, fl
              pal.text_primary);
         types_part();
         if (!m.show_hidden() && m.hidden_count() > 0) {
-            part(tr_count("status.hidden", m.hidden_count()), pal.text_secondary);
+            // Next to "1 type hidden": say which kind of hidden (design review O7).
+            part(tr_count("status.hidden_files", m.hidden_count()), pal.text_secondary);
         }
         return x - start;
     }
@@ -453,8 +476,9 @@ float BrowserView::draw_search_status(const BrowserFrame& f, const Layout& l, fl
     } else if (prog.cancelled) {
         part(std::string(tr("status.search_stopped")), pal.text_secondary);
     }
-    // Whole-volume searches say where the index stands (loading, scanning %, ready).
-    if (prog.volume && f.index_status) {
+    // Only an index-backed view talks about the index; a walk talks about folders (design
+    // review O2: one engine at a time).
+    if (prog.from_index && f.index_status) {
         const IndexStatusView iv = present_index_status(*f.index_status);
         const Color ink = iv.tone == IndexTone::Problem ? pal.danger
                           : iv.tone == IndexTone::Ready ? pal.text_secondary
@@ -469,8 +493,10 @@ float BrowserView::draw_search_status(const BrowserFrame& f, const Layout& l, fl
     }
     types_part();
     if (running) {
-        part(std::string(tr(prog.from_index ? "status.querying" : "status.searching")),
-             pal.text_secondary);
+        const std::string_view key = prog.from_index ? "status.querying"
+                                     : prog.volume   ? "status.listing_drive"
+                                                     : "status.searching";
+        part(std::string(tr(key)), pal.text_secondary);
     }
     // Stop button (search.cancel) while something runs.
     if (running) {
@@ -536,22 +562,46 @@ BrowserView::name_highlights(const BrowserFrame& f, const std::string& raw,
 }
 
 std::string BrowserView::folder_text(const BrowserFrame& f, std::size_t row) const {
-    // The containing folder, starting at the flattened root's name, so every row reads the same
-    // way ("Documents/Notes"; top-level rows: "Documents").
+    // Subfolder searches: the folder relative to the root, empty for rows directly in it, so
+    // the subfolder paths stand out (design review O4). Drive searches: absolute, with "~" for
+    // the home folder (O3). Copy path and activation use the full path (row_path).
     const BrowserModel& m = f.model;
-    const Path& root = m.flatten_root();
-    // A whole-volume search shows absolute folders: the mount point's name alone says little.
-    std::string label = !root.has_filename()    ? std::string("/")
-                        : m.flatten_is_volume() ? display_name(root.string())
-                                                : display_name(root.filename().string());
     const std::string_view parent = m.row_parent(row);
-    if (!parent.empty()) {
-        if (label != "/") {
-            label += '/';
-        }
-        label += display_name(parent);
+    if (!m.flatten_is_volume()) {
+        return parent.empty() ? std::string() : display_name(parent);
     }
-    return label;
+    Path folder = m.flatten_root();
+    if (!parent.empty()) {
+        folder /= Path(std::string(parent));
+    }
+    if (f.home != nullptr && !f.home->empty() && *f.home != f.home->root_path()) {
+        const Path rel = folder.lexically_relative(*f.home);
+        if (!rel.empty() && *rel.begin() != "..") {
+            return rel == "." ? std::string("~") : "~/" + display_name(rel.string());
+        }
+    }
+    return display_name(folder.string());
+}
+
+void BrowserView::draw_tooltip(const BrowserFrame& f) {
+    if (tooltip_text_.empty()) {
+        return;
+    }
+    const Painter& p = f.painter;
+    Renderer& r = p.renderer();
+    const ShapedText t = p.shape(type::caption, tooltip_text_);
+    const float h = std::round(p.px(26.0F));
+    const float w = std::round(t.width() + p.px(20.0F));
+    float x = std::round(tooltip_anchor_.center_x() - (0.5F * w));
+    x = std::clamp(x, f.bounds.x + p.px(4.0F), f.bounds.right() - w - p.px(4.0F));
+    const RectF tip = snap(RectF{x, std::round(tooltip_anchor_.bottom() + p.px(8.0F)), w, h});
+    const float rad = std::round(p.px(radius::md - 2.0F));
+    r.drop_shadow(tip, rad, p.px(12.0F), p.px(3.0F), f.palette.shadow);
+    r.fill_rounded_rect(tip, rad, f.palette.surface_raised);
+    r.stroke_rounded_rect(tip, rad, std::max(1.0F, std::round(p.px(1.0F))), f.palette.border);
+    p.draw(t, tip.x + std::round(p.px(10.0F)), std::round(tip.center_y() + (0.5F * t.cap_height())),
+           f.palette.text_primary);
+    tooltip_text_.clear();
 }
 
 } // namespace navigator::ui

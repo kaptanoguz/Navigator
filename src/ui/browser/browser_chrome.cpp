@@ -204,7 +204,8 @@ void BrowserView::draw_top_bar(const BrowserFrame& f, const Layout& l) {
     }
     if (shown_buttons.flatten) {
         const RectF flat_btn{right - b, y, b, b};
-        if (toggle_button(f, flat_btn, WidgetId::Flatten, 1, m.flattened(), {})) {
+        if (toggle_button(f, flat_btn, WidgetId::Flatten, m.flatten_is_volume() ? 2 : 1,
+                          m.flattened(), {})) {
             f.queue.enqueue(CommandId::ToggleFlatten);
         }
         right = flat_btn.x;
@@ -314,9 +315,17 @@ void BrowserView::draw_breadcrumbs(const BrowserFrame& f, const RectF& area) {
             collapsed = true;
         }
     }
-    if (segs.size() > 1 && total() > area.w &&
-        area.w - (total() - segs.back().w) < p.px(kCrumbsMin)) {
-        segs.erase(segs.begin(), segs.end() - 1); // only the current folder fits
+    // Ancestors go before the current folder elides (design review O5): "… › Documents",
+    // then "Documents" alone; only then does the current folder's name elide.
+    if (segs.size() > 1 && total() > area.w) {
+        Seg last = segs.back();
+        segs.clear();
+        ShapedText dots = p.shape(type::crumb, "\xE2\x80\xA6");
+        segs.push_back(Seg{dots, static_cast<std::size_t>(-1), dots.width() + (2.0F * pad)});
+        segs.push_back(std::move(last));
+        if (total() > area.w) {
+            segs.erase(segs.begin()); // only the current folder
+        }
     }
     if (total() > area.w && !segs.empty()) {
         // Still too wide: elide the current folder's name.

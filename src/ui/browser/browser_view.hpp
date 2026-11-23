@@ -175,6 +175,7 @@ private:
     name_highlights(const BrowserFrame& f, const std::string& raw, const std::string& display,
                     const std::string& shown);
     [[nodiscard]] std::string folder_text(const BrowserFrame& f, std::size_t row) const;
+    void draw_tooltip(const BrowserFrame& f);
     float draw_key_hint(const BrowserFrame& f, std::string_view command, std::string_view label,
                         float center_x, float center_y, bool measure_only);
 
@@ -212,6 +213,8 @@ private:
     RectF types_rect_;
     RectF filter_rect_;
     float filter_scroll_ = 0.0F;
+    std::string tooltip_text_; // set while drawing a hovered control; drawn last, then cleared
+    RectF tooltip_anchor_;
     double spin_ms_ = 0.0;
     bool spinning_ = false;
     std::uint64_t hl_gen_ = ~std::uint64_t{0};

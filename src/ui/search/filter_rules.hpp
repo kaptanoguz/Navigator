@@ -50,6 +50,19 @@ enum class ListEscape : std::uint8_t {
 [[nodiscard]] ListEscape list_escape_step(bool notice, bool search_running, bool selection,
                                           bool flattened, bool filter_text) noexcept;
 
+// Design review Phase 5 B1: what the query searches, shown as a chip at the start of the field
+// for as long as the view is flattened (typing never hides it). Drive is styled apart: Phase 7
+// file operations act on these results.
+enum class SearchScope : std::uint8_t { Folder, Subfolders, Drive };
+[[nodiscard]] constexpr SearchScope search_scope(bool flattened, bool volume) noexcept {
+    if (!flattened) {
+        return SearchScope::Folder;
+    }
+    return volume ? SearchScope::Drive : SearchScope::Subfolders;
+}
+// Catalog key of the chip ("" for Folder: no chip).
+[[nodiscard]] std::string_view scope_label_key(SearchScope scope) noexcept;
+
 // Title bar: the filter field between the breadcrumbs and the right-hand buttons (dp).
 inline constexpr float kFilterFieldMin = 140.0F;
 inline constexpr float kFilterFieldIdeal = 224.0F;

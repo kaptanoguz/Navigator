@@ -57,6 +57,7 @@ constexpr Palette kDark{
     .match = rgb(0xA3B6FF),
     .chip = Color{0.557F, 0.651F, 1.0F, 0.16F},
     .chip_text = rgb(0xB4C3FF),
+    .control_border = rgb(0x737A8C),
 };
 
 // Light: cool paper white, ink near-black, accent deepened for contrast on white.
@@ -106,6 +107,7 @@ constexpr Palette kLight{
     .match = rgb(0x2C49B8),
     .chip = Color{0.247F, 0.388F, 0.859F, 0.12F},
     .chip_text = rgb(0x2C49B8),
+    .control_border = rgb(0x868C99),
 };
 
 } // namespace
@@ -189,6 +191,7 @@ Palette mix(const Palette& a, const Palette& b, float t) noexcept {
         .match = mix(a.match, b.match, t),
         .chip = mix(a.chip, b.chip, t),
         .chip_text = mix(a.chip_text, b.chip_text, t),
+        .control_border = mix(a.control_border, b.control_border, t),
     };
 }
 

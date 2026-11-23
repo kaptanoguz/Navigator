@@ -374,6 +374,22 @@ TEST_CASE("A narrow title bar collapses an idle filter before the breadcrumbs", 
     CHECK(layout_filter_bar(120.0F, 200.0F, true) == FilterBarLayout{120.0F, false});
 }
 
+TEST_CASE("The search scope chip names the scope and survives typing", "[filter][scope]") {
+    CHECK(search_scope(false, false) == SearchScope::Folder);
+    CHECK(search_scope(false, true) == SearchScope::Folder);
+    CHECK(search_scope(true, false) == SearchScope::Subfolders);
+    CHECK(search_scope(true, true) == SearchScope::Drive);
+    CHECK(scope_label_key(SearchScope::Folder).empty());
+    for (const SearchScope s : {SearchScope::Subfolders, SearchScope::Drive}) {
+        for (const Language lang : {Language::English, Language::Turkish}) {
+            set_language(lang);
+            CHECK(tr(scope_label_key(s)) != scope_label_key(s));
+        }
+    }
+    set_language(Language::English);
+    CHECK(tr(scope_label_key(SearchScope::Drive)) == "Drive");
+}
+
 TEST_CASE("A narrow title bar hides idle toggles before it squeezes the folder name", "[filter]") {
     CHECK(fit_title_buttons(400.0F, 30.0F, false, false, false, false) == TitleButtons{});
     // 1366px thirds next to the sidebar keep everything while the filter is idle.

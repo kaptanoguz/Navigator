@@ -42,7 +42,7 @@ void draw_checkbox(Renderer& r, const Palette& pal, const RectF& box, bool check
         }
     } else {
         r.stroke_rounded_rect(box, rad, std::max(1.0F, std::round(1.2F * scale)),
-                              pal.keycap_border);
+                              pal.control_border);
     }
 }
 
