@@ -459,7 +459,8 @@ folder"); `ops.cancel` / `ops.toggle_pause` take an `ops::OpId` value from the p
 panel (0: the most recently started unfinished operation).
 
 In the Trash view `Delete` acts as `file.delete_permanently` (with its confirmation), `Enter`
-does nothing to files (no opening from the trash), and `edit.paste`, `file.rename`,
+restores the selected items to their original location (non-destructive; items are never opened from
+the trash), and `edit.paste`, `file.rename`,
 `file.new_folder` are no-ops.
 
 ### Focus scoping (Phase 7)
@@ -477,7 +478,8 @@ typing or act on a selection that does not have focus):
 | Inspector | File commands act on the active pane's selection as usual |
 | Progress bar / operations panel | Never take keyboard focus (clicks only) |
 
-Conflict sheet keys: `Enter` = Keep both (the safe default), `Escape` = Skip, `Tab` cycles the
+Conflict sheet keys: `Enter` = Keep both (the safe default), `Escape` = Cancel operation (nothing
+further is touched; items already completed stay done and undoable), `Tab` cycles the
 buttons (Replace, Skip, Keep both, Merge for folders, Cancel operation), `Space` toggles "Apply
 to all". Permanent-delete and empty-trash sheets: focus starts on Cancel; `Escape` cancels;
 the destructive button needs `Tab` then `Enter`, or a click.

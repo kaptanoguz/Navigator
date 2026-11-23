@@ -856,9 +856,10 @@ UI thread (frame end, command handlers)              ops workers (IOperationQueu
   through SDL text input; `validate_new_name` errors are shown inline; Enter submits
   `OpKind::Rename`. A case-only rename (`a.txt` -> `A.txt`) on a case-insensitive filesystem
   is not a conflict (the engine sees the same FileId and renames through a temp name).
-- **New folder** (`Ctrl+Shift+N`): placeholder row with the translated default name
-  ("New Folder" / "Yeni Klasör") made unique with `keep_both_name`, editor open; Enter submits
-  `MakeDirectory`; Escape creates nothing.
+- **New folder** (`Ctrl+Shift+N`): as implemented, the folder is created at once with the
+  translated default name ("New folder" / "Yeni klasör") made unique with `keep_both_name`, and the
+  inline editor opens on it; Enter renames it, Escape keeps the default name (undoable like any
+  `MakeDirectory`).
 - **Conflict sheet**: Inspector-card style, not a system dialog; both sides with the Phase 6
   thumbnail (preview service, Thumbnail purpose), size, date; actions Replace (warns when
   `replace_is_permanent`, hidden when not `replace_allowed`), Skip, Keep both (editable name),
@@ -1055,3 +1056,4 @@ stubs: `fs::EntryKind`, `fs::DirEntry`, `fs::SortKey`, `fs::ListOptions`, `fs::l
   - **commands** (commands): ids 1281-1285, 1340-1349, 1360-1362 and names under "Commands"; new ranges 1340-1359 and 1360-1369; `PasteArg::{None, IntoCursorFolder}`; 12 default chords (`docs/keymap.md` "Phase 7 defaults": `Ctrl+C`, `Ctrl+X`, `Ctrl+V`, `Ctrl+Z`, `Ctrl+Shift+Z`, `Ctrl+Y`, `Delete`, `Shift+Delete`, `F2`, `Ctrl+Shift+N`, `F7`, `Shift+F7`; none conflicts with the 60 earlier chords); text fields additionally consume `Shift+Delete`, `Ctrl+Shift+Z`, `Ctrl+Y`; file commands are not routed to the pane while the sidebar or a popup has focus.
   - **features.md**: Navigator-extra rows for undo/redo, Trash view, conflict sheet, background progress, clipboard interop.
   - Known breakage until the parallel agents land: exhaustive `switch` over `CommandId` fails `-Werror=switch` (GCC 13) in `src/commands/builtin_commands.cpp` (`to_string`, line 96), `src/ui/browser/browser_model.cpp` (line 961) and `src/ui/workspace/workspace.cpp` (line 276). `tests/commands/keymap_test.cpp` (`read_keymap_doc` must learn "## Phase 7 defaults", and the expected row counts gain `phase_rows[7] == 12`) and `tests/integration/keymap_e2e_test.cpp` (Phase 7 rows) need updates by commands / qa when the chords are bound. Root `CMakeLists.txt` needs `navigator_add_subdir(src/ops)` and `navigator_add_subdir(tests/ops)` (integration).
+- Phase 7 integration: `AppConfig::trash_dir` (`--trash-dir`) added; headless `--frames` runs without it have no trash and refuse trashing/restoring/emptying (Unsupported). In the Trash view Enter restores; in the conflict sheet Escape cancels the operation; new folders are created first, then renamed inline. "Restore to…" is deferred (needs a destination field on `OpRequest`).
