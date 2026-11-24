@@ -91,7 +91,11 @@
 #include <unistd.h>
 
 #include <navigator/i18n.hpp>
+#include <navigator/keymap_file.hpp>
 #include <navigator/layout.hpp>
+#include <navigator/menu.hpp>
+#include <navigator/openwith.hpp>
+#include <navigator/palette.hpp>
 #include <navigator/path_input.hpp>
 #include <navigator/places.hpp>
 #include <navigator/platform.hpp>
@@ -107,17 +111,22 @@
 #include "dnd/file_drag.hpp"
 #include "i18n/catalog.hpp"
 #include "input/sdl_input.hpp"
+#include "input/shortcut_text.hpp"
 #include "inspector/inspector_controller.hpp"
 #include "inspector/inspector_view.hpp"
 #include "inspector/list_thumbnails.hpp"
 #include "inspector/preview_backend.hpp"
 #include "inspector/texture_cache.hpp"
 #include "inspector/thumbnail_scheduler.hpp"
+#include "keymap/keymap_editor_view.hpp"
+#include "menu/context_menu_view.hpp"
+#include "menu/openwith_popup.hpp"
 #include "ops/app_trash.hpp"
 #include "ops/clipboard.hpp"
 #include "ops/file_ops.hpp"
 #include "ops/ops_view.hpp"
 #include "ops/sdl_clipboard.hpp"
+#include "palette/palette_view.hpp"
 #include "path/copy_path.hpp"
 #include "path/path_worker.hpp"
 #include "platform/outgoing_drag.hpp"
@@ -360,6 +369,25 @@ struct App::Impl {
     ui::SaveScheduler save;
     std::uint64_t seen_persist = 0;
     Path config_root;
+    // Phase 8: user keymap, sequences, command palette, searchable context menu, Open With.
+    Keymap default_keymap;
+    KeymapFile keymap_file;
+    SequenceMatcher seq_matcher;
+    palette::History palette_history;
+    menu::Pins menu_pins;
+    bool persist_phase8 = false;
+    bool keymap_dirty = false;
+    bool history_dirty = false;
+    bool pins_dirty = false;
+    ui::PaletteOverlay palette_overlay;
+    ui::ContextMenuOverlay context_menu;
+    ui::KeymapSettingsOverlay keymap_settings;
+    ui::OpenWithOverlay openwith_overlay;
+    std::vector<Path> openwith_targets;
+    std::vector<openwith::Handler> openwith_handlers;
+    bool reset_keymap_confirm = false;
+    int reset_confirm_focus = 0; // 0 = Cancel (safe default), 1 = Reset
+    std::string seq_status_text;
     bool wayland = false;
     float content_scale = 1.0F; // X11: window size = logical size * content_scale
     bool text_input_on = false;
@@ -502,6 +530,21 @@ struct App::Impl {
     void handle_drop_event(const SDL_Event& event);
     void quit_request();
     [[nodiscard]] std::vector<ui::DropSlot>::const_iterator find_slot(std::string_view spec) const;
+    // Phase 8 helpers.
+    [[nodiscard]] bool phase8_overlay_open() const noexcept {
+        return palette_overlay.is_open() || context_menu.is_open() || keymap_settings.is_open() ||
+               openwith_overlay.is_open() || reset_keymap_confirm;
+    }
+    void rebuild_keymap_from_file();
+    [[nodiscard]] CommandContext capture_context() const;
+    void open_palette_overlay();
+    void open_context_menu_at(menu::MenuKind kind, float x, float y, const menu::Target& target);
+    void open_openwith_overlay();
+    void launch_openwith_handler(const openwith::Handler& h, const std::vector<Path>& paths,
+                                 std::string_view mime, bool set_default);
+    void apply_palette_action(const ui::PaletteAction& act);
+    void apply_menu_action(const ui::MenuAction& act);
+    void flush_phase8_files();
 };
 
 Result<void> App::Impl::init(const AppConfig& config) {
@@ -529,7 +572,7 @@ Result<void> App::Impl::init(const AppConfig& config) {
     if (auto r = register_builtin_commands(registry); !r) {
         return r;
     }
-    if (auto r = load_default_keymap(keymap); !r) {
+    if (auto r = load_default_keymap(default_keymap); !r) {
         SDL_Log("Navigator: default keymap failed to load: %s", r.error().message.c_str());
     }
 
@@ -545,6 +588,20 @@ Result<void> App::Impl::init(const AppConfig& config) {
     }
     const bool restore = config.restore_session && !headless_default && !config_root.empty();
     const bool persist = config.save_session && !headless_default && !config_root.empty();
+    persist_phase8 = persist;
+    // Phase 8: load user keymap, palette history, and menu pins from config_root (if allowed).
+    if (restore) {
+        if (auto kf = load_keymap_file(keymap_file_path(config_root), nullptr); kf) {
+            keymap_file = std::move(*kf);
+        }
+        if (auto ph = palette::load_history(palette::history_file(config_root)); ph) {
+            palette_history = std::move(*ph);
+        }
+        if (auto mp = menu::load_pins(menu::pins_file(config_root)); mp) {
+            menu_pins = std::move(*mp);
+        }
+    }
+    rebuild_keymap_from_file();
     std::optional<layout::Session> restored;
     if (restore) {
         Result<layout::Session> loaded = layout::load_session(layout::session_file(config_root));
@@ -927,9 +984,30 @@ void App::Impl::update_geometry() {
     }
 }
 
+void App::Impl::flush_phase8_files() {
+    if (!persist_phase8 || config_root.empty()) {
+        return;
+    }
+    if (keymap_dirty) {
+        keymap_dirty = false;
+        (void)save_keymap_file(keymap_file_path(config_root), keymap_file);
+    }
+    if (history_dirty) {
+        history_dirty = false;
+        (void)palette::save_history(palette::history_file(config_root), palette_history);
+    }
+    if (pins_dirty) {
+        pins_dirty = false;
+        (void)menu::save_pins(menu::pins_file(config_root), menu_pins);
+    }
+}
+
 void App::Impl::persist_tick(double t_ms) {
     if (places) {
         places->tick(t_ms);
+    }
+    if (keymap_dirty || history_dirty || pins_dirty) {
+        flush_phase8_files();
     }
     if (workspace->persist_serial() != seen_persist) {
         seen_persist = workspace->persist_serial();
@@ -944,6 +1022,7 @@ void App::Impl::persist_tick(double t_ms) {
 }
 
 void App::Impl::final_save() {
+    flush_phase8_files();
     // Phase 7: running operations stop at their next check (S9); finished items stay done.
     if (file_ops) {
         file_ops->shutdown();
@@ -1034,6 +1113,8 @@ void App::Impl::handle_event(const SDL_Event& event) {
         }
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN: {
+        seq_matcher.reset();
+        seq_status_text.clear();
         pointer.x = event.button.x * pixel_density;
         pointer.y = event.button.y * pixel_density;
         pointer.mods = ui::translate_modifiers(SDL_GetModState());
@@ -1160,6 +1241,170 @@ bool App::Impl::sheet_key(const KeyChord& chord) const {
 }
 
 void App::Impl::handle_key(const KeyChord& chord, bool repeat) {
+    // Phase 8: Reset Keymap confirmation sheet (initial focus on Cancel).
+    if (reset_keymap_confirm) {
+        dirty = true;
+        if (chord.key == Key::Escape && chord.mods == Modifiers::None) {
+            reset_keymap_confirm = false;
+            return;
+        }
+        if ((chord.key == Key::Tab || chord.key == Key::Left || chord.key == Key::Right) &&
+            (chord.mods == Modifiers::None || chord.mods == Modifiers::Shift)) {
+            reset_confirm_focus = 1 - reset_confirm_focus;
+            return;
+        }
+        if ((chord.key == Key::Enter || chord.key == Key::KeypadEnter) &&
+            chord.mods == Modifiers::None) {
+            if (reset_confirm_focus == 1 && reset_all(keymap_file)) {
+                keymap_dirty = true;
+                rebuild_keymap_from_file();
+            }
+            reset_keymap_confirm = false;
+            return;
+        }
+        return;
+    }
+    // Phase 8: Keymap Settings overlay (including shortcut capture mode).
+    if (keymap_settings.is_open()) {
+        dirty = true;
+        if (!keymap_settings.is_capturing()) {
+            if (const auto cmd = resolve_command(keymap, registry, chord);
+                cmd && (cmd->id == CommandId::OpenSettings || cmd->id == CommandId::EditKeymap)) {
+                keymap_settings.close();
+                return;
+            }
+            if (ui::TextEdit* f = keymap_settings.active_field(); f != nullptr) {
+                const ui::FieldKeyResult r = ui::apply_field_key(*f, chord, [] {
+                    std::string out;
+                    if (char* t = SDL_GetClipboardText(); t != nullptr) {
+                        out = t;
+                        SDL_free(t);
+                    }
+                    return out;
+                });
+                if (r.handled) {
+                    if (r.clipboard) {
+                        set_clipboard(*r.clipboard);
+                    }
+                    if (r.changed) {
+                        keymap_settings.search_changed();
+                    }
+                    return;
+                }
+            }
+            if (ui::field_consumes_as_text(chord)) {
+                return;
+            }
+        }
+        if (!repeat) {
+            const ui::KeymapEditorEvent ev =
+                keymap_settings.handle_key(chord, keymap_file, keymap, default_keymap, registry);
+            if (ev.keymap_dirty) {
+                keymap_dirty = true;
+                rebuild_keymap_from_file();
+            }
+            if (ev.enqueue_cmd) {
+                queue.enqueue(*ev.enqueue_cmd);
+            }
+        }
+        return;
+    }
+    // Phase 8: Command Palette overlay.
+    if (palette_overlay.is_open()) {
+        dirty = true;
+        if (const auto cmd = resolve_command(keymap, registry, chord);
+            cmd && cmd->id == CommandId::OpenPalette && !repeat) {
+            palette_overlay.close();
+            return;
+        }
+        if (ui::TextEdit* f = palette_overlay.active_field(); f != nullptr) {
+            const ui::FieldKeyResult r = ui::apply_field_key(*f, chord, [] {
+                std::string out;
+                if (char* t = SDL_GetClipboardText(); t != nullptr) {
+                    out = t;
+                    SDL_free(t);
+                }
+                return out;
+            });
+            if (r.handled) {
+                if (r.clipboard) {
+                    set_clipboard(*r.clipboard);
+                }
+                if (r.changed) {
+                    palette_overlay.query_changed(palette_history);
+                }
+                return;
+            }
+        }
+        if (ui::field_consumes_as_text(chord)) {
+            return;
+        }
+        if (const auto act = palette_overlay.handle_key(chord, palette_history)) {
+            apply_palette_action(*act);
+        }
+        return;
+    }
+    // Phase 8: Searchable Context Menu overlay.
+    if (context_menu.is_open()) {
+        dirty = true;
+        if (ui::TextEdit* f = context_menu.active_field(); f != nullptr) {
+            const ui::FieldKeyResult r = ui::apply_field_key(*f, chord, [] {
+                std::string out;
+                if (char* t = SDL_GetClipboardText(); t != nullptr) {
+                    out = t;
+                    SDL_free(t);
+                }
+                return out;
+            });
+            if (r.handled) {
+                if (r.clipboard) {
+                    set_clipboard(*r.clipboard);
+                }
+                if (r.changed) {
+                    context_menu.query_changed();
+                }
+                return;
+            }
+        }
+        if (ui::field_consumes_as_text(chord)) {
+            return;
+        }
+        if (const auto act = context_menu.handle_key(chord)) {
+            apply_menu_action(*act);
+        }
+        return;
+    }
+    // Phase 8: Open With popup overlay.
+    if (openwith_overlay.is_open()) {
+        dirty = true;
+        if (ui::TextEdit* f = openwith_overlay.active_field(); f != nullptr) {
+            const ui::FieldKeyResult r = ui::apply_field_key(*f, chord, [] {
+                std::string out;
+                if (char* t = SDL_GetClipboardText(); t != nullptr) {
+                    out = t;
+                    SDL_free(t);
+                }
+                return out;
+            });
+            if (r.handled) {
+                if (r.clipboard) {
+                    set_clipboard(*r.clipboard);
+                }
+                if (r.changed) {
+                    openwith_overlay.query_changed();
+                }
+                return;
+            }
+        }
+        if (ui::field_consumes_as_text(chord)) {
+            return;
+        }
+        if (const auto act = openwith_overlay.handle_key(chord)) {
+            launch_openwith_handler(act->handler, act->paths, act->primary_mime,
+                                    act->set_as_default);
+        }
+        return;
+    }
     // Phase 7: a conflict / confirmation / quit sheet takes Enter, Escape, Tab, Space first.
     if (sheet_key(chord)) {
         dirty = true;
@@ -1261,19 +1506,57 @@ void App::Impl::handle_key(const KeyChord& chord, bool repeat) {
             return;
         }
     }
+    // Phase 8: multi-chord key sequences (SequenceMatcher) run after focus scoping and before
+    // single-chord resolution, once per key press (no auto-repeat).
+    if (!repeat) {
+        const SequenceResult seq_res =
+            seq_matcher.feed(keymap, chord, SequenceMatcher::Clock::now());
+        if (seq_res.expired) {
+            seq_status_text.clear();
+        }
+        if (seq_res.consumed) {
+            dirty = true;
+            if (seq_res.kind == SequenceResult::Kind::Pending) {
+                seq_status_text = ui::shortcut_text(KeySequence{seq_res.sequence}) + " …";
+            } else if (seq_res.kind == SequenceResult::Kind::Match && seq_res.binding) {
+                seq_status_text.clear();
+                if (const auto cmd = to_command(registry, *seq_res.binding)) {
+                    queue.enqueue(*cmd);
+                }
+            } else if (seq_res.kind == SequenceResult::Kind::Cancelled) {
+                seq_status_text.clear();
+            } else if (seq_res.kind == SequenceResult::Kind::Aborted) {
+                seq_status_text.clear();
+                std::string msg(tr("keymap.sequence_aborted"));
+                if (const std::size_t pos = msg.find("{seq}"); pos != std::string::npos) {
+                    msg.replace(pos, 5, ui::shortcut_text(KeySequence{seq_res.sequence}));
+                }
+                toast(std::move(msg));
+            }
+            return;
+        }
+    }
     if (const auto cmd = resolve_command(keymap, registry, chord); cmd) {
         // Auto-repeat moves the cursor; it never re-fires toggles or navigation.
         if (!repeat || is_cursor_command(cmd->id)) {
             queue.enqueue(*cmd);
         }
-    } else if (!repeat && !view.popup_open() && chord == KeyChord{Key::F10, Modifiers::Shift}) {
-        // Last-resort fallback until a registered command exists: the platform convention for
-        // a context menu (Shift+F10) on the active tab.
-        view.request_tab_menu();
     }
 }
 
 ui::TextEdit* App::Impl::text_field() noexcept {
+    if (palette_overlay.is_open()) {
+        return palette_overlay.active_field();
+    }
+    if (context_menu.is_open()) {
+        return context_menu.active_field();
+    }
+    if (openwith_overlay.is_open()) {
+        return openwith_overlay.active_field();
+    }
+    if (keymap_settings.is_open()) {
+        return keymap_settings.active_field();
+    }
     if (file_ops && file_ops->sheet_kind() == ui::SheetKind::Conflict &&
         file_ops->conflict_sheet() != nullptr && file_ops->conflict_sheet()->editing_name) {
         return &file_ops->conflict_sheet()->name; // the typed Keep both name
@@ -1453,6 +1736,22 @@ void App::Impl::sync_index_volumes() {
 }
 
 void App::Impl::field_edited() {
+    if (palette_overlay.is_open()) {
+        palette_overlay.query_changed(palette_history);
+        return;
+    }
+    if (context_menu.is_open()) {
+        context_menu.query_changed();
+        return;
+    }
+    if (openwith_overlay.is_open()) {
+        openwith_overlay.query_changed();
+        return;
+    }
+    if (keymap_settings.is_open()) {
+        keymap_settings.search_changed();
+        return;
+    }
     if (file_ops->sheet_kind() == ui::SheetKind::Conflict) {
         file_ops->conflict_name_edited();
         return;
@@ -2291,6 +2590,76 @@ void App::Impl::file_command(const Command& command) {
             file_ops->request_empty_trash(trash_model->items());
         }
         return;
+    // Phase 8: command palette, settings/keymap editor, searchable context menu, Open With.
+    case CommandId::OpenPalette:
+        if (!file_ops->sheet_open()) {
+            if (palette_overlay.is_open()) {
+                palette_overlay.close();
+            } else {
+                open_palette_overlay();
+            }
+        }
+        return;
+    case CommandId::OpenSettings:
+    case CommandId::EditKeymap:
+        if (!file_ops->sheet_open()) {
+            if (keymap_settings.is_open()) {
+                keymap_settings.close();
+            } else {
+                seq_matcher.reset();
+                seq_status_text.clear();
+                palette_overlay.close();
+                context_menu.close();
+                openwith_overlay.close();
+                keymap_settings.open(registry, keymap);
+            }
+        }
+        return;
+    case CommandId::ResetKeymap:
+        if (!file_ops->sheet_open()) {
+            seq_matcher.reset();
+            seq_status_text.clear();
+            palette_overlay.close();
+            context_menu.close();
+            keymap_settings.close();
+            reset_keymap_confirm = true;
+            reset_confirm_focus = 0; // safe default: Cancel
+        }
+        return;
+    case CommandId::ExportKeymap:
+        set_clipboard(to_json(keymap_file));
+        toast(std::string(tr("keymap.export_done")));
+        return;
+    case CommandId::ShowContextMenu:
+        if (!file_ops->sheet_open() && text_field() == nullptr && !filter_focused()) {
+            menu::Target target;
+            menu::MenuKind kind = menu::MenuKind::ListBackground;
+            if (in_trash) {
+                kind = trash_model->selected_or_cursor().empty() ? menu::MenuKind::TrashBackground
+                                                                 : menu::MenuKind::TrashRow;
+            } else if (sidebar_focus && sidebar_row < sidebar_rows.size()) {
+                const ui::SidebarRow& sr = sidebar_rows[sidebar_row];
+                if (sr.kind == ui::SidebarRowKind::Bookmark) {
+                    kind = menu::MenuKind::SidebarBookmark;
+                    target.bookmark = sr.bookmark.value;
+                } else {
+                    kind = menu::MenuKind::SidebarPlace;
+                }
+            } else {
+                const ui::BrowserModel& m = workspace->active_model();
+                kind = (m.cursor_entry() != nullptr) ? menu::MenuKind::ListRow
+                                                     : menu::MenuKind::ListBackground;
+            }
+            const float ax = std::max(40.0F, window_w * 0.35F);
+            const float ay = std::max(80.0F, window_h * 0.30F);
+            open_context_menu_at(kind, ax, ay, target);
+        }
+        return;
+    case CommandId::OpenWith:
+        if (!file_ops->sheet_open() && !in_trash) {
+            open_openwith_overlay();
+        }
+        return;
     default: return;
     }
 }
@@ -2329,6 +2698,237 @@ bool App::Impl::trash_command(const Command& command) {
 void App::Impl::quit_request() {
     if (file_ops->request_quit()) {
         running = false;
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Phase 8: keymap layering, CommandContext, Palette, Context Menu, Open With
+// ---------------------------------------------------------------------------------------------
+
+void App::Impl::rebuild_keymap_from_file() {
+    if (auto km = build_keymap(keymap_file, registry, nullptr); km) {
+        keymap = std::move(*km);
+    } else {
+        keymap = default_keymap;
+    }
+    seq_matcher.set_timeout(keymap_file.sequence_timeout);
+    seq_matcher.reset();
+    seq_status_text.clear();
+    keymap_settings.refresh(registry, keymap);
+}
+
+CommandContext App::Impl::capture_context() const {
+    CommandContext ctx;
+    const bool in_trash = workspace && trash_tabs.contains(workspace->active_tab().value);
+    if (in_trash) {
+        ctx.flags |= ContextFlags::TrashView;
+        if (trash_model && !trash_model->selected_or_cursor().empty()) {
+            ctx.flags |= ContextFlags::HasSelection | ContextFlags::HasCursorRow;
+        }
+    } else if (workspace) {
+        const ui::BrowserModel& m = workspace->active_model();
+        if (m.selected_count() > 0) {
+            ctx.flags |= ContextFlags::HasSelection;
+        }
+        if (const fs::DirEntry* cur = m.cursor_entry(); cur != nullptr) {
+            ctx.flags |= ContextFlags::HasCursorRow;
+            if (fs::is_directory_like(*cur)) {
+                ctx.flags |= ContextFlags::CursorOnFolder;
+            }
+        }
+        if (m.flattened()) {
+            ctx.flags |= ContextFlags::FlattenedView;
+        }
+        if (!m.filter_edit().text().empty()) {
+            ctx.flags |= ContextFlags::FilterActive;
+        }
+        if (m.flatten_progress().walking) {
+            ctx.flags |= ContextFlags::SearchRunning;
+        }
+        if (m.can_back()) {
+            ctx.flags |= ContextFlags::CanGoBack;
+        }
+        if (m.can_forward()) {
+            ctx.flags |= ContextFlags::CanGoForward;
+        }
+    }
+    if (sidebar_focus) {
+        ctx.flags |= ContextFlags::SidebarFocused;
+        if (sidebar_row < sidebar_rows.size() &&
+            sidebar_rows[sidebar_row].kind == ui::SidebarRowKind::Bookmark) {
+            ctx.flags |= ContextFlags::BookmarkRowFocused;
+        }
+    }
+    if (workspace && workspace->layout().pane_count() > 1U) {
+        ctx.flags |= ContextFlags::MultiplePanes;
+    }
+    if (workspace && !workspace->closed_tabs().empty()) {
+        ctx.flags |= ContextFlags::ClosedTabsAvailable;
+    }
+    if (file_ops) {
+        const auto run_count = static_cast<std::uint32_t>(file_ops->running().size());
+        ctx.running_operations = run_count;
+        if (run_count > 0) {
+            ctx.flags |= ContextFlags::OperationsRunning;
+        }
+        if (file_ops->undo_stack().can_undo()) {
+            ctx.flags |= ContextFlags::CanUndo;
+        }
+        if (file_ops->undo_stack().can_redo()) {
+            ctx.flags |= ContextFlags::CanRedo;
+        }
+    }
+    if (inspector.visible()) {
+        ctx.flags |= ContextFlags::InspectorVisible;
+        if (const auto& res = inspector.result();
+            res != nullptr && res->kind() == preview::PreviewKind::Image) {
+            ctx.flags |= ContextFlags::InspectorShowsImage;
+        }
+    }
+    return ctx;
+}
+
+void App::Impl::open_palette_overlay() {
+    const CommandContext ctx = capture_context();
+    seq_matcher.reset();
+    seq_status_text.clear();
+    context_menu.close();
+    keymap_settings.close();
+    openwith_overlay.close();
+
+    std::string undo_lbl;
+    std::string redo_lbl;
+    std::vector<ui::PickerOption> ops_opts;
+    if (file_ops) {
+        if (const auto u = file_ops->undo_text()) {
+            undo_lbl = *u;
+        }
+        if (const auto r = file_ops->redo_text()) {
+            redo_lbl = *r;
+        }
+        for (const auto& op : file_ops->running()) {
+            ops_opts.push_back(ui::PickerOption{op.id.value, op.current.filename().native(), {}});
+        }
+    }
+    std::vector<ui::PickerOption> bm_opts;
+    if (places) {
+        for (const places::Bookmark& b : places->bookmarks().list()) {
+            const std::string lbl = b.name.empty() ? b.path.filename().native() : b.name;
+            bm_opts.push_back(ui::PickerOption{b.id.value, lbl, b.path.native()});
+        }
+    }
+    const std::vector<Alias> aliases = effective_aliases(keymap_file, registry, nullptr);
+    palette_overlay.open(registry, keymap, aliases, palette_history, ctx, std::move(undo_lbl),
+                         std::move(redo_lbl), std::move(ops_opts), std::move(bm_opts));
+}
+
+void App::Impl::open_context_menu_at(menu::MenuKind kind, float x, float y,
+                                     const menu::Target& target) {
+    const CommandContext ctx = capture_context();
+    seq_matcher.reset();
+    seq_status_text.clear();
+    palette_overlay.close();
+    keymap_settings.close();
+    openwith_overlay.close();
+
+    openwith_targets.clear();
+    openwith_handlers.clear();
+    const bool in_trash = workspace && trash_tabs.contains(workspace->active_tab().value);
+    if (kind == menu::MenuKind::ListRow && !in_trash) {
+        const ui::FileTarget ft = file_target();
+        if (!ft.selected.empty()) {
+            openwith_targets = ft.selected;
+        } else if (!ft.cursor.empty()) {
+            openwith_targets.push_back(ft.cursor);
+        }
+    }
+    context_menu.open(kind, registry, keymap, ctx, target, menu_pins, x, y,
+                      !openwith_targets.empty());
+    if (!openwith_targets.empty()) {
+        if (const auto mime = platform::mime_type(openwith_targets.front()); mime) {
+            if (auto list = openwith::list_handlers(*mime, openwith::system_options()); list) {
+                openwith_handlers = std::move(*list);
+            }
+        }
+        context_menu.set_open_with_handlers(openwith_handlers);
+    }
+}
+
+void App::Impl::open_openwith_overlay() {
+    openwith_targets.clear();
+    const ui::FileTarget ft = file_target();
+    if (!ft.selected.empty()) {
+        openwith_targets = ft.selected;
+    } else if (!ft.cursor.empty()) {
+        openwith_targets.push_back(ft.cursor);
+    }
+    if (openwith_targets.empty()) {
+        toast(std::string(tr("notice.nothing_selected")));
+        return;
+    }
+    seq_matcher.reset();
+    seq_status_text.clear();
+    palette_overlay.close();
+    context_menu.close();
+    keymap_settings.close();
+
+    std::string primary_mime;
+    if (const auto mime = platform::mime_type(openwith_targets.front()); mime) {
+        primary_mime = *mime;
+    }
+    openwith_overlay.open(openwith_targets, primary_mime);
+    openwith_handlers.clear();
+    if (!primary_mime.empty()) {
+        if (auto list = openwith::list_handlers(primary_mime, openwith::system_options()); list) {
+            openwith_handlers = std::move(*list);
+        }
+    }
+    openwith_overlay.set_handlers(openwith_handlers);
+}
+
+void App::Impl::launch_openwith_handler(const openwith::Handler& h, const std::vector<Path>& paths,
+                                        std::string_view mime, bool set_default) {
+    if (set_default && !mime.empty()) {
+        (void)openwith::set_default_handler(mime, h.desktop_id, openwith::system_options());
+    }
+    openwith::LaunchOptions lopt;
+    if (h.terminal) {
+        lopt.expand.terminal_prefix = openwith::default_terminal_prefix(
+            [](std::string_view prog) { return platform::find_program(prog).has_value(); });
+    }
+    if (launcher) {
+        if (auto res = openwith::launch_with(h, paths, *launcher, lopt); !res) {
+            toast(res.error().message, true);
+        }
+    }
+}
+
+void App::Impl::apply_palette_action(const ui::PaletteAction& act) {
+    if (act.record_history && !act.history_key.empty()) {
+        palette_history.record(act.history_key);
+        history_dirty = true;
+    }
+    queue.enqueue(act.command);
+}
+
+void App::Impl::apply_menu_action(const ui::MenuAction& act) {
+    if (act.kind == ui::MenuAction::Kind::Command) {
+        queue.enqueue(act.command);
+    } else if (act.kind == ui::MenuAction::Kind::TogglePin) {
+        if (menu_pins.contains(act.pin_id)) {
+            (void)menu_pins.unpin(act.pin_id);
+        } else {
+            (void)menu_pins.pin(act.pin_id);
+        }
+        pins_dirty = true;
+        context_menu.reapply_pins(menu_pins);
+    } else if (act.kind == ui::MenuAction::Kind::OpenWith) {
+        for (const openwith::Handler& h : openwith_handlers) {
+            if (h.desktop_id == act.handler_id) {
+                launch_openwith_handler(h, openwith_targets, {}, false);
+                break;
+            }
+        }
     }
 }
 
@@ -2957,6 +3557,37 @@ void App::Impl::run_script_step() {
         } else {
             SDL_Log("Navigator: script: unknown command '%s'", arg.c_str());
         }
+    } else if (op == "palette") {
+        open_palette_overlay();
+    } else if (op == "ptype") {
+        palette_overlay.set_query(arg, palette_history);
+    } else if (op == "penter") {
+        if (const auto act = palette_overlay.handle_key(KeyChord{Key::Enter, Modifiers::None},
+                                                        palette_history)) {
+            apply_palette_action(*act);
+        }
+    } else if (op == "cmenu") {
+        queue.enqueue(CommandId::ShowContextMenu);
+    } else if (op == "cmtype") {
+        context_menu.set_query(arg);
+    } else if (op == "cmenter") {
+        if (const auto act = context_menu.handle_key(KeyChord{Key::Enter, Modifiers::None})) {
+            apply_menu_action(*act);
+        }
+    } else if (op == "rebind" && parts.size() >= 3) {
+        if (const auto seq = parse_key_sequence(parts[2]); seq) {
+            if (set_binding(keymap_file, keymap, default_keymap, registry, *seq, arg, 0, true)) {
+                keymap_dirty = true;
+                rebuild_keymap_from_file();
+                flush_phase8_files();
+            }
+        }
+    } else if (op == "seq") {
+        for (const std::string& tok : split(arg, ',')) {
+            if (const auto kc = parse_key_chord(tok); kc) {
+                handle_key(*kc, false);
+            }
+        }
     } else if (op == "click") {
         const std::size_t row = model.find(arg);
         Modifiers mods = Modifiers::None;
@@ -3380,6 +4011,93 @@ void App::Impl::draw_frame(double t_ms, double dt_ms) {
     frame.ops_hit = [this](float x, float y) { return ops_view.hit(x, y); };
     view.update(frame);
     view.draw(frame);
+    // Phase 8 overlays (drawn above workspace and ops overlays).
+    const ui::RectF full_viewport{0.0F, 0.0F, static_cast<float>(w), static_cast<float>(h)};
+    if (context_menu.is_open()) {
+        if (const auto act = context_menu.draw(painter, pal, full_viewport, pointer)) {
+            apply_menu_action(*act);
+        }
+    }
+    if (palette_overlay.is_open()) {
+        if (const auto act =
+                palette_overlay.draw(painter, pal, full_viewport, pointer, palette_history)) {
+            apply_palette_action(*act);
+        }
+    }
+    if (openwith_overlay.is_open()) {
+        if (const auto act = openwith_overlay.draw(painter, pal, full_viewport, pointer)) {
+            launch_openwith_handler(act->handler, act->paths, act->primary_mime,
+                                    act->set_as_default);
+        }
+    }
+    if (keymap_settings.is_open()) {
+        const ui::KeymapEditorEvent ev = keymap_settings.draw(
+            painter, pal, full_viewport, pointer, keymap_file, keymap, default_keymap, registry);
+        if (ev.keymap_dirty) {
+            keymap_dirty = true;
+            rebuild_keymap_from_file();
+        }
+        if (ev.enqueue_cmd) {
+            queue.enqueue(*ev.enqueue_cmd);
+        }
+    }
+    if (reset_keymap_confirm) {
+        renderer->fill_rect(full_viewport, pal.shadow.with_alpha(0.5F));
+        const float cw = std::min(painter.px(420.0F), full_viewport.w - painter.px(32.0F));
+        const float ch = painter.px(148.0F);
+        const ui::RectF card{std::floor((full_viewport.w - cw) * 0.5F),
+                             std::floor((full_viewport.h - ch) * 0.5F), cw, ch};
+        const float rad = painter.px(ui::radius::lg);
+        renderer->drop_shadow(card, rad, painter.px(16.0F), painter.px(5.0F),
+                              pal.shadow.with_alpha(0.35F));
+        renderer->fill_rounded_rect(card, rad, pal.surface_raised);
+        renderer->stroke_rounded_rect(card, rad, painter.px(1.0F), pal.danger_border);
+        painter.draw(painter.shape(ui::type::popup_title, tr("keymap.reset_confirm_title")),
+                     card.x + painter.px(16.0F), card.y + painter.px(30.0F), pal.danger);
+        painter.draw(painter.shape(ui::type::caption, tr("keymap.reset_confirm_body")),
+                     card.x + painter.px(16.0F), card.y + painter.px(58.0F), pal.text_secondary);
+        const float bw = painter.px(110.0F);
+        const float bh = painter.px(30.0F);
+        const float by = card.y + card.h - bh - painter.px(16.0F);
+        const ui::RectF reset_btn{card.x + card.w - bw - painter.px(16.0F), by, bw, bh};
+        const ui::RectF cancel_btn{reset_btn.x - bw - painter.px(10.0F), by, bw, bh};
+        renderer->fill_rounded_rect(cancel_btn, painter.px(6.0F), pal.surface);
+        renderer->stroke_rounded_rect(cancel_btn, painter.px(6.0F),
+                                      painter.px(reset_confirm_focus == 0 ? 2.0F : 1.0F),
+                                      reset_confirm_focus == 0 ? pal.accent : pal.border);
+        const ui::ShapedText ct = painter.shape(ui::type::button, tr("action.cancel"));
+        painter.draw(ct, cancel_btn.center_x() - ct.width() * 0.5F, cancel_btn.y + bh * 0.67F,
+                     pal.text_primary);
+        renderer->fill_rounded_rect(reset_btn, painter.px(6.0F), pal.danger_surface);
+        renderer->stroke_rounded_rect(reset_btn, painter.px(6.0F),
+                                      painter.px(reset_confirm_focus == 1 ? 2.0F : 1.0F),
+                                      pal.danger);
+        const ui::ShapedText rt = painter.shape(ui::type::button, tr("keymap.reset_cmd"));
+        painter.draw(rt, reset_btn.center_x() - rt.width() * 0.5F, reset_btn.y + bh * 0.67F,
+                     pal.danger);
+        if (pointer.pressed) {
+            if (contains(cancel_btn, pointer.x, pointer.y) ||
+                !contains(card, pointer.x, pointer.y)) {
+                reset_keymap_confirm = false;
+            } else if (contains(reset_btn, pointer.x, pointer.y)) {
+                if (reset_all(keymap_file)) {
+                    keymap_dirty = true;
+                    rebuild_keymap_from_file();
+                }
+                reset_keymap_confirm = false;
+            }
+        }
+    }
+    if (!seq_status_text.empty()) {
+        const ui::ShapedText st = painter.shape(ui::type::keycap, seq_status_text);
+        const float pw = st.width() + painter.px(16.0F);
+        const float ph = painter.px(24.0F);
+        const ui::RectF pill{full_viewport.w - pw - painter.px(12.0F),
+                             full_viewport.h - ph - painter.px(32.0F), pw, ph};
+        renderer->fill_rounded_rect(pill, painter.px(6.0F), pal.surface_raised);
+        renderer->stroke_rounded_rect(pill, painter.px(6.0F), painter.px(1.0F), pal.accent);
+        painter.draw(st, pill.x + painter.px(8.0F), pill.y + ph * 0.70F, pal.text_primary);
+    }
     thumbs.end_frame();
 }
 
@@ -3864,6 +4582,10 @@ int App::run() {
                 s.handle_event(event);
             }
         }
+        if (s.seq_matcher.expire(SequenceMatcher::Clock::now())) {
+            s.seq_status_text.clear();
+            s.dirty = true;
+        }
         if (s.workspace->frame_start()) {
             s.dirty = true;
         }
@@ -3983,7 +4705,10 @@ int App::run() {
                            : s.view.cursor());
         // Phase 5: text input stays on while the window has focus, so typing in a list starts
         // its filter (type-to-filter); chords still arrive as key events.
-        const bool want_text = s.focused || s.view.wants_text_input() || s.sidebar.renaming();
+        const bool want_text =
+            s.focused || s.view.wants_text_input() || s.sidebar.renaming() ||
+            s.palette_overlay.wants_text_input() || s.context_menu.wants_text_input() ||
+            s.openwith_overlay.wants_text_input() || s.keymap_settings.wants_text_input();
         if (want_text != s.text_input_on) {
             s.text_input_on = want_text;
             if (s.text_input_on) {
