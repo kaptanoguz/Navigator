@@ -291,8 +291,6 @@ enum class CommandId : std::uint32_t {
     TogglePauseOperation = 1348,  // "ops.toggle_pause"  arg as ops.cancel
     ToggleOperationsPanel = 1349, // "ops.toggle_panel"  non-modal list of running and recent
                                   //   operations (status bar button)
-    BatchRename = 1350,           // "file.batch_rename"  Phase 9B interactive batch rename overlay
-                                  //   for the selection (or cursor item); Shift+F2
 
     // Trash (Phase 7). The Trash view is a runtime view mode of a tab (like the flattened view;
     // not persisted: a session saves the folder the tab showed before). arg: 0 for all.
@@ -366,7 +364,8 @@ enum class CommandId : std::uint32_t {
     TreeCollapse = 1421,      // "view.tree_collapse"  collapse cursor folder (or move to parent)
     TreeCollapseAll = 1422,   // "view.tree_collapse_all" collapse all expanded folders in Tree view
 
-    // Appearance, themes, typography, animations (Phase 9B; appearance.hpp). arg: 0.
+    // Batch rename, appearance, themes, typography, animations (Phase 9B). arg: 0.
+    BatchRename = 1425,           // "file.batch_rename"           interactive batch rename (Shift+F2)
     ToggleAnimations = 1430,      // "view.toggle_animations"      toggle UI animations live
     ToggleAlternatingRows = 1431, // "view.toggle_alternating_rows" toggle zebra striping
     CycleDensity = 1432,          // "view.cycle_density"          Compact <-> Comfortable

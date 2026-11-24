@@ -723,7 +723,7 @@ Trash view, running operations, undo state) before it takes focus.
 | `Ctrl+KeypadMinus` | `view.zoom_out` | `ViewZoomOut` (1406) | 0 | Same (keypad) |
 | `Ctrl+0` | `view.zoom_reset` | `ViewZoomReset` (1407) | 0 | Reset zoom to 100% |
 | `Ctrl+Keypad0` | `view.zoom_reset` | `ViewZoomReset` (1407) | 0 | Same (keypad) |
-| `Shift+F2` | `file.batch_rename` | `BatchRename` (1350) | 0 | Open interactive Batch Rename for selection (or cursor item) |
+| `Shift+F2` | `file.batch_rename` | `BatchRename` (1425) | 0 | Open interactive Batch Rename for selection (or cursor item) |
 | (unbound) | `view.cycle_mode` | `ViewCycleMode` (1404) | 0 | Cycle Details -> Icons -> List -> Tree |
 | (unbound) | `view.group_none` | `GroupByNone` (1410) | 0 | Disable grouping |
 | (unbound) | `view.group_date` | `GroupByDate` (1411) | 0 | Group items by modification date |

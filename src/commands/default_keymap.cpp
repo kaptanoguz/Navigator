@@ -131,6 +131,8 @@ constexpr std::array kDefaults{
     DefaultBinding{{Key::KeypadMinus, kCtrl}, "view.zoom_out", 0},
     DefaultBinding{{Key::Digit0, kCtrl}, "view.zoom_reset", 0},
     DefaultBinding{{Key::Keypad0, kCtrl}, "view.zoom_reset", 0},
+    // Phase 9B
+    DefaultBinding{{Key::F2, kShift}, "file.batch_rename", 0},
 };
 
 struct DefaultSequence {

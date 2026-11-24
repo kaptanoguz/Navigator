@@ -267,6 +267,17 @@ constexpr std::array kBuiltins{
         .hidden_when(ContextFlags::TrashView),
     entry(CommandId::TreeCollapseAll, "view.tree_collapse_all", CommandCategory::View)
         .hidden_when(ContextFlags::TrashView),
+    // Phase 9B: batch rename, appearance, themes, typography and animations.
+    entry(CommandId::BatchRename, "file.batch_rename", CommandCategory::Files)
+        .needs(ContextFlags::HasCursorRow)
+        .hidden_when(ContextFlags::TrashView | ContextFlags::SidebarFocused),
+    entry(CommandId::ToggleAnimations, "view.toggle_animations", CommandCategory::View),
+    entry(CommandId::ToggleAlternatingRows, "view.toggle_alternating_rows", CommandCategory::View),
+    entry(CommandId::CycleDensity, "view.cycle_density", CommandCategory::View),
+    entry(CommandId::FontSizeIncrease, "view.font_size_increase", CommandCategory::View),
+    entry(CommandId::FontSizeDecrease, "view.font_size_decrease", CommandCategory::View),
+    entry(CommandId::FontSizeReset, "view.font_size_reset", CommandCategory::View),
+    entry(CommandId::OpenAppearanceSettings, "settings.appearance", CommandCategory::Settings),
 };
 
 } // namespace
@@ -407,6 +418,7 @@ std::string_view to_string(CommandId id) noexcept {
     case CommandId::MoveToTrash: return "file.trash";
     case CommandId::DeletePermanently: return "file.delete_permanently";
     case CommandId::Rename: return "file.rename";
+    case CommandId::BatchRename: return "file.batch_rename";
     case CommandId::NewFolder: return "file.new_folder";
     case CommandId::CopyToOtherPane: return "file.copy_to_other_pane";
     case CommandId::MoveToOtherPane: return "file.move_to_other_pane";
@@ -443,6 +455,13 @@ std::string_view to_string(CommandId id) noexcept {
     case CommandId::TreeExpand: return "view.tree_expand";
     case CommandId::TreeCollapse: return "view.tree_collapse";
     case CommandId::TreeCollapseAll: return "view.tree_collapse_all";
+    case CommandId::ToggleAnimations: return "view.toggle_animations";
+    case CommandId::ToggleAlternatingRows: return "view.toggle_alternating_rows";
+    case CommandId::CycleDensity: return "view.cycle_density";
+    case CommandId::FontSizeIncrease: return "view.font_size_increase";
+    case CommandId::FontSizeDecrease: return "view.font_size_decrease";
+    case CommandId::FontSizeReset: return "view.font_size_reset";
+    case CommandId::OpenAppearanceSettings: return "settings.appearance";
     }
     return "unknown";
 }

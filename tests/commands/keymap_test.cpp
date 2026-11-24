@@ -479,9 +479,9 @@ TEST_CASE("load_default_keymap binds exactly the docs/keymap.md tables, in order
     CHECK(parsed.phase_rows[6] == 2);  // Phase 6 chords
     CHECK(parsed.phase_rows[7] == 12); // Phase 7 chords
     CHECK(parsed.phase_rows[8] == 8);  // Phase 8 chords
-    CHECK(parsed.phase_rows[9] == 10); // Phase 9A chords
-    REQUIRE(doc.size() == 3 + 25 + 21 + 5 + 4 + 2 + 12 + 8 + 10);
-    CHECK(doc.size() == 90); // 80 through Phase 8 + 10 Phase 9A chords
+    CHECK(parsed.phase_rows[9] == 11); // Phase 9A (10) + Phase 9B (1) chords
+    REQUIRE(doc.size() == 3 + 25 + 21 + 5 + 4 + 2 + 12 + 8 + 11);
+    CHECK(doc.size() == 91); // 80 through Phase 8 + 11 Phase 9 chords
 
     Keymap keymap;
     REQUIRE(navigator::load_default_keymap(keymap));
@@ -558,7 +558,14 @@ TEST_CASE("every default binding resolves to a registered built-in", "[keymap][d
                                       CommandId::ViewLockGlobal,
                                       CommandId::TreeExpand,
                                       CommandId::TreeCollapse,
-                                      CommandId::TreeCollapseAll};
+                                      CommandId::TreeCollapseAll,
+                                      CommandId::ToggleAnimations,
+                                      CommandId::ToggleAlternatingRows,
+                                      CommandId::CycleDensity,
+                                      CommandId::FontSizeIncrease,
+                                      CommandId::FontSizeDecrease,
+                                      CommandId::FontSizeReset,
+                                      CommandId::OpenAppearanceSettings};
     for (const CommandInfo& info : registry.all()) {
         INFO("command " << info.name);
         CHECK(bound.contains(info.id) == !unbound.contains(info.id));
@@ -622,7 +629,14 @@ TEST_CASE("docs/keymap.md (unbound) rows are exactly the unbound built-ins", "[k
                                               "view.lock_global",
                                               "view.tree_expand",
                                               "view.tree_collapse",
-                                              "view.tree_collapse_all"});
+                                              "view.tree_collapse_all",
+                                              "view.toggle_animations",
+                                              "view.toggle_alternating_rows",
+                                              "view.cycle_density",
+                                              "view.font_size_increase",
+                                              "view.font_size_decrease",
+                                              "view.font_size_reset",
+                                              "settings.appearance"});
     std::set<std::string> actual;
     for (const CommandInfo& info : registry.all()) {
         if (keymap.chords_for(info.name).empty()) {
