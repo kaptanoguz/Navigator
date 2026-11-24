@@ -1,10 +1,10 @@
 // src/core/view_settings_json.cpp — JSON (de)serialization and atomic persistence for
 // view_settings.json (navigator/view_settings.hpp).
-#include <navigator/view_settings.hpp>
-
 #include <new>
 #include <string>
 #include <string_view>
+
+#include <navigator/view_settings.hpp>
 
 #include "document_files.hpp"
 #include "json_util.hpp"
@@ -161,7 +161,7 @@ Result<ViewSettingsStore> from_json(std::string_view text) {
     try {
         auto parsed = parse_object(text);
         if (!parsed) {
-            return Unexpected(parsed.error());
+            return Unexpected<Error>(parsed.error());
         }
         const InJson& doc = *parsed;
         ViewSettingsStore store;
@@ -201,11 +201,11 @@ Result<ViewSettingsStore> from_json(std::string_view text) {
 Result<ViewSettingsStore> load_view_settings(const Path& file) {
     auto raw = core::read_document(file);
     if (!raw) {
-        return Unexpected(raw.error());
+        return Unexpected<Error>(raw.error());
     }
     auto parsed = from_json(*raw);
     if (!parsed) {
-        return Unexpected(core::move_aside_bad(file, parsed.error().message));
+        return Unexpected<Error>(core::move_aside_bad(file, parsed.error().message));
     }
     return parsed;
 }
@@ -213,7 +213,7 @@ Result<ViewSettingsStore> load_view_settings(const Path& file) {
 Result<void> save_view_settings(const Path& file, const ViewSettingsStore& store) {
     auto json = to_json(store);
     if (!json) {
-        return Unexpected(json.error());
+        return Unexpected<Error>(json.error());
     }
     return core::write_atomically(file, *json);
 }

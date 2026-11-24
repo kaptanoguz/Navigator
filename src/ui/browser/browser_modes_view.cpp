@@ -1,8 +1,6 @@
 // src/ui/browser/browser_modes_view.cpp — Phase 9A view modes (Icon Grid with live zoom,
 // List/Columns, virtualized Tree, collapsible Group By), footer zoom slider + mode pills,
 // and address-bar View Lock button.
-#include "browser/browser_view.hpp"
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -11,6 +9,7 @@
 
 #include <navigator/i18n.hpp>
 
+#include "browser/browser_view.hpp"
 #include "browser/format.hpp"
 #include "i18n/catalog.hpp"
 #include "widgets/icons.hpp"
@@ -35,7 +34,8 @@ void draw_lock_glyph(Renderer& r, float cx, float cy, float size, view::ViewScop
     // Shackle (open slightly when Global).
     const float sw = std::round(w * 0.62F);
     const float sh = std::round(size * 0.42F);
-    const float sx = std::round(cx - (0.5F * sw) + (scope == view::ViewScope::Global ? stroke : 0.0F));
+    const float sx =
+        std::round(cx - (0.5F * sw) + (scope == view::ViewScope::Global ? stroke : 0.0F));
     const float sy = std::round(by - sh + (0.14F * size));
     r.stroke_rounded_rect(RectF{sx, sy, sw, sh}, sw * 0.45F, stroke, ink);
 
@@ -160,7 +160,8 @@ float BrowserView::compute_mode_content_dp(const BrowserFrame& f, const Layout& 
 
     switch (m.view_mode()) {
     case view::ViewMode::Details: {
-        if (m.group_by() != view::GroupBy::None && !m.flattened() && !grouped_cache_.items.empty()) {
+        if (m.group_by() != view::GroupBy::None && !m.flattened() &&
+            !grouped_cache_.items.empty()) {
             float total = 2.0F * pad_dp;
             for (const GroupDisplayItem& it : grouped_cache_.items) {
                 total += (it.kind == GroupDisplayItem::Kind::Header) ? kGroupHeaderH : row_dp;
@@ -177,13 +178,15 @@ float BrowserView::compute_mode_content_dp(const BrowserFrame& f, const Layout& 
         std::size_t cols = 1;
         draw_grid_tile_metrics(f, l.body.w, icon_px, tile_w, tile_h, gap_px, cols);
         const float tile_h_dp = (tile_h + gap_px) / scale;
-        if (m.group_by() != view::GroupBy::None && !m.flattened() && !grouped_cache_.items.empty()) {
+        if (m.group_by() != view::GroupBy::None && !m.flattened() &&
+            !grouped_cache_.items.empty()) {
             float total = 2.0F * pad_dp;
             std::size_t run = 0;
             for (const GroupDisplayItem& it : grouped_cache_.items) {
                 if (it.kind == GroupDisplayItem::Kind::Header) {
                     if (run > 0) {
-                        total += static_cast<float>((run + cols - 1) / cols) * tile_h_dp;
+                        const std::size_t rows = (run + cols - 1) / cols;
+                        total += static_cast<float>(rows) * tile_h_dp;
                         run = 0;
                     }
                     total += kGroupHeaderH;
@@ -192,7 +195,8 @@ float BrowserView::compute_mode_content_dp(const BrowserFrame& f, const Layout& 
                 }
             }
             if (run > 0) {
-                total += static_cast<float>((run + cols - 1) / cols) * tile_h_dp;
+                const std::size_t rows = (run + cols - 1) / cols;
+                total += static_cast<float>(rows) * tile_h_dp;
             }
             return total;
         }
@@ -286,10 +290,12 @@ float BrowserView::draw_view_footer_controls(const BrowserFrame& f, const Layout
         active_ = WidgetId::ZoomSlider;
     }
     if (active_ == WidgetId::ZoomSlider && ptr.down) {
-        const float t = std::clamp((ptr.x - slider_hit.x) / std::max(slider_hit.w, 1.0F), 0.0F, 1.0F);
-        const int raw_pct = view::kMinZoomPercent +
-                            static_cast<int>(std::lround(
-                                t * static_cast<float>(view::kMaxZoomPercent - view::kMinZoomPercent)));
+        const float t =
+            std::clamp((ptr.x - slider_hit.x) / std::max(slider_hit.w, 1.0F), 0.0F, 1.0F);
+        const int raw_pct =
+            view::kMinZoomPercent +
+            static_cast<int>(
+                std::lround(t * static_cast<float>(view::kMaxZoomPercent - view::kMinZoomPercent)));
         // Snap to multiples of 5% for clean readout.
         const int snapped = view::clamp_zoom(((raw_pct + 2) / 5) * 5);
         Intent intent;
@@ -381,8 +387,7 @@ void BrowserView::draw_grouped_details(const BrowserFrame& f, const Layout& l) {
     const float hair = std::max(1.0F, std::round(p.px(1.0F)));
 
     float y = l.body.y + l.pad - spx;
-    for (std::size_t idx = 0; idx < grouped_cache_.items.size(); ++idx) {
-        const GroupDisplayItem& it = grouped_cache_.items[idx];
+    for (const GroupDisplayItem& it : grouped_cache_.items) {
         const float h = (it.kind == GroupDisplayItem::Kind::Header) ? header_h : l.row_h;
         if (y + h < l.body.y) {
             y += h;
@@ -415,9 +420,8 @@ void BrowserView::draw_grouped_details(const BrowserFrame& f, const Layout& l) {
                          it.collapsed ? Direction::Right : Direction::Down,
                          std::max(1.0F, p.px(1.4F)), pal.text_muted);
 
-            const std::string title =
-                std::string(tr(group_bucket_key(m.group_by(), it.bucket))) + " (" +
-                format_count(it.count) + ")";
+            const std::string title = std::string(tr(group_bucket_key(m.group_by(), it.bucket))) +
+                                      " (" + format_count(it.count) + ")";
             const ShapedText sh = p.shape(type::column_header, title);
             const float tx = hr.x + std::round(p.px(24.0F));
             p.draw(sh, tx, std::round(mid + (0.5F * sh.cap_height())), pal.text_secondary);
@@ -466,8 +470,8 @@ void BrowserView::draw_grouped_details(const BrowserFrame& f, const Layout& l) {
                 draw_entry_glyph(r, pal, e, icon_box.x, icon_box.y, icon_sz, 1.0F, p.scale());
             }
             const std::string dn = display_name(e.name);
-            const ShapedText nt =
-                fitter_.fit(p, type::row, dn, std::max(l.name_r - l.text_x, p.px(24.0F)), Elide::End);
+            const ShapedText nt = fitter_.fit(
+                p, type::row, dn, std::max(l.name_r - l.text_x, p.px(24.0F)), Elide::End);
             p.draw(nt, l.text_x, std::round(mid + (0.5F * nt.cap_height())), pal.text_primary);
 
             if (l.show_size && !fs::is_directory_like(e)) {
@@ -553,8 +557,8 @@ void BrowserView::draw_icons_view(const BrowserFrame& f, const Layout& l) {
         }
 
         const std::string dn = display_name(e.name);
-        const ShapedText nt =
-            fitter_.fit(p, type::row, dn, std::max(tile.w - p.px(10.0F), p.px(24.0F)), Elide::Middle);
+        const ShapedText nt = fitter_.fit(
+            p, type::row, dn, std::max(tile.w - p.px(10.0F), p.px(24.0F)), Elide::Middle);
         const float label_x = std::round(tile.x + (0.5F * (tile.w - nt.width())));
         const float label_y = std::round(iy + icon_px + p.px(18.0F));
         p.draw(nt, label_x, label_y, pal.text_primary);
@@ -663,7 +667,8 @@ void BrowserView::draw_list_view(const BrowserFrame& f, const Layout& l) {
     const float icon_sz = std::round(p.px(metrics::icon_size));
 
     const std::size_t rows_per_col =
-        l.row_h > 0.0F ? std::max<std::size_t>(1, static_cast<std::size_t>((l.body.h - (2.0F * pad)) / l.row_h))
+        l.row_h > 0.0F ? std::max<std::size_t>(
+                             1, static_cast<std::size_t>((l.body.h - (2.0F * pad)) / l.row_h))
                        : 1;
     const std::size_t n = m.row_count();
     const std::size_t total_cols = (n + rows_per_col - 1) / rows_per_col;
@@ -715,9 +720,9 @@ void BrowserView::draw_list_view(const BrowserFrame& f, const Layout& l) {
             draw_entry_glyph(r, pal, e, ix, std::round(mid - (0.5F * icon_sz)), icon_sz, 1.0F,
                              p.scale());
             const float tx = ix + icon_sz + std::round(p.px(8.0F));
-            const ShapedText nt = fitter_.fit(p, type::row, display_name(e.name),
-                                              std::max(rr.right() - tx - p.px(6.0F), p.px(20.0F)),
-                                              Elide::End);
+            const ShapedText nt =
+                fitter_.fit(p, type::row, display_name(e.name),
+                            std::max(rr.right() - tx - p.px(6.0F), p.px(20.0F)), Elide::End);
             p.draw(nt, tx, std::round(mid + (0.5F * nt.cap_height())), pal.text_primary);
         }
     }
@@ -796,16 +801,15 @@ void BrowserView::draw_tree_view(const BrowserFrame& f, const Layout& l) {
             // Animations-off: chevron snaps immediately between Right and Down (no rotation fade).
             draw_chevron(r, chev_rect.center_x(), mid, p.px(9.0F),
                          tr_row.expanded ? Direction::Down : Direction::Right,
-                         std::max(1.0F, p.px(1.4F)),
-                         on_chev ? pal.text_primary : pal.text_muted);
+                         std::max(1.0F, p.px(1.4F)), on_chev ? pal.text_primary : pal.text_muted);
         }
         const float ix = base_x + chev_box + std::round(p.px(2.0F));
         draw_entry_glyph(r, pal, tr_row.entry, ix, std::round(mid - (0.5F * icon_sz)), icon_sz,
                          1.0F, p.scale());
         const float tx = ix + icon_sz + std::round(p.px(8.0F));
         const std::string dn = display_name(tr_row.entry.name);
-        const ShapedText nt = fitter_.fit(p, type::row, dn,
-                                          std::max(l.name_r - tx, p.px(24.0F)), Elide::End);
+        const ShapedText nt =
+            fitter_.fit(p, type::row, dn, std::max(l.name_r - tx, p.px(24.0F)), Elide::End);
         p.draw(nt, tx, std::round(mid + (0.5F * nt.cap_height())), pal.text_primary);
 
         if (l.show_size && !fs::is_directory_like(tr_row.entry)) {

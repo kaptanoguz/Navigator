@@ -61,13 +61,13 @@ void navigator_phase9a_contract_check() {
     (void)save_view_settings(Path{"/tmp/view_settings.json"}, store);
 
     const CommandId ids[] = {
-        CommandId::ToggleViewLock,   CommandId::ViewModeDetails, CommandId::ViewModeIcons,
-        CommandId::ViewModeList,     CommandId::ViewModeTree,    CommandId::ViewCycleMode,
-        CommandId::ViewZoomIn,       CommandId::ViewZoomOut,     CommandId::ViewZoomReset,
-        CommandId::GroupByNone,      CommandId::GroupByDate,     CommandId::GroupByType,
-        CommandId::GroupBySize,      CommandId::GroupCycle,      CommandId::ViewLockFolder,
-        CommandId::ViewLockHierarchy, CommandId::ViewLockGlobal, CommandId::TreeExpand,
-        CommandId::TreeCollapse,     CommandId::TreeCollapseAll,
+        CommandId::ToggleViewLock,    CommandId::ViewModeDetails, CommandId::ViewModeIcons,
+        CommandId::ViewModeList,      CommandId::ViewModeTree,    CommandId::ViewCycleMode,
+        CommandId::ViewZoomIn,        CommandId::ViewZoomOut,     CommandId::ViewZoomReset,
+        CommandId::GroupByNone,       CommandId::GroupByDate,     CommandId::GroupByType,
+        CommandId::GroupBySize,       CommandId::GroupCycle,      CommandId::ViewLockFolder,
+        CommandId::ViewLockHierarchy, CommandId::ViewLockGlobal,  CommandId::TreeExpand,
+        CommandId::TreeCollapse,      CommandId::TreeCollapseAll,
     };
     (void)ids;
 }

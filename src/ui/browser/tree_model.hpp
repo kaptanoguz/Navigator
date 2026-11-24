@@ -33,7 +33,7 @@ struct TreeRow {
     Path full_path;
     fs::DirEntry entry;
     std::uint16_t depth = 0;
-    std::size_t root_row = kTreeNoRootRow; // depth == 0: index in BrowserModel rows
+    std::size_t root_row = kTreeNoRootRow;     // depth == 0: index in BrowserModel rows
     std::size_t parent_index = kTreeNoRootRow; // index in TreeModel::rows() of parent folder
     bool expandable = false;
     bool expanded = false;

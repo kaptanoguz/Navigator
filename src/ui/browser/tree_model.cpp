@@ -118,7 +118,7 @@ void TreeModel::enqueue(const Path& dir, const fs::SortOptions& sort, bool show_
 }
 
 bool TreeModel::expand(const Path& dir, const fs::SortOptions& sort, bool show_hidden) {
-    const std::string key = dir.native();
+    const std::string& key = dir.native();
     if (key.empty() || expanded_.contains(key)) {
         return false;
     }
@@ -129,9 +129,7 @@ bool TreeModel::expand(const Path& dir, const fs::SortOptions& sort, bool show_h
     return true;
 }
 
-bool TreeModel::collapse(const Path& dir) {
-    return expanded_.erase(dir.native()) > 0;
-}
+bool TreeModel::collapse(const Path& dir) { return expanded_.erase(dir.native()) > 0; }
 
 bool TreeModel::toggle(const Path& dir, const fs::SortOptions& sort, bool show_hidden) {
     if (expanded_.contains(dir.native())) {
@@ -189,8 +187,7 @@ void TreeModel::reload_expanded(const fs::SortOptions& sort, bool show_hidden) {
 
 bool TreeModel::wait_idle(std::chrono::milliseconds timeout) {
     std::unique_lock lock(mutex_);
-    return idle_cv_.wait_for(lock, timeout,
-                             [this] { return jobs_.empty() && active_jobs_ == 0; });
+    return idle_cv_.wait_for(lock, timeout, [this] { return jobs_.empty() && active_jobs_ == 0; });
 }
 
 void TreeModel::append_children(const Path& parent_dir, std::size_t parent_idx,
@@ -208,8 +205,8 @@ void TreeModel::append_children(const Path& parent_dir, std::size_t parent_idx,
         const bool is_exp = is_dir && expanded_.contains(child_path.native());
         const bool is_load = is_exp && loading_.contains(child_path.native());
         const std::size_t my_idx = rows_.size();
-        rows_.push_back(TreeRow{child_path, child, depth, kTreeNoRootRow, parent_idx, is_dir,
-                                is_exp, is_load});
+        rows_.push_back(
+            TreeRow{child_path, child, depth, kTreeNoRootRow, parent_idx, is_dir, is_exp, is_load});
         if (is_exp) {
             append_children(child_path, my_idx, static_cast<std::uint16_t>(depth + 1));
         }
@@ -237,8 +234,7 @@ void TreeModel::rebuild(const Path& root_dir, std::size_t top_count,
         }
         const bool is_load = is_exp && loading_.contains(full.native());
         const std::size_t my_idx = rows_.size();
-        rows_.push_back(
-            TreeRow{full, *e, 0, r, kTreeNoRootRow, is_dir, is_exp, is_load});
+        rows_.push_back(TreeRow{full, *e, 0, r, kTreeNoRootRow, is_dir, is_exp, is_load});
         if (is_exp) {
             append_children(full, my_idx, 1);
         }

@@ -1,8 +1,8 @@
 // tests/core/view_settings_test.cpp — unit tests for ViewSettingsStore, zoom axis, column reorder,
 // hierarchical resolution and JSON/file persistence.
-#include <catch2/catch_test_macros.hpp>
-
 #include <filesystem>
+
+#include <catch2/catch_test_macros.hpp>
 
 #include <navigator/view_settings.hpp>
 
@@ -25,7 +25,8 @@ TEST_CASE("view.zoom axis transitions between Details and Icons", "[view_setting
 
 TEST_CASE("view.column reorder and normalization", "[view_settings]") {
     const auto moved = reorder_column(kDefaultColumnOrder, 0, 2);
-    REQUIRE(moved == ColumnOrder{ColumnId::Size, ColumnId::Type, ColumnId::Name, ColumnId::Modified});
+    REQUIRE(moved ==
+            ColumnOrder{ColumnId::Size, ColumnId::Type, ColumnId::Name, ColumnId::Modified});
 
     const auto back = reorder_column(moved, 2, 0);
     REQUIRE(back == kDefaultColumnOrder);
@@ -131,9 +132,9 @@ TEST_CASE("view.JSON round-trip, non-UTF-8 paths and atomic file persistence", "
     f.zoom_percent = 200;
     const Path raw_path{std::string("/tmp/raw-\xFF\xFE-dir")};
     store.set_folder(raw_path, f);
-    store.set_hierarchy(Path{"/home/oguz/Docs"}, ViewSettings{ViewMode::Tree, 100, GroupBy::None,
-                                                              fs::SortOptions{}, false,
-                                                              kDefaultColumnOrder});
+    store.set_hierarchy(Path{"/home/oguz/Docs"},
+                        ViewSettings{ViewMode::Tree, 100, GroupBy::None, fs::SortOptions{}, false,
+                                     kDefaultColumnOrder});
 
     const auto json = to_json(store);
     REQUIRE(json.has_value());

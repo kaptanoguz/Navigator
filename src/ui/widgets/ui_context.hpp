@@ -89,7 +89,8 @@ struct Intent {
         DropChoose,       // index = transfer::DropAction chosen in the drop menu (Alt drops)
         // Phase 9A (views, zoom, grouping, columns, tree).
         SetViewMode,    // tab, index = view::ViewMode
-        SetZoomPercent, // tab, index = zoom percent [50..400], additive = switch to Icons if Details
+        SetZoomPercent, // tab, index = zoom percent [50..400], additive = switch to Icons if
+                        // Details
         StepZoom,       // tab, position = delta steps (+1 / -1)
         ReorderColumn,  // tab, row = from index, row_last = to index
         ToggleGroup,    // tab, index = bucket id

@@ -360,8 +360,7 @@ void BrowserView::draw(const BrowserFrame& f) {
 
     const view::ViewMode mode = f.model.view_mode();
     const bool grouped_details = mode == view::ViewMode::Details &&
-                                 f.model.group_by() != view::GroupBy::None &&
-                                 !f.model.flattened();
+                                 f.model.group_by() != view::GroupBy::None && !f.model.flattened();
     if (mode == view::ViewMode::Details && !grouped_details) {
         handle_list_pointer(f, l);
     }

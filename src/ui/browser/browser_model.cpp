@@ -31,8 +31,7 @@ Path normalize(const Path& dir) {
 
 } // namespace
 
-BrowserModel::BrowserModel(Options options)
-    : options_(std::move(options)), tree_(options_.wake) {
+BrowserModel::BrowserModel(Options options) : options_(std::move(options)), tree_(options_.wake) {
     if (options_.start_suspended) {
         suspended_ = true;
         tree_.suspend();

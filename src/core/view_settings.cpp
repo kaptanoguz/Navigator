@@ -1,9 +1,9 @@
 // src/core/view_settings.cpp — Phase 9A view settings store and string helpers.
-#include <navigator/view_settings.hpp>
-
 #include <algorithm>
 #include <string>
 #include <utility>
+
+#include <navigator/view_settings.hpp>
 
 namespace navigator::view {
 namespace {
@@ -260,9 +260,7 @@ void ViewSettingsStore::set_lock(const Path& dir, ViewScope scope, ViewSettings 
     }
     current = normalize(current);
     switch (scope) {
-    case ViewScope::Global:
-        clear_override(*canon);
-        break;
+    case ViewScope::Global: clear_override(*canon); break;
     case ViewScope::Folder:
         clear_hierarchy(*canon);
         set_folder(*canon, current);

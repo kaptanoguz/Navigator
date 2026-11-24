@@ -1548,6 +1548,14 @@ std::map<std::string, Check> effect_checks() {
     checks["settings.open"] = shell_only;
     checks["menu.show_context"] = shell_only;
     checks["ops.toggle_panel"] = shell_only;
+    // Phase 9A: view mode & zoom commands run at shell level (App persists ViewSettingsStore).
+    checks["view.mode_details"] = shell_only;
+    checks["view.mode_icons"] = shell_only;
+    checks["view.mode_list"] = shell_only;
+    checks["view.mode_tree"] = shell_only;
+    checks["view.zoom_in"] = shell_only;
+    checks["view.zoom_out"] = shell_only;
+    checks["view.zoom_reset"] = shell_only;
     checks["pane.close"] = [](Scene& s, const Command& c) {
         REQUIRE(s.exec(c)); // the only pane: no-op
         s.settle();
@@ -1578,8 +1586,8 @@ std::map<std::string, Check> effect_checks() {
 
 TEST_CASE("docs/keymap.md and load_default_keymap agree row for row", "[keymap][e2e]") {
     const DocTables doc = read_doc();
-    // Phase 0, Phase 2, Phase 3, Phase 4, Phase 5, Phase 6, Phase 7 and Phase 8 tables.
-    CHECK(doc.per_phase.size() == 8);
+    // Phase 0, Phase 2, Phase 3, Phase 4, Phase 5, Phase 6, Phase 7, Phase 8 and Phase 9 tables.
+    CHECK(doc.per_phase.size() == 9);
     CHECK(doc.per_phase.at(0) == 3);
     CHECK(doc.per_phase.at(2) == 25);
     CHECK(doc.per_phase.at(3) == 21);
@@ -1588,7 +1596,8 @@ TEST_CASE("docs/keymap.md and load_default_keymap agree row for row", "[keymap][
     CHECK(doc.per_phase.at(6) == 2);
     CHECK(doc.per_phase.at(7) == 12);
     CHECK(doc.per_phase.at(8) == 8);
-    REQUIRE(doc.bound.size() == 80); // 72 through Phase 7 + 8 Phase 8 chords
+    CHECK(doc.per_phase.at(9) == 10);
+    REQUIRE(doc.bound.size() == 90); // 80 through Phase 8 + 10 Phase 9A chords
     Keymap keymap;
     REQUIRE(load_default_keymap(keymap));
     const Span<const KeyBinding> bindings = keymap.bindings();
@@ -1654,8 +1663,20 @@ TEST_CASE("docs/keymap.md and load_default_keymap agree row for row", "[keymap][
                                                  "keymap.edit",
                                                  "keymap.reset_defaults",
                                                  "keymap.export",
-                                                 "open_with.show"});
-    REQUIRE(doc.unbound.size() == 32);
+                                                 "open_with.show",
+                                                 "view.cycle_mode",
+                                                 "view.group_none",
+                                                 "view.group_date",
+                                                 "view.group_type",
+                                                 "view.group_size",
+                                                 "view.group_cycle",
+                                                 "view.lock_folder",
+                                                 "view.lock_hierarchy",
+                                                 "view.lock_global",
+                                                 "view.tree_expand",
+                                                 "view.tree_collapse",
+                                                 "view.tree_collapse_all"});
+    REQUIRE(doc.unbound.size() == 44);
     for (const DocRow& row : doc.unbound) {
         if (row.command == "ops.toggle_panel") {
             continue; // bound by Phase 8 table

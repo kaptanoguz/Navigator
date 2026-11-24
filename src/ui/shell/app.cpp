@@ -98,13 +98,13 @@
 #include <navigator/palette.hpp>
 #include <navigator/path_input.hpp>
 #include <navigator/places.hpp>
-#include <navigator/view_settings.hpp>
 #include <navigator/platform.hpp>
 #include <navigator/preview.hpp>
 #include <navigator/preview_service.hpp>
 #include <navigator/transfer.hpp>
 #include <navigator/trash.hpp>
 #include <navigator/ui.hpp>
+#include <navigator/view_settings.hpp>
 #include <navigator/watch.hpp>
 
 #include "browser/browser_model.hpp"
@@ -2378,12 +2378,12 @@ void App::Impl::execute(const Command& command) {
     case CommandId::GroupBySize:
     case CommandId::GroupCycle: {
         ui::BrowserModel& m = workspace->active_model();
-        const view::GroupBy next =
-            command.id == CommandId::GroupByNone   ? view::GroupBy::None
-            : command.id == CommandId::GroupByDate ? view::GroupBy::Date
-            : command.id == CommandId::GroupByType ? view::GroupBy::Type
-            : command.id == CommandId::GroupBySize ? view::GroupBy::Size
-                                                   : view::next_group_by(m.group_by());
+        const view::GroupBy next = command.id == CommandId::GroupByNone   ? view::GroupBy::None
+                                   : command.id == CommandId::GroupByDate ? view::GroupBy::Date
+                                   : command.id == CommandId::GroupByType ? view::GroupBy::Type
+                                   : command.id == CommandId::GroupBySize
+                                       ? view::GroupBy::Size
+                                       : view::next_group_by(m.group_by());
         m.set_group_by(next);
         persist_view_change(m);
         return;

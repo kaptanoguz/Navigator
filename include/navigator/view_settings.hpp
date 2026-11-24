@@ -137,7 +137,8 @@ inline constexpr int kZoomStepPercent = 25;
 }
 
 // Single zoom axis unifying Details <-> Icons:
-//   - In Details, zooming in (delta_steps > 0) enters Icons mode at kMinZoomPercent + (delta-1)*step;
+//   - In Details, zooming in (delta_steps > 0) enters Icons mode at kMinZoomPercent +
+//   (delta-1)*step;
 //     zooming out stays in Details.
 //   - In Icons, zooming out past kMinZoomPercent transitions back to Details (zoom reset to
 //     kDefaultZoomPercent); otherwise steps within [kMinZoomPercent, kMaxZoomPercent].
@@ -228,7 +229,7 @@ struct ViewSettings {
 }
 
 struct ViewRule {
-    Path path; // canonical absolute path (no trailing '/' except "/")
+    Path path;                           // canonical absolute path (no trailing '/' except "/")
     ViewScope scope = ViewScope::Folder; // Folder or Hierarchy (never Global)
     ViewSettings settings;
 

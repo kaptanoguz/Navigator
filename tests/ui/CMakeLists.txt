@@ -16,6 +16,7 @@ add_executable(navigator_ui_tests
     lru_cache_test.cpp
     menu_model_test.cpp
     path_entry_test.cpp
+    phase9a_views_test.cpp
     sdl_clipboard_test.cpp
     sdl_input_test.cpp
     sidebar_test.cpp

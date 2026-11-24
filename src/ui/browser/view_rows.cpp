@@ -35,7 +35,7 @@ std::uint8_t date_bucket(Timestamp when, Timestamp now) noexcept {
     const std::int64_t now_s = to_unix_seconds(now);
     const std::int64_t when_s = to_unix_seconds(when);
     const std::int64_t diff_sec = now_s - when_s;
-    if (diff_sec >= 0 && diff_sec < 2 * 86400) {
+    if (diff_sec >= 0 && diff_sec < std::int64_t{2} * 86400) {
         // Check exact calendar yesterday.
         const auto yest_sec = static_cast<std::time_t>(now_s - 86400);
         std::tm y{};
@@ -44,10 +44,10 @@ std::uint8_t date_bucket(Timestamp when, Timestamp now) noexcept {
             return 1; // Yesterday
         }
     }
-    if (diff_sec >= 0 && diff_sec < 7 * 86400) {
+    if (diff_sec >= 0 && diff_sec < std::int64_t{7} * 86400) {
         return 2; // This week
     }
-    if (diff_sec >= 0 && diff_sec < 30 * 86400) {
+    if (diff_sec >= 0 && diff_sec < std::int64_t{30} * 86400) {
         return 3; // This month
     }
     if (w.tm_year == n.tm_year) {

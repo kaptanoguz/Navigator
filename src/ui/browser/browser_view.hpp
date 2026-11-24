@@ -223,7 +223,8 @@ private:
     void draw_list_view(const BrowserFrame& f, const Layout& l);
     void draw_tree_view(const BrowserFrame& f, const Layout& l);
     [[nodiscard]] float compute_mode_content_dp(const BrowserFrame& f, const Layout& l) const;
-    [[nodiscard]] std::size_t col_index_of(const BrowserFrame& f, view::ColumnId col) const noexcept;
+    [[nodiscard]] std::size_t col_index_of(const BrowserFrame& f,
+                                           view::ColumnId col) const noexcept;
 
     // Scroll state (dp).
     float scroll_ = 0.0F;

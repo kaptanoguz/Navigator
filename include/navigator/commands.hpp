@@ -359,10 +359,10 @@ enum class CommandId : std::uint32_t {
     GroupCycle = 1414,      // "view.group_cycle"    cycle None -> Date -> Type -> Size
     ViewLockFolder = 1415,  // "view.lock_folder"    lock view settings to this folder only
     ViewLockHierarchy = 1416, // "view.lock_hierarchy" lock view settings to this folder + subtree
-    ViewLockGlobal = 1417,  // "view.lock_global"    use global view settings (clear folder lock)
-    TreeExpand = 1420,      // "view.tree_expand"    expand cursor folder in Tree view
-    TreeCollapse = 1421,    // "view.tree_collapse"  collapse cursor folder (or move to parent)
-    TreeCollapseAll = 1422, // "view.tree_collapse_all" collapse all expanded folders in Tree view
+    ViewLockGlobal = 1417,    // "view.lock_global"    use global view settings (clear folder lock)
+    TreeExpand = 1420,        // "view.tree_expand"    expand cursor folder in Tree view
+    TreeCollapse = 1421,      // "view.tree_collapse"  collapse cursor folder (or move to parent)
+    TreeCollapseAll = 1422,   // "view.tree_collapse_all" collapse all expanded folders in Tree view
 };
 
 // Bit flags for the `arg` of CopyPath. Unknown bits are ignored (reserved).
