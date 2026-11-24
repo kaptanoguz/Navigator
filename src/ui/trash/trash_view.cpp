@@ -220,7 +220,8 @@ void TrashView::draw(const TrashFrame& f) {
         RectF{body.x + hair(p), body.y, body.w - (2.0F * hair(p)), std::max(body.h - pad, 0.0F)});
     if (!m.available() || m.error()) {
         const bool unavailable =
-            !m.available() || (m.error() && m.error()->code == ErrorCode::Unsupported);
+            !m.available() ||
+            (m.error().has_value() && m.error().value_or(Error{}).code == ErrorCode::Unsupported);
         const ShapedText t =
             p.shape(type::empty_title, tr(unavailable ? "trash.unavailable" : "error.io_error"));
         p.draw(t, std::round(body.center_x() - (0.5F * t.width())),
@@ -290,8 +291,7 @@ void TrashView::draw(const TrashFrame& f) {
             if (show_orig) {
                 Path parent = it.original_path.parent_path();
                 std::string shown = fs::to_display_name(parent.string());
-                if (f.home != nullptr && !f.home->empty() &&
-                    shown.rfind(f.home->string(), 0) == 0) {
+                if (f.home != nullptr && !f.home->empty() && shown.starts_with(f.home->string())) {
                     shown = "~" + shown.substr(f.home->string().size());
                 }
                 const ShapedText ot =

@@ -44,13 +44,13 @@ TEST_CASE("The clipboard round-trips the file formats through SDL", "[clipboard]
     CHECK(cb.owns_offer());
     const std::optional<std::string> gnome = cb.read(transfer::kMimeGnomeCopiedFiles);
     REQUIRE(gnome.has_value());
-    CHECK(gnome->starts_with("cut\nfile:///home/u/a%20b.txt"));
+    CHECK(gnome.value_or(std::string()).starts_with("cut\nfile:///home/u/a%20b.txt"));
     CHECK(cb.read(transfer::kMimeKdeCutSelection) == std::optional<std::string>("1"));
     // transfer::read_clipboard over the SDL clipboard: the same paths and the cut action.
     const std::optional<transfer::FileClipboard> back =
         transfer::read_clipboard([&](std::string_view mime) { return cb.read(mime); });
     REQUIRE(back.has_value());
-    CHECK(*back == clip);
+    CHECK(back.value_or(transfer::FileClipboard{}) == clip);
     // A new offer replaces the old one and keeps ownership; clearing drops it.
     transfer::FileClipboard copy;
     copy.paths = {"/x/y"};
@@ -58,7 +58,7 @@ TEST_CASE("The clipboard round-trips the file formats through SDL", "[clipboard]
     REQUIRE(offer2);
     cb.offer(std::move(*offer2));
     CHECK(cb.owns_offer());
-    CHECK(cb.read(transfer::kMimeGnomeCopiedFiles)->starts_with("copy\n"));
+    CHECK(cb.read(transfer::kMimeGnomeCopiedFiles).value_or(std::string()).starts_with("copy\n"));
     cb.clear_own();
     CHECK_FALSE(cb.owns_offer());
     CHECK_FALSE(cb.read(transfer::kMimeGnomeCopiedFiles).has_value());

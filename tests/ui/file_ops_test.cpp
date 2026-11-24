@@ -93,7 +93,7 @@ TEST_CASE("Cut dims rows, paste moves, the clipboard is cleared, undo and redo r
     CHECK_FALSE(r.ops->has_cut()); // cleared after the paste
     CHECK_FALSE(r.clip.owns_offer());
     REQUIRE(r.ops->undo_text().has_value());
-    CHECK(*r.ops->undo_text() == "move “a.txt” to B");
+    CHECK(r.ops->undo_text().value_or(std::string()) == "move “a.txt” to B");
 
     // Acceptance: a move between two folders comes back with Undo.
     r.ops->undo();
@@ -101,8 +101,8 @@ TEST_CASE("Cut dims rows, paste moves, the clipboard is cleared, undo and redo r
     CHECK(OpsRig::exists(r.p("A/a.txt")));
     CHECK_FALSE(OpsRig::exists(r.p("B/a.txt")));
     REQUIRE(r.ops->notice().has_value());
-    CHECK(r.ops->notice()->text.starts_with("Undone: "));
-    CHECK(r.ops->notice()->action == NoticeAction::Redo);
+    CHECK(r.ops->notice().value_or(OpNotice{}).text.starts_with("Undone: "));
+    CHECK(r.ops->notice().value_or(OpNotice{}).action == NoticeAction::Redo);
     CHECK(r.ops->redo_text().has_value());
 
     r.ops->redo();
@@ -114,7 +114,7 @@ TEST_CASE("Cut dims rows, paste moves, the clipboard is cleared, undo and redo r
     REQUIRE(r.settle());
     r.ops->undo();
     REQUIRE(r.settle());
-    CHECK(r.ops->notice()->text == "Nothing to undo");
+    CHECK(r.ops->notice().value_or(OpNotice{}).text == "Nothing to undo");
 }
 
 TEST_CASE("Paste reads Nautilus and Dolphin clipboards and ignores plain text",
@@ -149,7 +149,7 @@ TEST_CASE("Paste reads Nautilus and Dolphin clipboards and ignores plain text",
     REQUIRE(r.settle());
     CHECK_FALSE(OpsRig::exists(r.p("B/p.txt")));
     REQUIRE(r.ops->notice().has_value());
-    CHECK(r.ops->notice()->text == "The clipboard has no files to paste");
+    CHECK(r.ops->notice().value_or(OpNotice{}).text == "The clipboard has no files to paste");
 }
 
 TEST_CASE("Paste into the cursor folder", "[ops][clipboard]") {
@@ -177,9 +177,10 @@ TEST_CASE("Delete means trash: the notice offers Undo and the Trash view restore
     REQUIRE(r.settle());
     CHECK_FALSE(OpsRig::exists(r.p("A/a.txt")));
     REQUIRE(r.ops->notice().has_value());
-    CHECK(r.ops->notice()->text == "Moved 2 items to the trash");
-    CHECK(r.ops->notice()->action == NoticeAction::Undo); // "Moved 2 items to the trash.  Undo"
-    CHECK_FALSE(r.ops->notice()->error);
+    CHECK(r.ops->notice().value_or(OpNotice{}).text == "Moved 2 items to the trash");
+    CHECK(r.ops->notice().value_or(OpNotice{}).action ==
+          NoticeAction::Undo); // "Moved 2 items to the trash.  Undo"
+    CHECK_FALSE(r.ops->notice().value_or(OpNotice{}).error);
     CHECK_FALSE(r.ops->sheet_open()); // no confirmation for the trash
 
     // The Trash view lists both, newest first, with their original locations.
@@ -244,8 +245,8 @@ TEST_CASE("Permanent delete is gated by a confirmation sheet that starts on Canc
     CHECK_FALSE(OpsRig::exists(r.p("A/b.txt")));
     CHECK_FALSE(r.ops->undo_text().has_value());
     REQUIRE(r.ops->notice().has_value());
-    CHECK(r.ops->notice()->text == "Deleted 2 items permanently");
-    CHECK(r.ops->notice()->action == NoticeAction::None);
+    CHECK(r.ops->notice().value_or(OpNotice{}).text == "Deleted 2 items permanently");
+    CHECK(r.ops->notice().value_or(OpNotice{}).action == NoticeAction::None);
 }
 
 TEST_CASE("The sheet counts a folder tree off the UI thread", "[ops][safety]") {
@@ -259,16 +260,16 @@ TEST_CASE("The sheet counts a folder tree off the UI thread", "[ops][safety]") {
     std::optional<TreeStats> st;
     for (int i = 0; i < 400; ++i) {
         st = r.ops->confirm_stats();
-        if (st && st->done) {
+        if (st && st.value_or(TreeStats{}).done) {
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     REQUIRE(st.has_value());
-    CHECK(st->done);
-    CHECK(st->files == 2);
-    CHECK(st->folders == 2);
-    CHECK(st->bytes == 1500);
+    CHECK(st.value_or(TreeStats{}).done);
+    CHECK(st.value_or(TreeStats{}).files == 2);
+    CHECK(st.value_or(TreeStats{}).folders == 2);
+    CHECK(st.value_or(TreeStats{}).bytes == 1500);
     r.ops->sheet_escape();
     CHECK(OpsRig::exists(r.p("A/d/x.bin")));
 }
@@ -284,8 +285,8 @@ TEST_CASE("Without a trash nothing is deleted: the untrashable sheet asks",
     REQUIRE(r.ops->sheet_kind() == SheetKind::DeleteUntrashable);
     CHECK(r.ops->confirm_sheet()->focus == 0);
     REQUIRE(r.ops->notice().has_value());
-    CHECK(r.ops->notice()->error);
-    CHECK(r.ops->notice()->text.find("no usable trash") != std::string::npos);
+    CHECK(r.ops->notice().value_or(OpNotice{}).error);
+    CHECK(r.ops->notice().value_or(OpNotice{}).text.find("no usable trash") != std::string::npos);
     r.ops->sheet_escape();
     CHECK(OpsRig::exists(r.p("A/a.txt")));
     // Explicit, confirmed permanent delete works for exactly those items.
@@ -311,7 +312,7 @@ TEST_CASE("Headless runs have no trash", "[ops][safety][trash]") {
     CHECK_FALSE(model.available());
     model.refresh();
     REQUIRE(model.error().has_value());
-    CHECK(model.error()->code == ErrorCode::Unsupported);
+    CHECK(model.error().value_or(Error{}).code == ErrorCode::Unsupported);
     // An injected trash works and lives only in its directory.
     test::TempDir t;
     const AppTrash fixture = create_app_trash((t.path() / "tr").string(), true);
@@ -407,7 +408,8 @@ TEST_CASE("Conflicts: Replace goes through the trash, Skip leaves both, a typed 
     }
     REQUIRE(r.settle());
     CHECK(OpsRig::read(r.p("B/c.txt")) == "c-existing");
-    CHECK(r.ops->notice()->text == "Nothing to do: the items are already there");
+    CHECK(r.ops->notice().value_or(OpNotice{}).text ==
+          "Nothing to do: the items are already there");
 
     // A typed name: invalid names keep the sheet open with a message, a valid one is used.
     r.ops->copy(target_of(r, "A", {"c.txt"}), false);
@@ -559,8 +561,8 @@ TEST_CASE("New folder gets a unique name and asks for the inline editor", "[ops]
     CHECK(OpsRig::exists(r.p("A/New folder (2)")));
     const Reconcile rc = r.ops->take_reconcile();
     REQUIRE(rc.rename_after_create.has_value());
-    CHECK(rc.rename_after_create->name == "New folder (2)");
-    CHECK(rc.rename_after_create->tab == layout::TabId{7});
+    CHECK(rc.rename_after_create.value_or(Reconcile::Rename{}).name == "New folder (2)");
+    CHECK(rc.rename_after_create.value_or(Reconcile::Rename{}).tab == layout::TabId{7});
     // Undo removes the empty folder it created, and only that.
     r.ops->undo();
     REQUIRE(r.settle());
@@ -584,8 +586,8 @@ TEST_CASE("Partial failures are reported with the failing item", "[ops][errors]"
     REQUIRE_FALSE(f.details.empty());
     CHECK(f.details.front().find("b.txt") != std::string::npos);
     REQUIRE(r.ops->notice().has_value());
-    CHECK(r.ops->notice()->error);
-    CHECK(r.ops->notice()->action == NoticeAction::ShowPanel);
+    CHECK(r.ops->notice().value_or(OpNotice{}).error);
+    CHECK(r.ops->notice().value_or(OpNotice{}).action == NoticeAction::ShowPanel);
 }
 
 TEST_CASE("Error sentences are plain language in English and Turkish", "[ops][errors][i18n]") {
@@ -641,7 +643,7 @@ TEST_CASE("Op titles and summaries handle plurals in both languages", "[ops][i18
     p.bytes_done = 50;
     p.totals_final = true;
     REQUIRE(op_fraction(p).has_value());
-    CHECK(*op_fraction(p) == 0.25);
+    CHECK(op_fraction(p).value_or(-1.0) == 0.25);
 }
 
 TEST_CASE("Quit while operations run asks; the answers are keep, wait or cancel", "[ops][quit]") {
@@ -728,8 +730,8 @@ TEST_CASE("Protected folders are refused with a plain message", "[ops][safety]")
     REQUIRE(r.settle());
     CHECK(OpsRig::exists(r.p("home")));
     REQUIRE(r.ops->notice().has_value());
-    CHECK(r.ops->notice()->error);
-    CHECK(r.ops->notice()->text.find("protected") != std::string::npos);
+    CHECK(r.ops->notice().value_or(OpNotice{}).error);
+    CHECK(r.ops->notice().value_or(OpNotice{}).text.find("protected") != std::string::npos);
 }
 
 TEST_CASE("Copy to a folder links and the other-pane helpers use the same path", "[ops][dnd]") {

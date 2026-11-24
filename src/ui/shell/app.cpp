@@ -490,7 +490,7 @@ struct App::Impl {
     [[nodiscard]] bool trash_active() const;
     void enter_trash_view();
     void leave_trash_view();
-    bool sheet_key(const KeyChord& chord);
+    bool sheet_key(const KeyChord& chord) const;
     void begin_inline_rename();
     [[nodiscard]] std::function<bool(std::string_view)> name_taken() const;
     void apply_reconcile(double t_ms);
@@ -1104,7 +1104,7 @@ void App::Impl::handle_event(const SDL_Event& event) {
     }
 }
 
-bool App::Impl::sheet_key(const KeyChord& chord) {
+bool App::Impl::sheet_key(const KeyChord& chord) const {
     if (!file_ops->sheet_open()) {
         return false;
     }
@@ -2998,7 +2998,8 @@ void App::Impl::run_script_step() {
     } else if (op == "hoverplay") {
         inspector_view.debug_hover_play(); // screenshots: the Play button's tooltip
     } else if (op == "waitsearch" || op == "waitfound" || op == "waitindex" ||
-               op == "waitpreview" || op == "waitthumbs") {
+               op == "waitpreview" || op == "waitthumbs" || op == "waitops" ||
+               op == "waitprogress" || op == "waitconflict") {
         // Held before the step was taken (above).
     } else if (op == "focus") {
         workspace->activate_pane(pane_at_index(num(1)));
@@ -3035,8 +3036,6 @@ void App::Impl::run_script_step() {
         if (const std::optional<ui::RectF> r = sidebar.row_rect(num(1)); r) {
             sidebar_menu(num(1), r->x + (0.6F * r->w), r->center_y());
         }
-    } else if (op == "waitops" || op == "waitprogress" || op == "waitconflict") {
-        // Held before the step was taken (above).
     } else if (op == "panel") {
         if (!file_ops->panel_open()) {
             file_ops->toggle_panel();

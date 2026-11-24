@@ -136,7 +136,7 @@ TEST_CASE("An internal drag hovers, evaluates every frame and drops", "[dnd]") {
     d.begin({"/a/x"}, 1, 0.0);
     REQUIRE(d.dragging());
     d.update(100, 60, Modifiers::None, slots, 10.0, probe);
-    CHECK(d.hover()->folder == "/b");
+    CHECK(d.hover().value_or(DropSlot{}).folder == "/b");
     CHECK(d.eval().action == DropAction::Move);
     // The modifier changes the action while hovering.
     d.update(100, 60, Modifiers::Ctrl, slots, 20.0, probe);
@@ -184,8 +184,8 @@ TEST_CASE("A folder row hovered for 700 ms springs open once", "[dnd]") {
     d.update(10, 10, Modifiers::None, slots, 810.0, probe);
     const std::optional<DropSlot> s = d.take_spring(810.0);
     REQUIRE(s.has_value());
-    CHECK(s->folder == "/b");
-    CHECK(s->tab == 3);
+    CHECK(s.value_or(DropSlot{}).folder == "/b");
+    CHECK(s.value_or(DropSlot{}).tab == 3);
     CHECK_FALSE(d.take_spring(900.0).has_value()); // once per hover
     // A different row restarts the timer.
     d.update(10, 40, Modifiers::None, slots, 1000.0, probe);
