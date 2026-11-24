@@ -341,8 +341,8 @@ TEST_CASE("user_dir: XDG user directories from $XDG_CONFIG_HOME/user-dirs.dirs",
     }
 }
 
-TEST_CASE("later-phase stubs fail with Unsupported", "[stubs]") {
-    CHECK(platform::open_terminal("/").error().code == ErrorCode::Unsupported);
+TEST_CASE("open_terminal validates directory path (implemented in Phase 10)", "[stubs]") {
+    CHECK(platform::open_terminal("relative").error().code == ErrorCode::InvalidArgument);
 }
 
 TEST_CASE("move_to_trash of a missing path is NotFound and creates nothing", "[trash]") {
