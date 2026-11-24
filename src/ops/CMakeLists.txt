@@ -6,6 +6,7 @@
 # src/platform. Safety rules S1..S16 (ops.hpp) are normative for every file here.
 
 add_library(navigator_ops STATIC
+    batch_rename.cpp
     conflict.cpp
     context.cpp
     copy.cpp
