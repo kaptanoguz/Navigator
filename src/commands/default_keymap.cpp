@@ -1,9 +1,9 @@
 // load_default_keymap(): Navigator's default bindings.
 //
 // This table must match docs/keymap.md exactly: the Phase 0 table (minus "window close", which
-// is a window event, not a chord), then the Phase 2, Phase 3, Phase 4, Phase 5 and Phase 6 tables,
-// in the same row order ("(unbound)" rows are skipped). The first chord of a command is its primary
-// key hint, so order matters. tests/commands checks the table.
+// is a window event, not a chord), then the Phase 2, 3, 4, 5, 6 and 7 tables, in the same row
+// order ("(unbound)" rows are skipped). The first chord of a command is its primary key hint, so
+// order matters. tests/commands checks the table.
 #include <array>
 #include <cstdint>
 #include <string>
@@ -94,6 +94,19 @@ constexpr std::array kDefaults{
     // Phase 6
     DefaultBinding{{Key::Space, kNone}, "view.inspect", 0},
     DefaultBinding{{Key::KeypadEnter, kAlt}, "view.inspect", 0},
+    // Phase 7
+    DefaultBinding{{Key::C, kCtrl}, "edit.copy", 0},
+    DefaultBinding{{Key::X, kCtrl}, "edit.cut", 0},
+    DefaultBinding{{Key::V, kCtrl}, "edit.paste", PasteArg::None},
+    DefaultBinding{{Key::Z, kCtrl}, "edit.undo", 0},
+    DefaultBinding{{Key::Z, kCtrlShift}, "edit.redo", 0},
+    DefaultBinding{{Key::Y, kCtrl}, "edit.redo", 0},
+    DefaultBinding{{Key::Delete, kNone}, "file.trash", 0},
+    DefaultBinding{{Key::Delete, kShift}, "file.delete_permanently", 0},
+    DefaultBinding{{Key::F2, kNone}, "file.rename", 0},
+    DefaultBinding{{Key::N, kCtrlShift}, "file.new_folder", 0},
+    DefaultBinding{{Key::F7, kNone}, "file.copy_to_other_pane", 0},
+    DefaultBinding{{Key::F7, kShift}, "file.move_to_other_pane", 0},
 };
 
 } // namespace

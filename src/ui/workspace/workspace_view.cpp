@@ -236,7 +236,14 @@ void WorkspaceView::layout_strips(const ShellFrame& f) {
             const BrowserModel* m = ws.model(t.id);
             dirs.push_back(m != nullptr && m->loaded() ? m->current_dir() : t.state.path);
         }
-        const std::vector<std::string> titles = disambiguated_titles(dirs);
+        std::vector<std::string> titles = disambiguated_titles(dirs);
+        if (f.tab_title) {
+            for (std::size_t i = 0; i < node->tabs.size() && i < titles.size(); ++i) {
+                if (std::optional<std::string> t = f.tab_title(node->tabs[i].id); t) {
+                    titles[i] = std::move(*t);
+                }
+            }
+        }
         std::vector<float> natural;
         natural.reserve(node->tabs.size());
         for (std::size_t i = 0; i < node->tabs.size(); ++i) {
@@ -354,6 +361,19 @@ BrowserFrame WorkspaceView::browser_frame(const ShellFrame& f, const Strip& s, l
         .filter_focused = filter_focused && f.focused,
         .index_status = std::move(index),
         .thumbnails = f.thumbnails,
+        .file_ops = f.file_ops,
+        .inline_edit = (f.file_ops != nullptr && f.file_ops->inline_edit() != nullptr &&
+                        f.file_ops->inline_edit()->tab == tab && m.loaded() &&
+                        f.file_ops->inline_edit()->dir == m.current_dir())
+                           ? f.file_ops->inline_edit()
+                           : nullptr,
+        .slots = f.slots,
+        .drag_active = f.file_drag_active,
+        .drag_enabled = true,
+        .status_reserve =
+            s.active_pane && f.ops_chip_width
+                ? (f.ops_chip_width() > 0.0F ? f.ops_chip_width() + f.painter.px(10.0F) : 0.0F)
+                : 0.0F,
     };
 }
 
@@ -379,6 +399,10 @@ void WorkspaceView::update(const ShellFrame& f) {
         (over_strip || over_splitter_)) {
         shell_capture_ = true;
     }
+    // Phase 7: the operations panel, notices and sheets own the pointer over them.
+    if (f.ops_modal || (f.ops_hit && f.ops_hit(ptr.x, ptr.y))) {
+        shell_capture_ = true;
+    }
     // The address bar's dropdown floats over the list: the list must not see that pointer.
     if (address_.is_open() && address_dropdown_.w > 0.0F &&
         contains(address_dropdown_, ptr.x, ptr.y)) {
@@ -392,7 +416,7 @@ void WorkspaceView::update(const ShellFrame& f) {
         }
         const layout::TabId tab = node->tabs[node->active_tab].id;
         const BrowserModel* m = f.workspace.model(tab);
-        if (m == nullptr) {
+        if (m == nullptr || (f.is_trash_tab && f.is_trash_tab(tab))) {
             continue;
         }
         const Palette pal = pane_palette(f.palette, f.theme, s.dim);
@@ -445,11 +469,40 @@ void WorkspaceView::draw(const ShellFrame& f) {
         const Palette pal = pane_palette(f.palette, f.theme, s.dim);
         if (node->active_tab < node->tabs.size()) {
             const layout::TabId tab = node->tabs[node->active_tab].id;
-            if (const BrowserModel* m = ws.model(tab); m != nullptr) {
+            if (f.is_trash_tab && f.draw_trash && f.is_trash_tab(tab)) {
+                r.set_clip(s.body);
+                f.draw_trash(tab, s.body, pal, vp, s.active_pane,
+                             s.active_pane && ws.layout().pane_count() > 1);
+                r.set_clip(std::nullopt);
+            } else if (const BrowserModel* m = ws.model(tab); m != nullptr) {
                 const BrowserFrame bf = browser_frame(f, s, tab, *m, pal, vp);
                 r.set_clip(s.body);
                 view(tab).draw(bf);
                 r.set_clip(std::nullopt);
+            }
+            // The progress chip lives in the active pane's status bar.
+            if (s.active_pane && f.ops_chip_width && f.draw_ops_chip) {
+                const float cw = f.ops_chip_width();
+                if (cw > 0.0F) {
+                    const float sh = std::round(p.px(dm.status_bar_height));
+                    const float right_pad = std::round(p.px(dm.panel_margin + 8.0F));
+                    r.set_clip(s.body);
+                    f.draw_ops_chip(
+                        RectF{s.body.right() - right_pad - cw, s.body.bottom() - sh, cw, sh});
+                    r.set_clip(std::nullopt);
+                }
+            }
+            // Tabs accept dropped files: that tab's folder.
+            if (f.slots != nullptr) {
+                for (const TabSlot& t : s.slots) {
+                    const BrowserModel* tm = ws.model(t.id);
+                    if (tm == nullptr || !tm->loaded() || tm->current_dir().empty() ||
+                        (f.is_trash_tab && f.is_trash_tab(t.id))) {
+                        continue;
+                    }
+                    f.slots->push_back(DropSlot{intersect(t.rect, s.tabs), tm->current_dir(),
+                                                SlotKind::Tab, t.id.value, t.title});
+                }
             }
         }
         // A pane below another one: a hairline separates the upper status line from this strip.
@@ -494,6 +547,9 @@ void WorkspaceView::draw(const ShellFrame& f) {
     draw_drag_overlay(f);
     draw_address_dropdown(f);
     draw_toast(f);
+    if (f.draw_ops_overlay) {
+        f.draw_ops_overlay(toast_ ? std::round(p.px(46.0F)) : 0.0F);
+    }
     if (menu_request_) {
         menu_request_ = false;
         if (!popup_open() && !drag_.dragging()) {
@@ -555,7 +611,8 @@ bool WorkspaceView::strip_button(const ShellFrame& f, const RectF& rect, WidgetI
     const Painter& p = f.painter;
     Renderer& r = p.renderer();
     const PointerInput& ptr = f.pointer;
-    const bool blocked = popup_open() || drag_.dragging() || splitter_.has_value();
+    const bool blocked =
+        popup_open() || drag_.dragging() || splitter_.has_value() || f.file_drag_active;
     const bool inside = !blocked && contains(rect, ptr.x, ptr.y);
     if (inside && ptr.pressed && active_ == WidgetId::None) {
         active_ = id;

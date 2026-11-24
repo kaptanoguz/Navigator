@@ -46,15 +46,18 @@ ThumbPlacement place_thumbnail(float tex_w, float tex_h, const RectF& box) noexc
 
 bool ListThumbnails::draw_row(Renderer& r, const Palette& pal, const BrowserModel& model,
                               std::size_t row, const RectF& box, float scale, float dim) {
+    return draw_entry(r, pal, model.row_path(row), model.row_entry(row), box, scale, dim);
+}
+
+bool ListThumbnails::draw_entry(Renderer& r, const Palette& pal, const Path& path,
+                                const fs::DirEntry& e, const RectF& box, float scale, float dim) {
     if (!scheduler_->enabled()) {
         return false;
     }
-    const fs::DirEntry& e = model.row_entry(row);
     const std::string_view mime = mime::guess_for_entry(e);
     if (!wants_thumbnail(mime, e)) {
         return false;
     }
-    const Path path = model.row_path(row);
     preview::PreviewRequest req =
         make_request(path, e, preview::PreviewPurpose::Thumbnail, box_target(box.w));
     if (location_) {

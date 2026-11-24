@@ -1,5 +1,5 @@
 // open_with_default(), mime_type(), user_dir() (the XDG user dirs via read_user_dirs in
-// user_dirs.cpp) and the later-phase stubs of
+// user_dirs.cpp), move_to_trash() (wrapper over trash.cpp) and the later-phase stubs of
 // <navigator/platform.hpp>. No GIO: openers are external programs started through IAppLauncher.
 #include <cerrno>
 #include <cstdlib>
@@ -17,6 +17,7 @@
 #include <navigator/fs.hpp>
 #include <navigator/mime.hpp>
 #include <navigator/platform.hpp>
+#include <navigator/trash.hpp>
 
 #include "errno_util.hpp"
 
@@ -208,8 +209,16 @@ Result<Path> user_dir(UserDir which) {
     }
 }
 
-Result<void> move_to_trash(const Path& /*path*/) {
-    return fail(ErrorCode::Unsupported, "move_to_trash: not implemented before the ops phase");
+Result<void> move_to_trash(const Path& path) {
+    auto trash = trash::create_trash({});
+    if (!trash) {
+        return Unexpected<Error>(std::move(trash.error()));
+    }
+    auto item = (*trash)->trash(path);
+    if (!item) {
+        return Unexpected<Error>(std::move(item.error()));
+    }
+    return ok();
 }
 
 Result<void> open_terminal(const Path& /*dir*/) {

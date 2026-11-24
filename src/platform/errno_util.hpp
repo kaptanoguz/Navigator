@@ -19,4 +19,13 @@ namespace navigator::platform_internal {
 [[nodiscard]] Error errno_error(int err, std::string_view what, const Path& path,
                                 ErrorCode fallback = ErrorCode::IoError);
 
+// Phase 7 mapping for file operations (trash): errno_code() plus EROFS -> ReadOnlyFilesystem,
+// ENOSPC/EDQUOT -> NoSpace, EXDEV -> CrossDevice, EEXIST -> AlreadyExists, ENOTEMPTY ->
+// NotEmpty. Kept separate so the Phase 1-6 producers keep their documented codes.
+[[nodiscard]] ErrorCode ops_errno_code(int err, ErrorCode fallback = ErrorCode::IoError) noexcept;
+
+// errno_error() with ops_errno_code().
+[[nodiscard]] Error ops_errno_error(int err, std::string_view what, const Path& path,
+                                    ErrorCode fallback = ErrorCode::IoError);
+
 } // namespace navigator::platform_internal

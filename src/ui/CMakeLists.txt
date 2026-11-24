@@ -19,6 +19,7 @@ add_library(navigator_ui_browser STATIC
     browser/format.cpp
     browser/listing_worker.cpp
     browser/watch_worker.cpp
+    dnd/file_drag.cpp
     i18n/i18n.cpp
     inspector/inspector_controller.cpp
     inspector/metadata.cpp
@@ -26,6 +27,9 @@ add_library(navigator_ui_browser STATIC
     inspector/text_layout.cpp
     inspector/thumbnail_scheduler.cpp
     inspector/zoom.cpp
+    ops/app_trash.cpp
+    ops/file_ops.cpp
+    ops/op_text.cpp
     path/copy_path.cpp
     path/path_entry.cpp
     path/path_worker.cpp
@@ -38,6 +42,7 @@ add_library(navigator_ui_browser STATIC
     search/filter_rules.cpp
     sidebar/places_model.cpp
     sidebar/sidebar_model.cpp
+    trash/trash_model.cpp
     widgets/text_edit.cpp
     workspace/drag_drop.cpp
     workspace/pane_geometry.cpp
@@ -54,6 +59,7 @@ target_link_libraries(navigator_ui_browser
         navigator::core
         navigator::platform
         navigator::search
+        navigator::ops
         Threads::Threads
     PRIVATE
         navigator::options
@@ -70,6 +76,11 @@ add_library(navigator_ui STATIC
     browser/browser_search_view.cpp
     browser/browser_view.cpp
     input/sdl_input.cpp
+    ops/ops_view.cpp
+    platform/outgoing_drag.cpp
+    platform/wayland_drag.cpp
+    platform/xdnd_source.cpp
+    ops/sdl_clipboard.cpp
     inspector/inspector_view.cpp
     inspector/list_thumbnails.cpp
     inspector/texture_cache.cpp
@@ -85,6 +96,7 @@ add_library(navigator_ui STATIC
     sidebar/sidebar_view.cpp
     text/text_renderer.cpp
     theme/theme.cpp
+    trash/trash_view.cpp
     widgets/icons.cpp
     widgets/text_field.cpp
     widgets/text_fit.cpp
@@ -101,6 +113,23 @@ target_include_directories(navigator_ui PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT
 
 target_compile_definitions(navigator_ui PRIVATE
     NAVIGATOR_VERSION_STRING="${PROJECT_VERSION}")
+
+# Phase 7: outgoing drags (docs/dnd.md). Optional: without the X11 or Wayland development
+# headers the backend is compiled out and the ui falls back to the clipboard path.
+find_package(X11 QUIET)
+if(X11_FOUND AND X11_INCLUDE_DIR)
+    target_compile_definitions(navigator_ui PRIVATE NAVIGATOR_UI_HAVE_X11=1)
+    target_include_directories(navigator_ui PRIVATE ${X11_INCLUDE_DIR})
+    target_link_libraries(navigator_ui PRIVATE ${X11_X11_LIB})
+endif()
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(NAVIGATOR_WAYLAND_CLIENT QUIET IMPORTED_TARGET wayland-client)
+    if(NAVIGATOR_WAYLAND_CLIENT_FOUND)
+        target_compile_definitions(navigator_ui PRIVATE NAVIGATOR_UI_HAVE_WAYLAND=1)
+        target_link_libraries(navigator_ui PRIVATE PkgConfig::NAVIGATOR_WAYLAND_CLIENT)
+    endif()
+endif()
 
 target_link_libraries(navigator_ui
     PUBLIC

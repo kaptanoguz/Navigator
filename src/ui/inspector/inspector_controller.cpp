@@ -36,6 +36,14 @@ bool Controller::unlock_if_gone(bool exists) noexcept {
     return false;
 }
 
+bool Controller::retarget(const Path& from, Item moved, double now_ms) {
+    if (!item_ || item_->path != from) {
+        return false;
+    }
+    adopt(std::move(moved), now_ms, true);
+    return true;
+}
+
 void Controller::cancel() noexcept {
     if (service_ != nullptr && ticket_.valid()) {
         service_->cancel(ticket_);

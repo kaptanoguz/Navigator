@@ -27,6 +27,16 @@
 // builds, no disk cache, no thumbnailers). A Space typed into a focused text field is consumed
 // before the keymap (field_consumes_as_text) and becomes text; the shell's key routing itself
 // is covered end to end by tests/integration/preview_app_smoke.sh (key:Space script steps).
+//
+// Phase 7: edit.* / file.* commands are the shell's (App::Impl::file_command): the Workspace does
+// not handle them (checked). Their effects are driven through the same headless FileOps the shell
+// owns (ui::FileOps over a REAL trash::create_trash() whose home trash lies in a fixture, an
+// in-memory clipboard, a FileTarget built from the BrowserModel exactly like
+// App::Impl::file_target) and checked on the fixture folder, the clipboard formats and the fixture
+// trash. Shift+Delete never deletes without the confirmation sheet's accept. The text-field and
+// filter-field consumption of the chords is checked on the routing functions the shell calls first
+// (ui::apply_field_key, ui::route_filter_key); the shell's own focus scoping (sidebar, popups,
+// address bar, Trash view) is covered by tests/integration/ops_app_smoke.sh on the real binary.
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -56,12 +66,16 @@
 #include <navigator/preview.hpp>
 #include <navigator/preview_service.hpp>
 #include <navigator/search.hpp>
+#include <navigator/transfer.hpp>
+#include <navigator/trash.hpp>
 
 #include "browser/browser_model.hpp"
 #include "browser_support.hpp"
 #include "fixture.hpp"
 #include "inspector/inspector_controller.hpp"
 #include "inspector/preview_backend.hpp"
+#include "ops/clipboard.hpp"
+#include "ops/file_ops.hpp"
 #include "path/copy_path.hpp"
 #include "path/path_entry.hpp"
 #include "search/filter_rules.hpp"
@@ -859,6 +873,385 @@ void add_phase6_checks(std::map<std::string, Check>& checks) {
     checks["view.inspect"] = check_inspect;
 }
 
+// ---- Phase 7 ----------------------------------------------------------------------------------
+// A FileOps like the shell's, headless: real trash inside a fixture (never the owner's), the
+// in-memory clipboard, protected paths that name only fixture folders.
+struct FileRig {
+    Scene& s;
+    TempDir side; // trash and fake home live here, not in the folder the Scene lists
+    ui::MemoryClipboard clip;
+    std::shared_ptr<trash::ITrash> trash;
+    std::unique_ptr<ui::FileOps> ops;
+
+    explicit FileRig(Scene& scene) : s(scene) {
+        trash::TrashOptions o;
+        o.home_trash = side / "Trash";
+        o.use_topdir_trashes = false;
+        Result<std::shared_ptr<trash::ITrash>> made = trash::create_trash(std::move(o));
+        REQUIRE(made.has_value());
+        trash = *made;
+        ui::FileOpsOptions fo;
+        fo.trash = trash;
+        fo.clipboard = &clip;
+        fo.new_folder_name = [] { return std::string("New folder"); };
+        fo.protected_paths.home = side / "home";
+        fo.protected_paths.trash_roots.push_back(side / "Trash");
+        ops = std::make_unique<ui::FileOps>(std::move(fo));
+    }
+    // App::Impl::file_target(), on the active tab.
+    [[nodiscard]] ui::FileTarget target() const {
+        ui::FileTarget t;
+        t.tab = s.ws->active_tab();
+        const BrowserModel& m = s.m();
+        t.dir = m.current_dir();
+        for (std::size_t i = 0; i < m.row_count(); ++i) {
+            if (m.is_selected(i)) {
+                t.selected.push_back(m.row_path(i));
+            }
+        }
+        if (m.cursor() < m.row_count()) {
+            t.cursor = m.row_path(m.cursor());
+            t.cursor_is_dir = fs::is_directory_like(m.row_entry(m.cursor()));
+        }
+        return t;
+    }
+    void idle() const {
+        REQUIRE(ops->wait_idle(std::chrono::seconds(10)));
+        (void)ops->take_reconcile();
+        s.run(Command{CommandId::Refresh, 0});
+    }
+    [[nodiscard]] std::vector<std::string> trash_files() const {
+        std::vector<std::string> names;
+        std::error_code ec;
+        for (auto it = std::filesystem::directory_iterator(side / "Trash" / "files", ec);
+             !ec && it != std::filesystem::directory_iterator(); it.increment(ec)) {
+            names.push_back(it->path().filename().string());
+        }
+        std::sort(names.begin(), names.end());
+        return names;
+    }
+    [[nodiscard]] static std::string slurp(const Path& p) {
+        std::ifstream in(p, std::ios::binary);
+        return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    }
+    [[nodiscard]] static bool exists(const Path& p) {
+        std::error_code ec;
+        return std::filesystem::symlink_status(p, ec).type() !=
+               std::filesystem::file_type::not_found;
+    }
+    void select(std::string_view name) const {
+        REQUIRE(s.m().find(name) != kNoRow);
+        s.m().click_row(s.m().find(name), Modifiers::None);
+    }
+    // The previously active pane's folder, as App::Impl::file_command picks it (F7 / Shift+F7).
+    [[nodiscard]] std::optional<Path> other_pane_dir() const {
+        const std::vector<PaneId> order = s.l().pane_order();
+        if (order.size() < 2) {
+            return std::nullopt;
+        }
+        const std::size_t at = s.active_pane_index();
+        const layout::PaneNode* node = s.l().find_pane(order[(at + 1) % order.size()]);
+        if (node == nullptr || node->active_tab >= node->tabs.size()) {
+            return std::nullopt;
+        }
+        const BrowserModel* other = s.ws->model(node->tabs[node->active_tab].id);
+        if (other == nullptr || !other->loaded()) {
+            return std::nullopt;
+        }
+        return other->current_dir();
+    }
+};
+
+void check_copy_cut(Scene& s, const Command& c) {
+    check_not_handled(s, c); // the Workspace never handles file commands
+    FileRig f(s);
+    const bool cut = c.id == CommandId::Cut;
+    const auto before = entry_names(s.m());
+    f.select("c.txt");
+    f.ops->copy(f.target(), cut);
+    // The GNOME, uri-list and (cut only) KDE formats are offered; nothing on disk changed.
+    const std::string gnome = f.clip.read(transfer::kMimeGnomeCopiedFiles).value_or(std::string());
+    REQUIRE_FALSE(gnome.empty());
+    CHECK(gnome.starts_with(cut ? "cut\nfile://" : "copy\nfile://"));
+    CHECK(gnome.find("/c.txt") != std::string::npos);
+    const std::string uris = f.clip.read(transfer::kMimeUriList).value_or(std::string());
+    REQUIRE_FALSE(uris.empty());
+    CHECK(uris.find("/c.txt") != std::string::npos);
+    CHECK(f.clip.read(transfer::kMimeKdeCutSelection).has_value() == cut);
+    CHECK(f.ops->has_cut() == cut);
+    CHECK(f.ops->is_cut(s.t / "c.txt") == cut);
+    CHECK_FALSE(f.ops->busy());
+    CHECK(entry_names(s.m()) == before);
+    CHECK(FileRig::slurp(s.t / "c.txt") == "abc");
+    CHECK(f.trash_files().empty());
+    // Nothing selected: nothing offered.
+    f.clip.clear_own();
+    s.m().clear_selection();
+    ui::FileTarget none = f.target();
+    none.selected.clear();
+    none.cursor.clear();
+    f.ops->copy(none, cut);
+    CHECK_FALSE(f.clip.owns_offer());
+}
+
+void check_paste(Scene& s, const Command& c) {
+    check_not_handled(s, c);
+    FileRig f(s);
+    // Copy then paste into alpha: a second c.txt appears, the first stays.
+    f.select("c.txt");
+    f.ops->copy(f.target(), false);
+    s.go(s.t / "alpha");
+    f.ops->paste(f.target(), false);
+    f.idle();
+    CHECK(FileRig::slurp(s.t / "alpha" / "c.txt") == "abc");
+    CHECK(FileRig::slurp(s.t / "c.txt") == "abc");
+    CHECK(s.m().find("c.txt") != kNoRow);
+    // Pasting the same copy again: the name is taken, the conflict sheet opens (nothing is
+    // overwritten while it is open), and Enter = Keep both.
+    f.ops->paste(f.target(), false);
+    double now = 2000.0;
+    for (int i = 0; i < 500 && f.ops->sheet_kind() != ui::SheetKind::Conflict; ++i) {
+        now += 10.0;
+        (void)f.ops->frame_start(now);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    REQUIRE(f.ops->sheet_kind() == ui::SheetKind::Conflict);
+    CHECK(FileRig::slurp(s.t / "alpha" / "c.txt") == "abc");
+    f.ops->sheet_activate(); // Enter on the default button
+    f.idle();
+    CHECK(FileRig::exists(s.t / "alpha" / "c (2).txt"));
+    CHECK(FileRig::slurp(s.t / "alpha" / "c.txt") == "abc");
+    // Cut then paste into beta moves the file and clears the clipboard.
+    s.go(s.t.path());
+    f.select("f01");
+    f.ops->copy(f.target(), true);
+    s.go(s.t / "beta");
+    f.ops->paste(f.target(), false);
+    f.idle();
+    CHECK(FileRig::exists(s.t / "beta" / "f01"));
+    CHECK_FALSE(FileRig::exists(s.t / "f01"));
+    CHECK_FALSE(f.ops->has_cut());
+    CHECK_FALSE(f.clip.owns_offer());
+    // Paste into the cursor folder (context menu "Paste into folder").
+    s.go(s.t.path());
+    f.select("c.txt");
+    f.ops->copy(f.target(), false);
+    f.select("beta");
+    f.ops->paste(f.target(), true);
+    f.idle();
+    CHECK(FileRig::slurp(s.t / "beta" / "c.txt") == "abc");
+    CHECK(f.trash_files().empty()); // nothing was trashed or removed by pasting
+}
+
+void check_undo_redo(Scene& s, const Command& c) {
+    check_not_handled(s, c);
+    FileRig f(s);
+    const bool redo = c.id == CommandId::Redo;
+    // Nothing to undo: no change, no error state.
+    const auto before = entry_names(s.m());
+    f.ops->undo();
+    f.ops->redo();
+    f.idle();
+    CHECK(entry_names(s.m()) == before);
+    // paste -> undo -> redo
+    f.select("c.txt");
+    f.ops->copy(f.target(), false);
+    s.go(s.t / "alpha");
+    f.ops->paste(f.target(), false);
+    f.idle();
+    REQUIRE(FileRig::exists(s.t / "alpha" / "c.txt"));
+    REQUIRE(f.ops->undo_stack().can_undo());
+    f.ops->undo(); // Ctrl+Z: the copy goes to the trash, never unlinked
+    f.idle();
+    CHECK_FALSE(FileRig::exists(s.t / "alpha" / "c.txt"));
+    CHECK(FileRig::slurp(s.t / "c.txt") == "abc");
+    CHECK(f.trash_files() == std::vector<std::string>{"c.txt"});
+    CHECK(FileRig::slurp(f.side / "Trash" / "files" / "c.txt") == "abc");
+    if (redo) {
+        REQUIRE(f.ops->undo_stack().can_redo());
+        f.ops->redo(); // Ctrl+Shift+Z / Ctrl+Y: copied again, the trashed copy stays trashed
+        f.idle();
+        CHECK(FileRig::slurp(s.t / "alpha" / "c.txt") == "abc");
+        CHECK(f.trash_files() == std::vector<std::string>{"c.txt"});
+        CHECK_FALSE(f.ops->undo_stack().can_redo());
+    }
+    CHECK(FileRig::slurp(s.t / "c.txt") == "abc");
+}
+
+void check_trash(Scene& s, const Command& c) {
+    check_not_handled(s, c);
+    FileRig f(s);
+    f.select("c.txt");
+    f.ops->trash(f.target()); // Delete: trash, never delete
+    f.idle();
+    CHECK_FALSE(FileRig::exists(s.t / "c.txt"));
+    CHECK(s.m().find("c.txt") == kNoRow);
+    CHECK(f.trash_files() == std::vector<std::string>{"c.txt"});
+    CHECK(FileRig::slurp(f.side / "Trash" / "files" / "c.txt") == "abc");
+    // The notice offers Undo, and Undo brings the file back.
+    REQUIRE(f.ops->notice().has_value());
+    const ui::OpNotice notice = f.ops->notice().value_or(ui::OpNotice{});
+    CHECK(notice.action == ui::NoticeAction::Undo);
+    CHECK_FALSE(notice.error);
+    CHECK_FALSE(f.ops->sheet_open()); // no confirmation for a trash
+    f.ops->undo();
+    f.idle();
+    CHECK(FileRig::slurp(s.t / "c.txt") == "abc");
+    CHECK(f.trash_files().empty());
+    // A folder goes whole.
+    f.select("alpha");
+    f.ops->trash(f.target());
+    f.idle();
+    CHECK_FALSE(FileRig::exists(s.t / "alpha"));
+    CHECK(FileRig::exists(f.side / "Trash" / "files" / "alpha" / "inner"));
+}
+
+void check_delete_permanently(Scene& s, const Command& c) {
+    check_not_handled(s, c);
+    FileRig f(s);
+    f.select("c.txt");
+    f.ops->request_delete_permanently(f.target());
+    // The sheet is open, focus starts on Cancel, nothing is deleted and nothing is queued.
+    REQUIRE(f.ops->sheet_kind() == ui::SheetKind::DeletePermanently);
+    REQUIRE(f.ops->confirm_sheet() != nullptr);
+    CHECK(f.ops->confirm_sheet()->focus == 0);
+    CHECK(f.ops->confirm_sheet()->count == 1);
+    CHECK_FALSE(f.ops->busy());
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    (void)f.ops->frame_start(1000.0);
+    CHECK(FileRig::exists(s.t / "c.txt"));
+    CHECK_FALSE(f.ops->busy());
+    // Enter on the default focus is Cancel; Escape cancels; neither deletes.
+    f.ops->sheet_activate();
+    CHECK_FALSE(f.ops->sheet_open());
+    CHECK(FileRig::exists(s.t / "c.txt"));
+    f.ops->request_delete_permanently(f.target());
+    f.ops->sheet_escape();
+    CHECK_FALSE(f.ops->sheet_open());
+    CHECK(FileRig::exists(s.t / "c.txt"));
+    // A click on Cancel (button 0) too.
+    f.ops->request_delete_permanently(f.target());
+    f.ops->sheet_activate(0);
+    CHECK(FileRig::exists(s.t / "c.txt"));
+    // Only the explicit accept deletes (button 1), straight from the sheet: not into the trash.
+    f.ops->request_delete_permanently(f.target());
+    REQUIRE(f.ops->sheet_kind() == ui::SheetKind::DeletePermanently);
+    f.ops->sheet_activate(1);
+    f.idle();
+    CHECK_FALSE(FileRig::exists(s.t / "c.txt"));
+    CHECK(f.trash_files().empty());
+    CHECK_FALSE(f.ops->undo_stack().can_undo()); // permanent deletes are not undoable
+}
+
+void check_rename(Scene& s, const Command& c) {
+    check_not_handled(s, c);
+    FileRig f(s);
+    const auto taken = [&s](std::string_view name) { return s.m().find(name) != kNoRow; };
+    f.select("c.txt");
+    const fs::DirEntry& e = s.m().row_entry(s.m().cursor());
+    f.ops->begin_rename(s.ws->active_tab(), s.m().current_dir(), e.name, false);
+    ui::InlineEdit* edit = f.ops->inline_edit();
+    REQUIRE(edit != nullptr);
+    CHECK(edit->edit.selection() == std::pair<std::size_t, std::size_t>{0, 1}); // the stem
+    // Escape: nothing renamed.
+    f.ops->inline_cancel();
+    CHECK(f.ops->inline_edit() == nullptr);
+    CHECK(FileRig::exists(s.t / "c.txt"));
+    // An invalid name keeps the editor open with a message and renames nothing.
+    f.ops->begin_rename(s.ws->active_tab(), s.m().current_dir(), "c.txt", false);
+    f.ops->inline_edit()->edit.insert("a/b");
+    f.ops->inline_edited(taken);
+    CHECK_FALSE(f.ops->inline_commit(taken));
+    REQUIRE(f.ops->inline_edit() != nullptr);
+    CHECK(f.ops->inline_edit()->message_error);
+    CHECK(FileRig::exists(s.t / "c.txt"));
+    f.ops->inline_cancel();
+    // Typing replaces the stem and keeps the extension, Turkish letters included.
+    f.ops->begin_rename(s.ws->active_tab(), s.m().current_dir(), "c.txt", false);
+    f.ops->inline_edit()->edit.insert("Çalışma ğ");
+    f.ops->inline_edited(taken);
+    CHECK(f.ops->inline_commit(taken));
+    f.idle();
+    CHECK(FileRig::slurp(s.t / "Çalışma ğ.txt") == "abc");
+    CHECK_FALSE(FileRig::exists(s.t / "c.txt"));
+    // Renaming onto an existing name is refused inline (never a silent overwrite).
+    f.ops->begin_rename(s.ws->active_tab(), s.m().current_dir(), "f02", false);
+    f.ops->inline_edit()->edit.set("f03");
+    f.ops->inline_edited(taken);
+    CHECK_FALSE(f.ops->inline_commit(taken));
+    f.ops->inline_cancel();
+    CHECK(FileRig::exists(s.t / "f02"));
+    CHECK(FileRig::exists(s.t / "f03"));
+    // Undo: renamed back.
+    f.ops->undo();
+    f.idle();
+    CHECK(FileRig::slurp(s.t / "c.txt") == "abc");
+}
+
+void check_new_folder(Scene& s, const Command& c) {
+    check_not_handled(s, c);
+    FileRig f(s);
+    f.ops->new_folder(f.target());
+    REQUIRE(f.ops->wait_idle(std::chrono::seconds(10)));
+    const ui::Reconcile rc = f.ops->take_reconcile();
+    CHECK(FileRig::exists(s.t / "New folder"));
+    REQUIRE(rc.rename_after_create.has_value()); // the inline editor opens on it
+    const ui::Reconcile::Rename made = rc.rename_after_create.value_or(ui::Reconcile::Rename{});
+    CHECK(made.name == "New folder");
+    CHECK(made.dir == s.t.path());
+    f.ops->new_folder(f.target());
+    f.idle();
+    CHECK(FileRig::exists(s.t / "New folder (2)")); // unique, never an overwrite
+    f.ops->undo();                                  // an empty folder Navigator made is removed
+    f.idle();
+    CHECK_FALSE(FileRig::exists(s.t / "New folder (2)"));
+    CHECK(FileRig::exists(s.t / "New folder"));
+    CHECK(f.trash_files().empty());
+}
+
+void check_other_pane(Scene& s, const Command& c) {
+    check_not_handled(s, c);
+    FileRig f(s);
+    const bool move = c.id == CommandId::MoveToOtherPane;
+    // One pane: nothing to do (the shell posts a notice).
+    CHECK_FALSE(f.other_pane_dir().has_value());
+    REQUIRE(s.exec(Command{CommandId::SplitRight, 0}));
+    s.settle();
+    s.go(s.t / "beta"); // the new, active pane shows beta
+    REQUIRE(s.exec(Command{CommandId::FocusPreviousPane, 0}));
+    s.settle();
+    REQUIRE(s.m().current_dir() == s.t.path());
+    const std::optional<Path> other = f.other_pane_dir();
+    REQUIRE(other.has_value());
+    const Path other_dir = other.value_or(Path());
+    CHECK(other_dir == s.t / "beta");
+    f.select("c.txt");
+    f.ops->copy_to_folder(f.target(), other_dir, move);
+    f.idle();
+    CHECK(FileRig::slurp(s.t / "beta" / "c.txt") == "abc");
+    CHECK(FileRig::exists(s.t / "c.txt") == !move);
+    CHECK(f.trash_files().empty());
+    // Both are undoable.
+    f.ops->undo();
+    f.idle();
+    CHECK(FileRig::slurp(s.t / "c.txt") == "abc");
+    CHECK_FALSE(FileRig::exists(s.t / "beta" / "c.txt"));
+}
+
+void add_phase7_checks(std::map<std::string, Check>& checks) {
+    checks["edit.copy"] = check_copy_cut;
+    checks["edit.cut"] = check_copy_cut;
+    checks["edit.paste"] = check_paste;
+    checks["edit.undo"] = check_undo_redo;
+    checks["edit.redo"] = check_undo_redo;
+    checks["file.trash"] = check_trash;
+    checks["file.delete_permanently"] = check_delete_permanently;
+    checks["file.rename"] = check_rename;
+    checks["file.new_folder"] = check_new_folder;
+    checks["file.copy_to_other_pane"] = check_other_pane;
+    checks["file.move_to_other_pane"] = check_other_pane;
+}
+
 std::map<std::string, Check> effect_checks() {
     std::map<std::string, Check> checks;
     checks["app.quit"] = check_not_handled;
@@ -1134,6 +1527,7 @@ std::map<std::string, Check> effect_checks() {
     add_phase4_checks(checks);
     add_phase5_checks(checks);
     add_phase6_checks(checks);
+    add_phase7_checks(checks);
     checks["pane.close"] = [](Scene& s, const Command& c) {
         REQUIRE(s.exec(c)); // the only pane: no-op
         s.settle();
@@ -1164,15 +1558,16 @@ std::map<std::string, Check> effect_checks() {
 
 TEST_CASE("docs/keymap.md and load_default_keymap agree row for row", "[keymap][e2e]") {
     const DocTables doc = read_doc();
-    // Phase 0, Phase 2, Phase 3, Phase 4, Phase 5 and Phase 6 tables.
-    CHECK(doc.per_phase.size() == 6);
+    // Phase 0, Phase 2, Phase 3, Phase 4, Phase 5, Phase 6 and Phase 7 tables.
+    CHECK(doc.per_phase.size() == 7);
     CHECK(doc.per_phase.at(0) == 3);
     CHECK(doc.per_phase.at(2) == 25);
     CHECK(doc.per_phase.at(3) == 21);
     CHECK(doc.per_phase.at(4) == 5);
     CHECK(doc.per_phase.at(5) == 4);
     CHECK(doc.per_phase.at(6) == 2);
-    REQUIRE(doc.bound.size() == 60);
+    CHECK(doc.per_phase.at(7) == 12);
+    REQUIRE(doc.bound.size() == 72); // 3 + 25 + 21 + 5 + 4 + 2 + 12
     Keymap keymap;
     REQUIRE(load_default_keymap(keymap));
     const Span<const KeyBinding> bindings = keymap.bindings();
@@ -1200,7 +1595,8 @@ TEST_CASE("docs/keymap.md and load_default_keymap agree row for row", "[keymap][
     // bookmarks.rename / move_up / move_down, recents.clear / toggle_tracking,
     // view.toggle_view_lock (nav.focus_address_bar became Ctrl+L). Phase 5: list.clear_filter,
     // search.toggle_fuzzy, search.cancel, search.rebuild_index. Phase 6: the seven inspector.*
-    // header-button commands.
+    // header-button commands. Phase 7: file.open_terminal_here (reserved no-op), ops.cancel,
+    // ops.toggle_pause, ops.toggle_panel, trash.open, trash.restore, trash.empty.
     std::set<std::string> unbound_names;
     for (const DocRow& row : doc.unbound) {
         unbound_names.insert(row.command);
@@ -1225,8 +1621,15 @@ TEST_CASE("docs/keymap.md and load_default_keymap agree row for row", "[keymap][
                                                  "inspector.play",
                                                  "inspector.cycle_placement",
                                                  "inspector.toggle_grid",
-                                                 "inspector.toggle_minimap"});
-    REQUIRE(doc.unbound.size() == 21);
+                                                 "inspector.toggle_minimap",
+                                                 "file.open_terminal_here",
+                                                 "ops.cancel",
+                                                 "ops.toggle_pause",
+                                                 "ops.toggle_panel",
+                                                 "trash.open",
+                                                 "trash.restore",
+                                                 "trash.empty"});
+    REQUIRE(doc.unbound.size() == 28);
     for (const DocRow& row : doc.unbound) {
         INFO("keymap.md line " << row.line << ": " << row.command);
         CHECK(registry.find(row.command) != nullptr);
@@ -1270,40 +1673,21 @@ TEST_CASE("Every default chord resolves to its command and has its effect on the
     }
 
     // Near misses do not resolve: extra modifiers, chords reserved for later phases (Ctrl+N:
-    // window.new, deferred; Ctrl+Shift+P, Ctrl+Shift+N, Ctrl+P, Ctrl+C) and unbound keys,
+    // window.new, deferred; Ctrl+Shift+P, Ctrl+P; Ctrl+C and Ctrl+Shift+N are bound since
+    // Phase 7) and unbound keys,
     // including Phase 4 and Phase 5 chords with an extra or a missing modifier (Ctrl+E is
     // search.flatten since Phase 5).
-    for (const char* text : {"Ctrl+N",
-                             "Ctrl+Shift+P",
-                             "Ctrl+Shift+N",
-                             "Ctrl+P",
-                             "Ctrl+C",
-                             "Ctrl+Alt+Left",
-                             "Alt+Shift+Left",
-                             "Delete",
-                             "Ctrl+Shift+F3",
-                             "Ctrl+F6",
-                             "Ctrl+Alt+T",
-                             "Shift+Enter",
-                             "Ctrl+Shift+B",
-                             "Ctrl+Alt+L",
-                             "Ctrl+Shift+G",
-                             "Alt+D",
-                             "Ctrl+Alt+C",
-                             "Ctrl+Alt+E",
-                             "Alt+E",
-                             "Ctrl+Alt+F",
-                             "Alt+F",
-                             "Ctrl+Alt+Shift+E",
-                             "Shift+F",
-                             "Ctrl+Space",
-                             "Ctrl+Comma",
-                             "Shift+Space",
-                             "Alt+Space",
-                             "Ctrl+Shift+Space",
-                             "Alt+Enter",
-                             "Shift+KeypadEnter",
-                             "Ctrl+Alt+KeypadEnter"}) {
+    for (const char* text :
+         {"Ctrl+N", "Ctrl+Shift+P", "Ctrl+P", "Ctrl+Alt+Left", "Alt+Shift+Left",
+          // Phase 7 near misses: window-manager keys, a risky "delete" key,
+          // modifier variants of the new file chords.
+          "Alt+F7", "Alt+F8", "F8", "Ctrl+Delete", "Alt+Delete", "Ctrl+Shift+Y", "Ctrl+Shift+X",
+          "Ctrl+Shift+V", "Ctrl+Alt+Z", "Ctrl+F7", "Ctrl+Shift+F7", "Shift+F2", "Ctrl+F2",
+          "Ctrl+Shift+Delete", "Ctrl+Alt+N", "Ctrl+Shift+F3", "Ctrl+F6", "Ctrl+Alt+T",
+          "Shift+Enter", "Ctrl+Shift+B", "Ctrl+Alt+L", "Ctrl+Shift+G", "Alt+D", "Ctrl+Alt+C",
+          "Ctrl+Alt+E", "Alt+E", "Ctrl+Alt+F", "Alt+F", "Ctrl+Alt+Shift+E", "Shift+F", "Ctrl+Space",
+          "Ctrl+Comma", "Shift+Space", "Alt+Space", "Ctrl+Shift+Space", "Alt+Enter",
+          "Shift+KeypadEnter", "Ctrl+Alt+KeypadEnter"}) {
         INFO(text);
         CHECK_FALSE(resolve_command(keymap, registry, chord_of(text)));
     }
@@ -1476,4 +1860,68 @@ TEST_CASE("Activate through the keymap never spawns a process", "[keymap][e2e][l
     errno = 0;
     CHECK(::waitpid(-1, &status, WNOHANG) == -1); // no child, running or zombie
     CHECK(errno == ECHILD);
+}
+
+// ---- Phase 7: no file command fires while typing -----------------------------------------------
+
+TEST_CASE("Text fields consume the Phase 7 chords, so no file command fires while typing",
+          "[keymap][e2e][fileops][safety]") {
+    Keymap keymap;
+    REQUIRE(load_default_keymap(keymap));
+    CommandRegistry registry;
+    REQUIRE(register_builtin_commands(registry));
+    const std::function<std::string()> no_paste = [] { return std::string("PASTED"); };
+
+    // Chords the field edits itself. Each one DOES resolve to a file command (that is the danger),
+    // and the field's apply_field_key must report it handled so the shell never reaches the keymap.
+    const std::map<std::string, std::string> consumed{
+        {"Ctrl+C", "edit.copy"},  {"Ctrl+X", "edit.cut"},
+        {"Ctrl+V", "edit.paste"}, {"Ctrl+Z", "edit.undo"},
+        {"Ctrl+Y", "edit.redo"},  {"Ctrl+Shift+Z", "edit.redo"},
+        {"Delete", "file.trash"}, {"Shift+Delete", "file.delete_permanently"},
+    };
+    for (const auto& [text, command] : consumed) {
+        INFO(text);
+        const KeyChord chord = chord_of(text);
+        const Command resolved = command_of(keymap, registry, chord);
+        CHECK(to_string(resolved.id) == command);
+        ui::TextEdit field(64);
+        field.set("hello world", true);
+        const ui::FieldKeyResult r = ui::apply_field_key(field, chord, no_paste);
+        CHECK(r.handled);
+        if (text == "Shift+Delete" || text == "Delete") {
+            // Delete / Shift+Delete delete TEXT here, never files.
+            CHECK(field.text().empty());
+        }
+        if (text == "Ctrl+V") {
+            CHECK(field.text() == "PASTED");
+        }
+    }
+    // The filter field (Phase 5 routing): Delete, Shift+Delete, Ctrl+V/Z/Y, Ctrl+Shift+Z are the
+    // field's; Ctrl+C / Ctrl+X only with a text selection, otherwise they copy / cut the files.
+    for (const char* text :
+         {"Delete", "Shift+Delete", "Ctrl+V", "Ctrl+Z", "Ctrl+Y", "Ctrl+Shift+Z"}) {
+        INFO(text);
+        CHECK(ui::route_filter_key(chord_of(text), false) == ui::FilterKey::Edit);
+        CHECK(ui::route_filter_key(chord_of(text), true) == ui::FilterKey::Edit);
+    }
+    for (const char* text : {"Ctrl+C", "Ctrl+X"}) {
+        INFO(text);
+        CHECK(ui::route_filter_key(chord_of(text), true) == ui::FilterKey::Edit);
+        CHECK(ui::route_filter_key(chord_of(text), false) == ui::FilterKey::Keymap);
+    }
+    // The chords that are NOT text editing go on to the keymap (F2, Ctrl+Shift+N, F7, Shift+F7):
+    // the shell's focus scoping (docs/keymap.md) guards them for popups, the address bar and the
+    // sidebar; the real key path is exercised in ops_app_smoke.sh.
+    for (const char* text : {"F2", "Ctrl+Shift+N", "F7", "Shift+F7"}) {
+        INFO(text);
+        CHECK(ui::route_filter_key(chord_of(text), false) == ui::FilterKey::Keymap);
+        ui::TextEdit field(64);
+        field.set("keep", true);
+        const ui::FieldKeyResult r = ui::apply_field_key(field, chord_of(text), no_paste);
+        CHECK_FALSE(r.handled);
+        CHECK(field.text() == "keep");
+    }
+    // Space-like safety from Phase 6 still holds.
+    CHECK(ui::field_consumes_as_text(chord_of("Space")));
 }

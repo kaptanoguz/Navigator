@@ -31,6 +31,8 @@
 #include <navigator/ui.hpp>
 
 #include "browser/browser_model.hpp"
+#include "dnd/file_drag.hpp"
+#include "ops/file_ops.hpp"
 #include "render/renderer.hpp"
 #include "shell/painter.hpp"
 #include "theme/theme.hpp"
@@ -93,6 +95,16 @@ struct BrowserFrame {
     std::optional<search::IndexStatus> index_status;
     // Phase 6: list thumbnails (null: type glyphs only).
     RowThumbnailSource* thumbnails = nullptr;
+    // Phase 7: cut rows are dimmed (null: none), the inline rename editor of this tab (null:
+    // none), where folder rows / breadcrumbs / the pane register their drop slots, whether a
+    // file drag is in progress (edge auto-scroll) and whether a press on a row may start one.
+    const FileOps* file_ops = nullptr;
+    const InlineEdit* inline_edit = nullptr;
+    std::vector<DropSlot>* slots = nullptr;
+    bool drag_active = false;
+    bool drag_enabled = true;
+    // Phase 7: px kept free at the right end of the status bar (the progress chip).
+    float status_reserve = 0.0F;
 };
 
 // Performance overlay (F12) at the bottom-right of the window.
@@ -127,6 +139,8 @@ public:
     [[nodiscard]] const RectF& filter_rect() const noexcept { return filter_rect_; }
     // A spinner or progress bar is animating (keep frames coming).
     [[nodiscard]] bool busy_animating() const noexcept { return spinning_; }
+    // Phase 7: the inline editor's rectangle from the last draw (empty: none).
+    [[nodiscard]] const RectF& inline_rect() const noexcept { return inline_rect_; }
 
 private:
     struct Layout {
@@ -229,6 +243,17 @@ private:
     RectF address_rect_;
     std::size_t middle_crumb_ = static_cast<std::size_t>(-1);
     float address_scroll_ = 0.0F;
+
+    // Phase 7: press on a row that may become a drag, and the inline editor.
+    std::size_t drag_row_ = kNoRow;
+    bool deferred_click_ = false; // the click of a press on a selected row waits for the release
+    bool drag_started_ = false;
+    bool inline_active_ = false;
+    float inline_scroll_ = 0.0F;
+    RectF inline_rect_;
+    std::string inline_message_;
+    bool inline_message_error_ = false;
+    RectF inline_message_anchor_;
 
     // Phase 5.
     RectF types_rect_;

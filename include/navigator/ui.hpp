@@ -89,6 +89,15 @@ struct AppConfig {
     // built-in decoders and existing cached thumbnails still work.
     bool enable_external_thumbnailers = true;
     // The thumbnail fade-in follows `animations` (features.md: no fade when animations are off).
+
+    // Phase 7: file operations (docs/architecture.md "Phase 7"). Home trash root for the app's
+    // ITrash (`--trash-dir DIR`); copied by App::create. Non-empty: the trash lives in DIR and
+    // only there (per-volume trashes are off, so a fixture run never touches another volume).
+    // Empty: the real XDG trash ($XDG_DATA_HOME/Trash and the per-volume trashes) in a normal
+    // run. Headless rule (as for the session, the index and the thumbnails): with max_frames > 0
+    // and no trash_dir, NO trash exists: trashing, restoring and emptying fail with Unsupported,
+    // so a smoke test can never move a real file into the owner's trash.
+    std::string_view trash_dir;
 };
 
 struct FrameStats {

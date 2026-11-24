@@ -19,6 +19,9 @@ add_executable(navigator_platform_tests
     process_runner_test.cpp
     program_dirs_test.cpp
     proc_source_test.cpp
+    transfer_test.cpp
+    trash_format_test.cpp
+    trash_test.cpp
     user_dirs_test.cpp
     volume_monitor_test.cpp
     volume_test.cpp

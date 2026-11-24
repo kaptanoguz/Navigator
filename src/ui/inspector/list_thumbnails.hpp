@@ -51,6 +51,10 @@ public:
     bool draw_row(Renderer& r, const Palette& pal, const BrowserModel& model, std::size_t row,
                   const RectF& box, float scale, float dim) override;
     void prefetch_row(const BrowserModel& model, std::size_t row, float box_px) override;
+    // Phase 7: the same for an entry that is not a row of a list (the conflict sheet's two
+    // sides). Returns false when there is no thumbnail (yet): the caller draws a glyph.
+    bool draw_entry(Renderer& r, const Palette& pal, const Path& path, const fs::DirEntry& entry,
+                    const RectF& box, float scale, float dim);
 
 private:
     ThumbnailScheduler* scheduler_;

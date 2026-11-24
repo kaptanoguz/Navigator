@@ -211,3 +211,13 @@ TEST_CASE("Phase 6 preview and thumbnail options", "[cli]") {
     CHECK_FALSE(parse_cli({"--preview-cache-mb", "lots"}));
     CHECK(navigator::app::usage_text("navigator").find("--thumbnail-dir") != std::string::npos);
 }
+
+TEST_CASE("The trash-dir option injects the trash (Phase 7)", "[cli]") {
+    auto o = parse_cli({"--trash-dir", "/tmp/fixture-trash", "--frames", "5"});
+    REQUIRE(o);
+    CHECK(o->trash_dir == "/tmp/fixture-trash");
+    CHECK(parse_cli({})->trash_dir.empty()); // default: the real trash (never in a --frames run)
+    CHECK_FALSE(parse_cli({"--trash-dir"}));
+    CHECK_FALSE(parse_cli({"--trash-dir", ""}));
+    CHECK(navigator::app::usage_text("navigator").find("--trash-dir") != std::string::npos);
+}

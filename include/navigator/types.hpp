@@ -73,6 +73,12 @@ enum class ErrorCode : std::uint16_t {
     Unsupported = 7,
     OutOfMemory = 8,
     PlatformError = 9,
+    // Phase 7 (file operations). Producers before Phase 7 never return these; they map errno
+    // values that the ui must name precisely ("disk full" is not "I/O error").
+    NoSpace = 10,            // ENOSPC, EDQUOT
+    ReadOnlyFilesystem = 11, // EROFS
+    CrossDevice = 12,        // EXDEV: rename(2) across filesystems (the ops engine handles it)
+    NotEmpty = 13,           // ENOTEMPTY / EEXIST from rmdir(2)
 };
 
 // Stable lowercase identifier, for logs and tests (not for UI; translate via i18n keys).
@@ -88,6 +94,10 @@ enum class ErrorCode : std::uint16_t {
     case ErrorCode::Unsupported: return "unsupported";
     case ErrorCode::OutOfMemory: return "out_of_memory";
     case ErrorCode::PlatformError: return "platform_error";
+    case ErrorCode::NoSpace: return "no_space";
+    case ErrorCode::ReadOnlyFilesystem: return "read_only_filesystem";
+    case ErrorCode::CrossDevice: return "cross_device";
+    case ErrorCode::NotEmpty: return "not_empty";
     }
     return "unknown";
 }

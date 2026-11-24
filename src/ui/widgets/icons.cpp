@@ -358,6 +358,16 @@ void draw_line_icon(Renderer& r, LineIcon icon, float x, float y, float size, fl
     case LineIcon::Stop:
         r.fill_rounded_rect(g.rect(4.0F, 4.0F, 8.0F, 8.0F), g.px(1.4F), color);
         break;
+    case LineIcon::Trash:
+        // Phase 7: a bin with a lid and a handle.
+        line(2.6F, 4.2F, 13.4F, 4.2F);
+        line(6.0F, 2.2F, 10.0F, 2.2F);
+        line(6.0F, 2.2F, 6.0F, 4.2F);
+        line(10.0F, 2.2F, 10.0F, 4.2F);
+        box(3.8F, 4.2F, 8.4F, 9.4F, 1.6F);
+        line(6.6F, 6.8F, 6.6F, 11.2F);
+        line(9.4F, 6.8F, 9.4F, 11.2F);
+        break;
     }
 }
 

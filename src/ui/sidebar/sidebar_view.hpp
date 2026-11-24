@@ -25,6 +25,7 @@
 #include <navigator/places.hpp>
 #include <navigator/ui.hpp>
 
+#include "dnd/file_drag.hpp"
 #include "shell/painter.hpp"
 #include "sidebar/sidebar_model.hpp"
 #include "theme/theme.hpp"
@@ -51,6 +52,8 @@ struct SidebarFrame {
     Density density = Density::Compact;
     layout::TabId dragged_tab; // a tab drag is in progress (drop onto Bookmarks)
     bool popup_open = false;
+    // Phase 7: rows register themselves as drop targets (null: none).
+    std::vector<DropSlot>* slots = nullptr;
 };
 
 class SidebarView {

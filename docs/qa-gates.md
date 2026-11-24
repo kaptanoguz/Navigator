@@ -2,7 +2,7 @@
 
 Phase 0 gates are below. Phase 1 adds the gates in "Phase 1 additions", Phase 2 those in
 "Phase 2 additions", Phase 3 those in "Phase 3 additions", Phase 4 those in "Phase 4
-additions", Phase 5 those in "Phase 5 additions", Phase 6 those in "Phase 6 additions"; every
+additions", Phase 5 those in "Phase 5 additions", Phase 6 those in "Phase 6 additions", Phase 7 those in "Phase 7 additions"; every
 earlier gate still applies.
 
 ## Phase 0
@@ -200,6 +200,34 @@ Notes:
 - Optimized GCC builds (RelWithDebInfo / Release, `_FORTIFY_SOURCE`) need
   `-Wno-error=unused-result` until BUG-P6-1 is fixed (`docs/qa-phase6.md`).
 - Findings: `docs/qa-phase6.md`.
+
+## Phase 7 additions (file operations, trash, undo, drag and drop)
+
+Phase 7 mutates files, so the tests are dangerous too. Rules for every test and script of this
+phase: only `mkdtemp` fixtures (temp dir or `/dev/shm`); `tests/integration/ops_support.hpp`
+aborts the process when a path given to the engine, the trash, an I/O hook or a request lies outside
+a live fixture, and when it lies inside a "forbidden" symlink-sentinel tree; app runs use a
+temporary `HOME`, `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` and explicit
+`--config-dir`, `--cache-dir`, `--trash-dir`, on `SDL_VIDEODRIVER=dummy` or a private Xvfb, never
+display `:0`.
+
+New suites: `navigator_ops_integration_tests` (ctest prefix `integration.ops.`, label
+`integration`; `ops_trash_e2e_test.cpp`, `ops_fault_test.cpp`), the keymap e2e cases in
+`navigator_browser_integration_tests`, and the app script `integration.app_ops_adversarial`
+(`tests/integration/ops_app_smoke.sh`, label `app`).
+
+| # | Gate | Command | Pass condition |
+|---|------|---------|----------------|
+| 47 | Keymap doc sync, Phase 7 | `ctest --preset dev -R '^integration\..*(keymap\|chord)'` | 7 tables, 72 bound rows, 28 `(unbound)` rows; every Phase 7 chord has an effect check through the headless `FileOps` |
+| 48 | Engine on the real trash | `ctest --preset dev -R '^integration\.ops\.'` | all pass (about 5 min Debug; the 100k-file case is the longest) |
+| 49 | App scripts | `ctest --preset dev -R 'app_ops_adversarial\|app_dnd_incoming'` | exit 0 (the latter SKIPs without xvfb / xdotool); known open bugs print `XFAIL` (`NAVIGATOR_QA_STRICT=1` makes them fail) |
+| 50 | Flake repeat | gate 48 + 47 with `--repeat until-fail:10` | 10 clean passes |
+| 51 | Parallel stress | `ctest -R '^integration\.' -j8 --repeat until-fail:5` | all pass |
+| 52 | ASan + UBSan, TSan | gates 14 and 15 with `-R '^integration\.'` (TSan: `setarch -R`, app scripts excluded as in Phase 5/6) | no report; the `[big]` case shrinks to 20k files and fewer storm seeds under sanitizers |
+| 53 | XDND smoke | `ctest -R ui.smoke_outgoing_drag_xdnd` (needs xvfb, xdotool) | passes or SKIPs with a reason |
+| 54 | Wayland / GNOME Files drag | manual, `docs/qa-phase7.md` | result recorded |
+
+Findings, flake and sanitizer results, exact manual steps: `docs/qa-phase7.md`.
 
 ## Manual check (developer machine, not CI)
 

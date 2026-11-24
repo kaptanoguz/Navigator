@@ -291,6 +291,10 @@ public:
     void dismiss_notice() noexcept;
     // Middle-click on a row: cursor and anchor to `row`, selection unchanged.
     void cursor_to(std::size_t row);
+    // Phase 7: selects the rows named `names` (raw bytes) that the view shows, cursor on the
+    // first; returns how many were found. After a paste or drop the App selects the new items
+    // once they appear in the listing.
+    std::size_t select_by_names(const std::vector<std::string>& names);
 
     // View geometry reported by the details view (frame end).
     void set_page_rows(std::size_t rows) noexcept { page_rows_ = rows > 0 ? rows : 1; }

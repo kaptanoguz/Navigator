@@ -410,6 +410,105 @@ close the Inspector; `Space` toggles it.
 | Click or double-click on a row of a folder preview | Nothing in Phase 6 (the preview never navigates) |
 | Drag the Inspector's inner edge | Resize (`layout::kInspectorMin*` .. `kInspectorMax*` dp) |
 
+## Phase 7 defaults (file operations, trash, undo, drag and drop)
+
+`docs/features.md` attributes only `Ctrl+Shift+N` (new folder) and "copy, cut, paste, delete,
+rename" (without chords) to File Pilot. Every chord below except `Ctrl+Shift+N` is Navigator's
+choice, following GNOME Files and Nemo: `Ctrl+C` / `Ctrl+X` / `Ctrl+V` clipboard, `Ctrl+Z` undo,
+`Ctrl+Shift+Z` and `Ctrl+Y` redo, `Delete` to the trash, `Shift+Delete` permanent delete,
+`F2` rename. Undo/redo is a Navigator extra (File Pilot has none today). None of these chords
+was bound before (60 default chords through Phase 6); `Ctrl+Shift+N` had been reserved for this
+since Phase 3 and `Ctrl+C` since Phase 4.
+
+Copy / move to the other pane ("previous pane", `features.md`, chord not published): `F5` /
+`F6` (the Total Commander and Midnight Commander keys) are taken by `nav.refresh` and
+`pane.focus_next`, so Navigator uses **`F7` = copy to the other pane** and
+**`Shift+F7` = move** (Shift = move, as when dragging). `Ctrl+F5` was rejected (browsers'
+hard reload: refreshing by habit must not copy files), `Alt+F5`/`Alt+F7`/`Alt+F8` belong to
+window managers, and `F8` stays free because Total Commander users read it as "delete". The
+target is the previously active pane; with one pane the command is a no-op with a notice. Both
+are undoable, so they do not confirm.
+
+`load_default_keymap()` binds the Phase 0, 2, 3, 4, 5 and 6 tables, then this table, in this
+order.
+
+| Chord | Command name | CommandId | arg | Notes |
+|-------|--------------|-----------|-----|-------|
+| `Ctrl+C` | `edit.copy` | `Copy` (1281) | 0 | Selection to the clipboard (GNOME/KDE formats, `transfer.hpp`) |
+| `Ctrl+X` | `edit.cut` | `Cut` (1282) | 0 | Rows dimmed until pasted |
+| `Ctrl+V` | `edit.paste` | `Paste` (1283) | 0 | Into the tab's folder; conflicts ask |
+| `Ctrl+Z` | `edit.undo` | `Undo` (1284) | 0 | Navigator extra; never deletes (undo of a copy trashes it) |
+| `Ctrl+Shift+Z` | `edit.redo` | `Redo` (1285) | 0 | |
+| `Ctrl+Y` | `edit.redo` | `Redo` (1285) | 0 | |
+| `Delete` | `file.trash` | `MoveToTrash` (1340) | 0 | No confirmation; notice with Undo. No trash on the volume: the permanent-delete sheet asks |
+| `Shift+Delete` | `file.delete_permanently` | `DeletePermanently` (1341) | 0 | Always confirms (count, cannot be undone; focus starts on Cancel) |
+| `F2` | `file.rename` | `Rename` (1342) | 0 | Inline editor, stem selected |
+| `Ctrl+Shift+N` | `file.new_folder` | `NewFolder` (1343) | 0 | File Pilot behaviour per `features.md` |
+| `F7` | `file.copy_to_other_pane` | `CopyToOtherPane` (1344) | 0 | Into the previously active pane's folder |
+| `Shift+F7` | `file.move_to_other_pane` | `MoveToOtherPane` (1345) | 0 | |
+| (unbound) | `file.open_terminal_here` | `OpenTerminalHere` (1346) | 0 | Reserved no-op until Phase 10 ("Open console here") |
+| (unbound) | `ops.cancel` | `CancelOperation` (1347) | 0 | Stop button of the progress bar (arg: an operation id) |
+| (unbound) | `ops.toggle_pause` | `TogglePauseOperation` (1348) | 0 | Pause button (arg: an operation id) |
+| (unbound) | `ops.toggle_panel` | `ToggleOperationsPanel` (1349) | 0 | Status-bar operations button |
+| (unbound) | `trash.open` | `OpenTrash` (1360) | 0 | Sidebar Trash row |
+| (unbound) | `trash.restore` | `RestoreFromTrash` (1361) | 0 | Trash view toolbar and context menu |
+| (unbound) | `trash.empty` | `EmptyTrash` (1362) | 0 | Trash view toolbar; always confirms |
+
+`edit.paste` takes `PasteArg` flags (`IntoCursorFolder`: the row context menu's "Paste into
+folder"); `ops.cancel` / `ops.toggle_pause` take an `ops::OpId` value from the progress bar or
+panel (0: the most recently started unfinished operation).
+
+In the Trash view `Delete` acts as `file.delete_permanently` (with its confirmation), `Enter`
+restores the selected items to their original location (non-destructive; items are never opened from
+the trash), and `edit.paste`, `file.rename`,
+`file.new_folder` are no-ops.
+
+### Focus scoping (Phase 7)
+
+The keymap stays global; the ui scopes around it (safety: no file command may fire while
+typing or act on a selection that does not have focus):
+
+| Focus | Keys / commands |
+|-------|-----------------|
+| Any text field (address bar, GoTo, name prompts, filter, inline rename / new folder) | Also consumes `Shift+Delete` (as `Delete`), `Ctrl+Shift+Z` and `Ctrl+Y` (text redo, or nothing). Phase 4 fields already consume `Delete`, `Ctrl+C/X/V/Z`, `Backspace` |
+| Phase 5 filter field | As in Phase 5: `Ctrl+V`, `Ctrl+Z`, `Delete` are the field's; `Ctrl+C` / `Ctrl+X` are the field's only while it has a text selection, otherwise they copy / cut the selected files |
+| Inline rename / new-folder editor | A Phase 4 text field: `Enter` commits, `Escape` cancels (nothing renamed or created), focus loss commits the shown text (as GNOME Files). An invalid name (`ops::validate_new_name`) keeps the editor open with an inline message |
+| Sidebar | `edit.*`, `file.*` and `trash.restore` are not routed to the pane (no-ops); `file.rename` on a bookmark row runs `bookmarks.rename` |
+| Popups, confirmation and conflict sheets | Take the keyboard like Phase 3 popups; file commands are not routed |
+| Inspector | File commands act on the active pane's selection as usual |
+| Progress bar / operations panel | Never take keyboard focus (clicks only) |
+
+Conflict sheet keys: `Enter` = Keep both (the safe default), `Escape` = Cancel operation (nothing
+further is touched; items already completed stay done and undoable), `Tab` cycles the
+buttons (Replace, Skip, Keep both, Merge for folders, Cancel operation), `Space` toggles "Apply
+to all". Permanent-delete and empty-trash sheets: focus starts on Cancel; `Escape` cancels;
+the destructive button needs `Tab` then `Enter`, or a click.
+
+### Mouse and drag and drop (Phase 7)
+
+Modifiers follow GNOME Files (`transfer::choose_drop_action`); the cursor badge shows the
+resulting action and the item count with the first item's thumbnail.
+
+| Gesture | Effect |
+|---------|--------|
+| Drag selected rows onto a folder row, a pane, a tab, a breadcrumb segment or a sidebar place/bookmark | Same filesystem: move; other filesystem: copy |
+| ... with `Ctrl` | Copy |
+| ... with `Shift` | Move |
+| ... with `Ctrl+Shift` | Link here (symlinks) |
+| ... with `Alt` | Drop menu: Copy here, Move here, Link here, Cancel |
+| Drop onto the sidebar Trash row | `file.trash` for the dragged items |
+| Drop from another program (SDL drop events) | Copy, unless `Shift` is held at drop time (move) |
+| Drop back onto the source folder without a modifier | Nothing |
+| `Escape` during a drag | Cancel the drag |
+| Hover over a folder row while dragging for about 700 ms | Spring-loaded: the folder opens in that pane (off with `--no-animations`) |
+| Drag near the top or bottom edge of a list | Auto-scroll, faster closer to the edge (`features.md`) |
+| Wheel while dragging | Scrolls the list under the pointer (`features.md`) |
+| Click on the progress bar's stop / pause buttons | `ops.cancel` / `ops.toggle_pause` for that operation |
+| Click on "Undo" in the trash or operation notice | `edit.undo` |
+| Right-click on a row | Context menu gains Cut, Copy, Paste into folder, Rename, Move to Trash, Delete permanently; Trash view: Restore, Delete permanently |
+| Right-click on folder background | Paste, New folder (the full background menu is Phase 8) |
+| Slow second click on the cursor row's name | Not a rename trigger in Phase 7 (avoids accidental renames); `F2` or the context menu |
+
 ## Later phases
 
 - A user-configurable keymap file arrives in **Phase 8**. It binds chords (and multi-key

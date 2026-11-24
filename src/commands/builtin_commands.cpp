@@ -70,6 +70,11 @@ constexpr std::array kBuiltins{
     Builtin{CommandId::ToggleRecentsTracking, "recents.toggle_tracking",
             "cmd.recents.toggle_tracking"},
     Builtin{CommandId::CopyPath, "edit.copy_path", "cmd.edit.copy_path"},
+    Builtin{CommandId::Copy, "edit.copy", "cmd.edit.copy"},
+    Builtin{CommandId::Cut, "edit.cut", "cmd.edit.cut"},
+    Builtin{CommandId::Paste, "edit.paste", "cmd.edit.paste"},
+    Builtin{CommandId::Undo, "edit.undo", "cmd.edit.undo"},
+    Builtin{CommandId::Redo, "edit.redo", "cmd.edit.redo"},
     Builtin{CommandId::FocusFilter, "list.filter", "cmd.list.filter"},
     Builtin{CommandId::ClearFilter, "list.clear_filter", "cmd.list.clear_filter"},
     Builtin{CommandId::ToggleFlatten, "search.flatten", "cmd.search.flatten"},
@@ -88,6 +93,19 @@ constexpr std::array kBuiltins{
     Builtin{CommandId::ToggleInspectorGrid, "inspector.toggle_grid", "cmd.inspector.toggle_grid"},
     Builtin{CommandId::ToggleInspectorMinimap, "inspector.toggle_minimap",
             "cmd.inspector.toggle_minimap"},
+    Builtin{CommandId::MoveToTrash, "file.trash", "cmd.file.trash"},
+    Builtin{CommandId::DeletePermanently, "file.delete_permanently", "cmd.file.delete_permanently"},
+    Builtin{CommandId::Rename, "file.rename", "cmd.file.rename"},
+    Builtin{CommandId::NewFolder, "file.new_folder", "cmd.file.new_folder"},
+    Builtin{CommandId::CopyToOtherPane, "file.copy_to_other_pane", "cmd.file.copy_to_other_pane"},
+    Builtin{CommandId::MoveToOtherPane, "file.move_to_other_pane", "cmd.file.move_to_other_pane"},
+    Builtin{CommandId::OpenTerminalHere, "file.open_terminal_here", "cmd.file.open_terminal_here"},
+    Builtin{CommandId::CancelOperation, "ops.cancel", "cmd.ops.cancel"},
+    Builtin{CommandId::TogglePauseOperation, "ops.toggle_pause", "cmd.ops.toggle_pause"},
+    Builtin{CommandId::ToggleOperationsPanel, "ops.toggle_panel", "cmd.ops.toggle_panel"},
+    Builtin{CommandId::OpenTrash, "trash.open", "cmd.trash.open"},
+    Builtin{CommandId::RestoreFromTrash, "trash.restore", "cmd.trash.restore"},
+    Builtin{CommandId::EmptyTrash, "trash.empty", "cmd.trash.empty"},
 };
 
 } // namespace
@@ -144,6 +162,11 @@ std::string_view to_string(CommandId id) noexcept {
     case CommandId::ClearRecents: return "recents.clear";
     case CommandId::ToggleRecentsTracking: return "recents.toggle_tracking";
     case CommandId::CopyPath: return "edit.copy_path";
+    case CommandId::Copy: return "edit.copy";
+    case CommandId::Cut: return "edit.cut";
+    case CommandId::Paste: return "edit.paste";
+    case CommandId::Undo: return "edit.undo";
+    case CommandId::Redo: return "edit.redo";
     case CommandId::FocusFilter: return "list.filter";
     case CommandId::ClearFilter: return "list.clear_filter";
     case CommandId::ToggleFlatten: return "search.flatten";
@@ -160,6 +183,19 @@ std::string_view to_string(CommandId id) noexcept {
     case CommandId::CycleInspectorPlacement: return "inspector.cycle_placement";
     case CommandId::ToggleInspectorGrid: return "inspector.toggle_grid";
     case CommandId::ToggleInspectorMinimap: return "inspector.toggle_minimap";
+    case CommandId::MoveToTrash: return "file.trash";
+    case CommandId::DeletePermanently: return "file.delete_permanently";
+    case CommandId::Rename: return "file.rename";
+    case CommandId::NewFolder: return "file.new_folder";
+    case CommandId::CopyToOtherPane: return "file.copy_to_other_pane";
+    case CommandId::MoveToOtherPane: return "file.move_to_other_pane";
+    case CommandId::OpenTerminalHere: return "file.open_terminal_here";
+    case CommandId::CancelOperation: return "ops.cancel";
+    case CommandId::TogglePauseOperation: return "ops.toggle_pause";
+    case CommandId::ToggleOperationsPanel: return "ops.toggle_panel";
+    case CommandId::OpenTrash: return "trash.open";
+    case CommandId::RestoreFromTrash: return "trash.restore";
+    case CommandId::EmptyTrash: return "trash.empty";
     }
     return "unknown";
 }
