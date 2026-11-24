@@ -461,11 +461,12 @@ bool Workspace::execute(const Command& command) {
     case CommandId::CycleInspectorPlacement:
     case CommandId::ToggleInspectorGrid:
     case CommandId::ToggleInspectorMinimap: return false;
-    // Phase 5: the active tab's view.
+    // Phase 5 & Phase 8: the active tab's view.
     case CommandId::ClearFilter:
     case CommandId::ToggleFlatten:
     case CommandId::ToggleFuzzy:
-    case CommandId::CancelSearch: return active_model().execute(command);
+    case CommandId::CancelSearch:
+    case CommandId::ToggleCursorSelected: return active_model().execute(command);
     // Phase 4: shell level (sidebar, GoTo, address bar, bookmarks, clipboard; ui::App).
     case CommandId::FocusAddressBar:
     case CommandId::GoTo:
@@ -502,6 +503,14 @@ bool Workspace::execute(const Command& command) {
     case CommandId::SaveLayout:
     case CommandId::LoadLayout:
     case CommandId::DeleteLayout:
+    // Phase 8: shell level (palette, settings, keymap editor, context menu, Open With).
+    case CommandId::OpenPalette:
+    case CommandId::OpenSettings:
+    case CommandId::EditKeymap:
+    case CommandId::ResetKeymap:
+    case CommandId::ExportKeymap:
+    case CommandId::ShowContextMenu:
+    case CommandId::OpenWith:
     case CommandId::None:
     case CommandId::Quit:
     case CommandId::ToggleFpsOverlay:

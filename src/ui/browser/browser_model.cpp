@@ -971,6 +971,28 @@ void BrowserModel::band_end() {
 
 bool BrowserModel::execute(const Command& command) {
     const bool extend = (command.arg & CursorArg::Extend) != 0U;
+    const bool keep_sel = !extend && (command.arg & CursorArg::KeepSelection) != 0U;
+    const auto move_cursor_only = [&](std::ptrdiff_t delta, std::optional<std::size_t> abs_target) {
+        const std::size_t n = row_count();
+        if (n == 0) {
+            return;
+        }
+        if (flat_) {
+            flat_->cursor_follows_top = false;
+        }
+        std::size_t next = 0;
+        if (abs_target) {
+            next = std::min(*abs_target, n - 1);
+        } else {
+            const std::ptrdiff_t cur =
+                cursor_ < n ? static_cast<std::ptrdiff_t>(cursor_) : std::ptrdiff_t{0};
+            const std::ptrdiff_t clamped =
+                std::clamp<std::ptrdiff_t>(cur + delta, 0, static_cast<std::ptrdiff_t>(n - 1));
+            next = static_cast<std::size_t>(clamped);
+        }
+        cursor_ = next;
+        ++cursor_serial_;
+    };
     switch (command.id) {
     case CommandId::ToggleHidden: toggle_hidden(); return true;
     case CommandId::NavigateBack: back(); return true;
@@ -980,12 +1002,57 @@ bool BrowserModel::execute(const Command& command) {
     case CommandId::Activate: activate(); return true;
     case CommandId::SelectAll: select_all(); return true;
     case CommandId::ClearSelection: escape(); return true;
-    case CommandId::CursorUp: cursor_by(-1, extend); return true;
-    case CommandId::CursorDown: cursor_by(1, extend); return true;
-    case CommandId::CursorPageUp: cursor_page(-1, extend); return true;
-    case CommandId::CursorPageDown: cursor_page(1, extend); return true;
-    case CommandId::CursorHome: cursor_home(extend); return true;
-    case CommandId::CursorEnd: cursor_end(extend); return true;
+    case CommandId::ToggleCursorSelected:
+        if (cursor_ < row_count()) {
+            click_row(cursor_, Modifiers::Ctrl);
+        }
+        return true;
+    case CommandId::CursorUp:
+        if (keep_sel) {
+            move_cursor_only(-1, std::nullopt);
+        } else {
+            cursor_by(-1, extend);
+        }
+        return true;
+    case CommandId::CursorDown:
+        if (keep_sel) {
+            move_cursor_only(1, std::nullopt);
+        } else {
+            cursor_by(1, extend);
+        }
+        return true;
+    case CommandId::CursorPageUp:
+        if (keep_sel) {
+            const auto step = static_cast<std::ptrdiff_t>(page_rows_ > 1 ? page_rows_ - 1 : 1);
+            move_cursor_only(-step, std::nullopt);
+        } else {
+            cursor_page(-1, extend);
+        }
+        return true;
+    case CommandId::CursorPageDown:
+        if (keep_sel) {
+            const auto step = static_cast<std::ptrdiff_t>(page_rows_ > 1 ? page_rows_ - 1 : 1);
+            move_cursor_only(step, std::nullopt);
+        } else {
+            cursor_page(1, extend);
+        }
+        return true;
+    case CommandId::CursorHome:
+        if (keep_sel) {
+            move_cursor_only(0, std::size_t{0});
+        } else {
+            cursor_home(extend);
+        }
+        return true;
+    case CommandId::CursorEnd:
+        if (keep_sel) {
+            if (const std::size_t n = row_count(); n > 0) {
+                move_cursor_only(0, n - 1);
+            }
+        } else {
+            cursor_end(extend);
+        }
+        return true;
     // Phase 5 (tab level). Focus and popups are the shell's (FocusFilter, ToggleTypesPopup);
     // the volume flatten and the index need the App's volume table and index service.
     case CommandId::ClearFilter: clear_filter(); return true;
@@ -1067,7 +1134,15 @@ bool BrowserModel::execute(const Command& command) {
     case CommandId::OpenTrash:
     case CommandId::RestoreFromTrash:
     case CommandId::EmptyTrash:
-    case CommandId::CopyPath: return false;
+    case CommandId::CopyPath:
+    // Phase 8: palette, settings, keymap editor, context menu, Open With (shell level).
+    case CommandId::OpenPalette:
+    case CommandId::OpenSettings:
+    case CommandId::EditKeymap:
+    case CommandId::ResetKeymap:
+    case CommandId::ExportKeymap:
+    case CommandId::ShowContextMenu:
+    case CommandId::OpenWith: return false;
     }
     return false;
 }

@@ -1,8 +1,6 @@
 // src/ui/input/sdl_input.cpp — see sdl_input.hpp.
 #include "input/sdl_input.hpp"
 
-#include <navigator/i18n.hpp>
-
 namespace navigator::ui {
 namespace {
 
@@ -89,6 +87,25 @@ bool is_keypad(SDL_Scancode s) noexcept {
            (s >= SDL_SCANCODE_KP_00 && s <= SDL_SCANCODE_KP_HEXADECIMAL);
 }
 
+// The physical keypad key (docs: commands.hpp "Keypad keys"): identity does not depend on
+// NumLock. Keypad keys without a Key value (KP_EQUALS, KP_COMMA, KP_00, ...) are Unknown.
+Key from_keypad_scancode(SDL_Scancode s) noexcept {
+    if (s >= SDL_SCANCODE_KP_1 && s <= SDL_SCANCODE_KP_9) {
+        return static_cast<Key>(static_cast<int>(Key::Keypad1) +
+                                static_cast<int>(s - SDL_SCANCODE_KP_1));
+    }
+    switch (s) {
+    case SDL_SCANCODE_KP_0: return Key::Keypad0;
+    case SDL_SCANCODE_KP_PLUS: return Key::KeypadPlus;
+    case SDL_SCANCODE_KP_MINUS: return Key::KeypadMinus;
+    case SDL_SCANCODE_KP_MULTIPLY: return Key::KeypadMultiply;
+    case SDL_SCANCODE_KP_DIVIDE: return Key::KeypadDivide;
+    case SDL_SCANCODE_KP_PERIOD: return Key::KeypadPeriod;
+    case SDL_SCANCODE_KP_ENTER: return Key::KeypadEnter;
+    default: return Key::Unknown;
+    }
+}
+
 } // namespace
 
 Key translate_key(SDL_Keycode keycode, SDL_Scancode scancode) noexcept {
@@ -96,7 +113,11 @@ Key translate_key(SDL_Keycode keycode, SDL_Scancode scancode) noexcept {
         return Key::KeypadEnter;
     }
     if (is_keypad(scancode)) {
-        return Key::Unknown; // keypad digits/operators are not bindable in Phase 2
+        return from_keypad_scancode(scancode); // by the physical key, NumLock-independent
+    }
+    if (keycode == SDLK_APPLICATION || scancode == SDL_SCANCODE_APPLICATION ||
+        keycode == SDLK_MENU) {
+        return Key::Menu; // the context-menu key
     }
     const Key key = from_keycode(keycode);
     if (key != Key::Unknown) {
@@ -140,30 +161,6 @@ Key translate_mouse_button(std::uint8_t button) noexcept {
     case SDL_BUTTON_X2: return Key::MouseForward;
     default: return Key::Unknown;
     }
-}
-
-std::vector<std::string> chord_labels(const KeyChord& chord) {
-    std::vector<std::string> out;
-    if (has(chord.mods, Modifiers::Super)) {
-        out.emplace_back(tr("key.super"));
-    }
-    if (has(chord.mods, Modifiers::Ctrl)) {
-        out.emplace_back(tr("key.ctrl"));
-    }
-    if (has(chord.mods, Modifiers::Alt)) {
-        out.emplace_back(tr("key.alt"));
-    }
-    if (has(chord.mods, Modifiers::Shift)) {
-        out.emplace_back(tr("key.shift"));
-    }
-    switch (chord.key) {
-    case Key::Up: out.emplace_back("\xE2\x86\x91"); break;    // ↑
-    case Key::Down: out.emplace_back("\xE2\x86\x93"); break;  // ↓
-    case Key::Left: out.emplace_back("\xE2\x86\x90"); break;  // ←
-    case Key::Right: out.emplace_back("\xE2\x86\x92"); break; // →
-    default: out.emplace_back(to_string(chord.key)); break;
-    }
-    return out;
 }
 
 } // namespace navigator::ui

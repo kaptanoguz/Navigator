@@ -35,11 +35,12 @@ TEST_CASE("Navigation and editing keys", "[keys]") {
     CHECK(translate_key(SDLK_GRAVE, SDL_SCANCODE_GRAVE) == Key::Grave);
 }
 
-TEST_CASE("Keypad: only Enter is distinct, digits and operators are unknown", "[keys]") {
+TEST_CASE("Keypad keys and Menu key map by physical identity regardless of NumLock", "[keys]") {
     CHECK(translate_key(SDLK_KP_ENTER, SDL_SCANCODE_KP_ENTER) == Key::KeypadEnter);
-    CHECK(translate_key(SDLK_KP_1, SDL_SCANCODE_KP_1) == Key::Unknown);
-    CHECK(translate_key(SDLK_1, SDL_SCANCODE_KP_1) == Key::Unknown); // NumLock legend
-    CHECK(translate_key(SDLK_KP_PLUS, SDL_SCANCODE_KP_PLUS) == Key::Unknown);
+    CHECK(translate_key(SDLK_KP_1, SDL_SCANCODE_KP_1) == Key::Keypad1);
+    CHECK(translate_key(SDLK_1, SDL_SCANCODE_KP_1) == Key::Keypad1); // NumLock legend
+    CHECK(translate_key(SDLK_KP_PLUS, SDL_SCANCODE_KP_PLUS) == Key::KeypadPlus);
+    CHECK(translate_key(SDLK_APPLICATION, SDL_SCANCODE_APPLICATION) == Key::Menu);
 }
 
 TEST_CASE("Non-Latin legends fall back to the physical position", "[keys]") {

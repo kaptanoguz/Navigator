@@ -21,12 +21,15 @@ add_library(navigator_ui_browser STATIC
     browser/watch_worker.cpp
     dnd/file_drag.cpp
     i18n/i18n.cpp
+    input/shortcut_text.cpp
     inspector/inspector_controller.cpp
     inspector/metadata.cpp
     inspector/preview_backend.cpp
     inspector/text_layout.cpp
     inspector/thumbnail_scheduler.cpp
     inspector/zoom.cpp
+    menu/menu_model.cpp
+    menu/menu_pins.cpp
     ops/app_trash.cpp
     ops/file_ops.cpp
     ops/op_text.cpp
@@ -63,6 +66,7 @@ target_link_libraries(navigator_ui_browser
         Threads::Threads
     PRIVATE
         navigator::options
+        nlohmann_json::nlohmann_json
 )
 # Phase 6: previews and thumbnails (src/preview). The ui codes against the frozen headers; a
 # tree without the preview module still builds (no service: type icons and "No preview").
@@ -76,7 +80,11 @@ add_library(navigator_ui STATIC
     browser/browser_search_view.cpp
     browser/browser_view.cpp
     input/sdl_input.cpp
+    keymap/keymap_editor_view.cpp
+    menu/context_menu_view.cpp
+    menu/openwith_popup.cpp
     ops/ops_view.cpp
+    palette/palette_view.cpp
     platform/outgoing_drag.cpp
     platform/wayland_drag.cpp
     platform/xdnd_source.cpp

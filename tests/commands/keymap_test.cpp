@@ -166,7 +166,7 @@ std::string unquote(const std::string& cell) {
 struct KeymapDoc {
     std::vector<DocRow> rows;
     std::vector<std::string> unbound;
-    std::size_t phase_rows[8] = {0, 0, 0, 0, 0, 0, 0, 0}; // chord rows per phase (1 unused)
+    std::size_t phase_rows[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}; // chord rows per phase (1 unused)
 };
 
 KeymapDoc read_keymap_doc() {
@@ -174,7 +174,7 @@ KeymapDoc read_keymap_doc() {
     REQUIRE(in.good());
     KeymapDoc doc;
     std::string line;
-    int section = 0; // the phase of the table being read (0, 2 .. 7); valid while in_table
+    int section = 0; // the phase of the table being read (0, 2 .. 8); valid while in_table
     bool in_table = false;
     while (std::getline(in, line)) {
         if (line.starts_with("## ")) {
@@ -193,13 +193,15 @@ KeymapDoc read_keymap_doc() {
                 section = 6;
             } else if (line.starts_with("## Phase 7 defaults")) {
                 section = 7;
+            } else if (line.starts_with("## Phase 8 defaults")) {
+                section = 8;
             } else {
                 in_table = false;
             }
             continue;
         }
         if (line.starts_with("### ")) {
-            in_table = false; // sub-sections (Mouse, Popups) are not chord tables
+            in_table = false; // sub-sections (Mouse, Popups, Default sequences) are separate
             continue;
         }
         if (!in_table || !line.starts_with("|")) {
@@ -224,6 +226,8 @@ KeymapDoc read_keymap_doc() {
             const std::string arg = unquote(cells[3]);
             if (arg == "Extend") {
                 row.arg = CursorArg::Extend;
+            } else if (arg == "KeepSelection") {
+                row.arg = CursorArg::KeepSelection;
             } else {
                 REQUIRE(arg == "0");
             }
@@ -472,8 +476,9 @@ TEST_CASE("load_default_keymap binds exactly the docs/keymap.md tables, in order
     CHECK(parsed.phase_rows[5] == 4);  // Phase 5 chords
     CHECK(parsed.phase_rows[6] == 2);  // Phase 6 chords
     CHECK(parsed.phase_rows[7] == 12); // Phase 7 chords
-    REQUIRE(doc.size() == 3 + 25 + 21 + 5 + 4 + 2 + 12);
-    CHECK(doc.size() == 72); // 60 through Phase 6 (docs/keymap.md "Phase 7 defaults") + 12
+    CHECK(parsed.phase_rows[8] == 8);  // Phase 8 chords
+    REQUIRE(doc.size() == 3 + 25 + 21 + 5 + 4 + 2 + 12 + 8);
+    CHECK(doc.size() == 80); // 72 through Phase 7 + 8 Phase 8 chords
 
     Keymap keymap;
     REQUIRE(navigator::load_default_keymap(keymap));
@@ -486,6 +491,11 @@ TEST_CASE("load_default_keymap binds exactly the docs/keymap.md tables, in order
         CHECK(bindings[i].command == doc[i].command);
         CHECK(bindings[i].arg == doc[i].arg);
     }
+    // Phase 8 ships one default sequence: Ctrl+K Ctrl+S -> keymap.edit.
+    REQUIRE(keymap.sequence_bindings().size() == 1);
+    CHECK(to_string(keymap.sequence_bindings()[0].sequence) == "Ctrl+K Ctrl+S");
+    CHECK(keymap.sequence_bindings()[0].command == "keymap.edit");
+    CHECK(keymap.sequence_bindings()[0].arg == 0);
 }
 
 TEST_CASE("every default binding resolves to a registered built-in", "[keymap][defaults]") {
@@ -527,10 +537,13 @@ TEST_CASE("every default binding resolves to a registered built-in", "[keymap][d
                                       CommandId::OpenTerminalHere,
                                       CommandId::CancelOperation,
                                       CommandId::TogglePauseOperation,
-                                      CommandId::ToggleOperationsPanel,
                                       CommandId::OpenTrash,
                                       CommandId::RestoreFromTrash,
-                                      CommandId::EmptyTrash};
+                                      CommandId::EmptyTrash,
+                                      CommandId::EditKeymap,
+                                      CommandId::ResetKeymap,
+                                      CommandId::ExportKeymap,
+                                      CommandId::OpenWith};
     for (const CommandInfo& info : registry.all()) {
         INFO("command " << info.name);
         CHECK(bound.contains(info.id) == !unbound.contains(info.id));
@@ -549,6 +562,9 @@ TEST_CASE("docs/keymap.md (unbound) rows are exactly the unbound built-ins", "[k
 
     std::set<std::string> documented(doc.unbound.begin(), doc.unbound.end());
     CHECK(documented.size() == doc.unbound.size()); // no duplicate (unbound) rows
+    // In Phase 8, ops.toggle_panel moved from "(unbound)" in the Phase 7 table to Ctrl+J in the
+    // Phase 8 table, so remove it from the historical Phase 7 unbound rows.
+    documented.erase("ops.toggle_panel");
     CHECK(documented == std::set<std::string>{"tab.close_left",
                                               "layout.delete",
                                               "window.new",
@@ -573,10 +589,13 @@ TEST_CASE("docs/keymap.md (unbound) rows are exactly the unbound built-ins", "[k
                                               "file.open_terminal_here",
                                               "ops.cancel",
                                               "ops.toggle_pause",
-                                              "ops.toggle_panel",
                                               "trash.open",
                                               "trash.restore",
-                                              "trash.empty"});
+                                              "trash.empty",
+                                              "keymap.edit",
+                                              "keymap.reset_defaults",
+                                              "keymap.export",
+                                              "open_with.show"});
     std::set<std::string> actual;
     for (const CommandInfo& info : registry.all()) {
         if (keymap.chords_for(info.name).empty()) {
@@ -600,10 +619,9 @@ TEST_CASE("default chords are unique and leave reserved chords free", "[keymap][
     // (Phase 8). Ctrl+C and Ctrl+Shift+N are bound since Phase 7 (edit.copy, file.new_folder).
     // F8 stays free (Total Commander users read it as "delete"); Ctrl+F5 and Alt+F5/F7/F8 were
     // rejected for the other-pane commands.
-    for (const char* text :
-         {"Ctrl+P", "Ctrl+Shift+P", "Ctrl+Comma", "Ctrl+Space", "Ctrl+N", "Ctrl+Alt+Left",
-          "Ctrl+Alt+Right", "Ctrl+Alt+Up", "Ctrl+Alt+Down", "Ctrl+Backslash", "F8", "Shift+F8",
-          "Ctrl+F5", "Alt+F5", "Alt+F7", "Alt+F8", "Ctrl+Shift+Y", "Ctrl+Delete"}) {
+    for (const char* text : {"Ctrl+P", "Ctrl+N", "Ctrl+Alt+Left", "Ctrl+Alt+Right", "Ctrl+Alt+Up",
+                             "Ctrl+Alt+Down", "Ctrl+Backslash", "F8", "Shift+F8", "Ctrl+F5",
+                             "Alt+F5", "Alt+F7", "Alt+F8", "Ctrl+Shift+Y", "Ctrl+Delete"}) {
         INFO("reserved chord " << text);
         CHECK(keymap.resolve(chord(text)) == nullptr);
     }
@@ -972,14 +990,20 @@ TEST_CASE("a Phase 6 key sequence becomes the expected command list",
     queue.drain([&](const Command& c) { ran.push_back(c); });
 
     const std::vector<Command> expected{
-        {CommandId::Inspect, 0},      {CommandId::CursorDown, 0}, {CommandId::Inspect, 0},
-        {CommandId::Inspect, 0},      {CommandId::Activate, 0},   {CommandId::ClearSelection, 0},
+        {CommandId::Inspect, 0},
+        {CommandId::CursorDown, 0},
+        {CommandId::ToggleCursorSelected, 0},
+        {CommandId::Inspect, 0},
+        {CommandId::Inspect, 0},
+        {CommandId::Activate, 0},
+        {CommandId::ClearSelection, 0},
         {CommandId::OpenInNewTab, 0},
     };
     CHECK(ran == expected);
     CHECK(queue.empty());
     CHECK_FALSE(navigator::resolve_command(keymap, registry, chord("Shift+Space")));
-    CHECK_FALSE(navigator::resolve_command(keymap, registry, chord("Ctrl+Space")));
+    CHECK(navigator::resolve_command(keymap, registry, chord("Ctrl+Space")) ==
+          Command{CommandId::ToggleCursorSelected, 0});
     // No default binds any inspector.* command (header buttons and palette only).
     for (const KeyBinding& b : keymap.bindings()) {
         INFO("binding " << to_string(b.chord) << " -> " << b.command);
@@ -1056,11 +1080,12 @@ TEST_CASE("a Phase 7 key sequence becomes the expected command list",
     };
     CHECK(ran == expected);
     CHECK(queue.empty());
-    // No default binds the ops.*, trash.* or file.open_terminal_here commands (buttons, sidebar
-    // and palette only), and no default passes PasteArg::IntoCursorFolder (context menu only).
+    // ops.cancel / ops.toggle_pause, trash.* and file.open_terminal_here remain unbound
+    // (ops.toggle_panel gained Ctrl+J in Phase 8).
     for (const KeyBinding& b : keymap.bindings()) {
         INFO("binding " << to_string(b.chord) << " -> " << b.command);
-        CHECK_FALSE(b.command.starts_with("ops."));
+        CHECK(b.command != "ops.cancel");
+        CHECK(b.command != "ops.toggle_pause");
         CHECK_FALSE(b.command.starts_with("trash."));
         CHECK(b.command != "file.open_terminal_here");
         if (b.command == "edit.paste") {

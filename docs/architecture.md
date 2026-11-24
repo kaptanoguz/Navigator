@@ -893,6 +893,186 @@ available; undo/redo round trips including "changed since" and "appeared since";
 clipboard interop; Wayland/X11 drag notes) -> **design-reviewer** (sheets, progress, DnD
 feedback).
 
+## Phase 8: command palette, remappable keymap, searchable context menu, Open With
+
+### Ownership
+
+| Module | Owns (Phase 8) |
+|--------|----------------|
+| contracts | `commands.hpp` additions, `keymap_file.hpp`, `palette.hpp`, `menu.hpp`, `openwith.hpp`, this section, `docs/keymap.md`, `tests/contracts/phase8_usage.cpp` |
+| commands | `src/commands`: key sequences (`KeySequence`, prefix-free `Keymap`, `SequenceMatcher`), keypad/Menu key names, command metadata (`CommandInfo` fields, category, danger, arg kinds, context requirements, `builtin_command_variants`), the keymap file (`keymap_file.hpp`: JSON, layering, atomic I/O, editor helpers), the Phase 8 `CommandId`s and default chords, `tests/commands` |
+| search | `src/search` (`tests/search`): `palette.hpp` (entry ranking with `search::Matcher`, history, `palette_history.json`). It lives here because `src/commands` must not depend on `src/search`; the header takes plain structs and needs `commands.hpp` for value types only (no link dependency) |
+| platform | `src/platform` (`tests/platform`): `openwith.hpp` (Desktop Entry, MIME Applications, shared-mime-info aliases/subclasses, Exec expansion, launching through `IAppLauncher`, `mimeapps.list` writer) |
+| ui | `src/ui` (`tests/ui`): palette overlay (and its pickers), Settings overlay with the Keyboard page (the keymap editor), searchable context menus (`menu.hpp` builders, pins, filter, drawn in `src/ui/menu`), key sequence feed and status-bar hint, shortcuts shown everywhere, Open With popup and submenu, SDL keypad / Menu key translation, i18n strings, focus scoping |
+| qa | keymap load/save/layering/sequence tests, palette and menu ranking safety tests, Open With fixtures, the restart-persistence smoke test, extension of `tests/integration/keymap_e2e_test.cpp` |
+
+`menu.hpp` is implemented in `src/ui` (the builders replace menus ui already draws; the filter
+uses `search::Matcher`, which ui links). If ui is overloaded the coordinator may give the
+builders and the pin file to `commands`; the header is the contract either way.
+
+### Data flow
+
+```
+ startup:  load_keymap_file(<config>/keymap.json)  -> KeymapFile (lenient, LoadReport)
+           build_keymap(KeymapFile, registry)      -> Keymap (defaults + user layer, ApplyReport)
+           load_history / load_pins                -> palette::History, menu::Pins
+ key press (after focus scoping)
+           SequenceMatcher::feed(keymap, chord, now)
+              NoMatch   -> resolve_command(keymap, registry, chord) -> CommandQueue::enqueue
+              Pending   -> status-bar hint "Ctrl+K ..."; consumed
+              Match     -> to_command(registry, binding)          -> CommandQueue::enqueue
+              Cancelled / Aborted -> consumed, hint "... is not a command"
+ palette.open (Ctrl+Shift+P)
+           capture CommandContext  -> build palette::Entry list (registry, tr, keymap, aliases)
+           per keystroke: palette::rank(query, entries, history, context)
+           Enter: Command (+ picker for OpId / BookmarkRow) -> CommandQueue::enqueue; History::record
+ right click / Menu / Shift+F10
+           menu::build(kind, registry, context, target) -> localize -> apply_shortcuts -> arrange(pins)
+           typing: menu::filter(...)  Enter / click: Item::command -> CommandQueue::enqueue
+           Open With items: list_handlers on a worker -> Item::Kind::OpenWith rows
+ Open With (menu, popup, open_with.show)
+           platform::mime_type(path)  -> openwith::list_handlers(mime, system_options()) (worker)
+           pick -> openwith::launch_with(handler, paths, launcher) at frame end (no waiting)
+ keymap editor edit
+           check_binding -> (user confirms replace) -> set_binding / remove_binding / reset_*
+           -> build_keymap -> replace the Keymap, SequenceMatcher::reset() -> save (worker, ~250 ms)
+```
+
+Everything that changes program state goes through the `CommandQueue` and runs at frame end;
+the palette, the menu, aliases and sequences are only different ways to enqueue a `Command`. The
+Open With launch is the one non-command action (it needs a desktop id) and runs in the same
+frame-end slot, like `platform::open_with_default`.
+
+### Safety rules (normative)
+
+- **X1 No bypass.** Palette entries, menu items, aliases and key sequences enqueue a `Command`
+  and nothing else. No `arg` of any command skips a confirmation, and the confirm-sheet commands
+  (`file.delete_permanently`, `trash.empty`, `layout.delete`, `keymap.reset_defaults`) ignore `arg`.
+  Every path to a destructive command therefore reaches the same sheet (initial focus on Cancel).
+- **X2 Destructive is never the default.** In the palette ranking and in the menu filter a
+  destructive result is never first / highlighted while a safe one exists; if only destructive
+  results exist, nothing is highlighted and Enter does nothing until the user moves with Down.
+  Destructive items are last and separated in menus, have no accelerator letter, cannot be
+  pinned, and are never recorded in the palette history (no frequency boost).
+- **X3 Danger is data.** `CommandInfo::danger` is Destructive for exactly `file.delete_permanently`,
+  `trash.empty`, `layout.delete`, `keymap.reset_defaults`; `effective_danger` makes `file.trash`
+  destructive in the Trash view. A new destructive command must set the flag and have a sheet.
+- **X4 Bare destructive bindings warn** (`is_destructive_bare_binding`); they are not refused.
+- **X5 Sequences cannot steal typing.** A multi-chord sequence cannot start with a text-input chord
+  (`is_text_input_chord`), cannot contain a bare Escape, and is never fed while a text field consumes
+  the chord; a sheet or overlay resets it.
+- **X6 Aliases and bindings carry only stable args.** For `ArgKind` OpId / TabId / PaneId /
+  BookmarkId / BookmarkRow the arg must be 0 (runtime ids are not persistent).
+- **X7 A bad file never hurts.** `keymap.json`, `palette_history.json` and `menu_pins.json` load
+  leniently (unknown fields ignored, invalid entries dropped and reported, non-objects moved to
+  `.bad`), never crash, and a destructive id in a pins file is ignored when arranging.
+- **X8 No shell.** Open With builds argv from the Exec line (`expand_exec`), values are never
+  re-split or re-expanded, `Terminal=true` needs an explicit terminal prefix.
+- **X9 Tests touch only fixtures** (keymap, history, pins and Open With tests use temporary
+  config / data directories through the injectable roots).
+
+### Command metadata
+
+`register_builtin_commands` fills `CommandInfo` from this table. Defaults: category by name
+prefix as listed, `Danger::Safe`, `ArgKind::None`, palette visible, bindable, no requirements.
+Only deviations are written. "Hidden when" is `hidden_if_any`; "Needs" is `requires_all`.
+`description_key` is `cmd.<name>.desc` for every command (the catalogs may omit it).
+
+| Category | Commands (name: deviations) |
+|----------|-----------------------------|
+| App | `app.quit`, `view.toggle_theme`, `view.toggle_fps_overlay` |
+| View | `view.toggle_hidden`, `view.toggle_sidebar`; `view.toggle_view_lock`: reserved (not palette-visible, not bindable) |
+| Navigation | `nav.back`: needs CanGoBack; `nav.forward`: needs CanGoForward; `nav.up`, `nav.refresh`, `nav.focus_address_bar`, `nav.goto` |
+| List | `list.activate`: needs HasCursorRow; `list.open_in_new_tab`: needs HasCursorRow; `list.select_all`; `list.clear_selection`; `list.toggle_cursor_selected`: needs HasCursorRow; `list.cursor_up/down/page_up/page_down/home/end`: Flags, not palette-visible |
+| Tabs | `tab.new`: Flags; `tab.close`, `tab.duplicate`, `tab.close_left`, `tab.move_left`, `tab.move_right`: TabId; `tab.reopen_closed`: needs ClosedTabsAvailable; `tab.next`, `tab.previous`, `tab.search` |
+| Panes | `pane.split_right`, `pane.split_down`: PaneId; `pane.close`: PaneId, needs MultiplePanes; `pane.focus_next`, `pane.focus_previous` |
+| Layouts | `layout.save`, `layout.load`; `layout.delete`: Destructive |
+| Windows | `window.new`: reserved |
+| Sidebar | `sidebar.focus`; `bookmarks.toggle`: BookmarkId; `bookmarks.rename`, `bookmarks.move_up`, `bookmarks.move_down`: BookmarkRow; `recents.clear`, `recents.toggle_tracking` |
+| Edit | `edit.copy_path`: Flags; `edit.copy`, `edit.cut`: needs HasSelection, hidden when SidebarFocused; `edit.paste`: Flags, hidden when SidebarFocused or TrashView; `edit.undo`: needs CanUndo; `edit.redo`: needs CanRedo |
+| Files | `file.trash`: needs HasSelection, hidden when SidebarFocused; `file.delete_permanently`: Destructive, needs HasSelection, hidden when SidebarFocused; `file.rename`: needs HasCursorRow, hidden when TrashView; `file.new_folder`: hidden when TrashView or SidebarFocused; `file.copy_to_other_pane`, `file.move_to_other_pane`: needs HasSelection and MultiplePanes, hidden when SidebarFocused or TrashView; `file.open_terminal_here`: reserved |
+| Operations | `ops.cancel`, `ops.toggle_pause`: OpId, needs OperationsRunning; `ops.toggle_panel` |
+| Search | `list.filter`; `list.clear_filter`: needs FilterActive; `search.flatten`, `search.flatten_volume`, `search.types`, `search.toggle_fuzzy`, `search.rebuild_index`; `search.cancel`: needs SearchRunning |
+| Inspector | `view.inspect`; `inspector.toggle_lock`, `inspector.cycle_placement`: needs InspectorVisible; `inspector.play`: needs InspectorVisible; `inspector.zoom_fit`, `inspector.zoom_1to1`, `inspector.toggle_grid`, `inspector.toggle_minimap`: need InspectorShowsImage |
+| Trash | `trash.open`: hidden when TrashView; `trash.restore`: needs TrashView and HasSelection; `trash.empty`: Destructive, needs TrashView |
+| Settings | `palette.open`, `menu.show_context`: not palette-visible; `settings.open`; `keymap.edit`; `keymap.reset_defaults`: Destructive; `keymap.export` |
+| OpenWith | `open_with.show`: needs HasCursorRow, hidden when TrashView |
+
+`builtin_command_variants()`: `edit.copy_path` with `CopyPathArg::CurrentFolder` (`cmd.edit.copy_path.folder`),
+`tab.new` with `NewTabArg::Home` (`cmd.tab.new.home`), `edit.paste` with `PasteArg::IntoCursorFolder`
+(`cmd.edit.paste.into_folder`, needs CursorOnFolder).
+
+Pickers (ui-internal, one level, same overlay): `ops.cancel` / `ops.toggle_pause` ask for an
+operation when `running_operations >= 2` (rows from `IOperationQueue::snapshot`, label and
+progress); `bookmarks.rename` / `move_up` / `move_down` ask for a bookmark unless the captured
+context has `BookmarkRowFocused`. The picked value becomes `Command::arg`.
+
+### Persistence
+
+| File (under the config root, `AppConfig::config_dir`) | Content | Written | Owner |
+|------------------------------------------------------|---------|---------|-------|
+| `keymap.json` | `KeymapFile` v1 | about 250 ms after each editor change, on quit when dirty; atomic | commands (`save_keymap_file`) |
+| `palette_history.json` | `palette::History` v1, at most 100 items | about 1 s after a recorded command, on quit; atomic | search (`save_history`) |
+| `menu_pins.json` | `menu::Pins` v1, at most 16 ids | when pinned / unpinned, debounced; atomic | ui (`save_pins`) |
+
+All three follow the session rules: dirs 0700, files 0600, temporary file + fsync + rename, loads
+on the UI thread at startup only, writes from a worker with a copy, `restore_session` /
+`save_session` govern them, and headless runs without `config_dir` never touch them. A rebind
+made in one run is in `keymap.json` before the user can quit, so the next start (which calls
+`build_keymap`) has it. Hot reload across instances is Phase 9.
+
+### Open With
+
+`openwith.hpp` reads the freedesktop files itself (no GIO). Order of precedence and the filters
+are in the header; in short: `mimeapps.list` files (desktop-specific, config, data) for
+`[Default Applications]`, `[Added Associations]`, `[Removed Associations]`, then the legacy
+`defaults.list`, then `mimeinfo.cache`, for the file's MIME type and its parents
+(`shared-mime-info` aliases and subclasses; never `application/octet-stream`). The MIME type
+comes from Phase 2's name table (`platform::mime_type`); there is no glob database or content
+sniffing, so unknown extensions have no handlers (documented limitation). `Exec` field codes
+are expanded without a shell; one invocation per path for `%f` / `%u`, one for all paths for
+`%F` / `%U` (split above 64 KiB of arguments). `Terminal=true` applications launch through a
+terminal prefix (`default_terminal_prefix`) or fail with `Unsupported`. `set_default_handler`
+writes `mimeapps.list` ("Always open with this").
+
+### Settings overlay (Phase 8 scope)
+
+`settings.open` (`Ctrl+,`) opens a Settings overlay with a single page, "Keyboard" (the keymap
+editor), so the chord and the command are real; `keymap.edit` opens the same page directly.
+Phase 9 adds the other pages (font, spacing, colour schemes, ...) behind the same command. There
+is no `settings.json` in Phase 8.
+
+### i18n keys the ui adds (English and Turkish)
+
+`cmd.palette.open`, `cmd.settings.open`, `cmd.keymap.edit`, `cmd.keymap.reset_defaults`,
+`cmd.keymap.export`, `cmd.menu.show_context`, `cmd.open_with.show`,
+`cmd.list.toggle_cursor_selected`; the three variant keys above; `category.<name>` for the 18
+`CommandCategory` values; optional `cmd.<name>.desc`; palette strings (placeholder, "no matching
+command", "Pick an operation", "Pick a bookmark", recents header, alias hint); keymap editor
+strings (conflict, the four warnings, "press the new shortcut", reset, replace); menu strings
+("Search actions", pin / unpin, "Open With", "Loading", "No applications found", "Always open
+with this"); the sheet text of `keymap.reset_defaults`; `key.menu` is not needed (key legends are
+not translated, "Menu").
+
+### Deferred
+
+Hot-reloaded keymap across instances (Phase 9); a settings file and the other settings pages
+(Phase 9); separate shortcuts per zoom level (Phase 9 views); a keymap import command and a
+printable shortcut cheat sheet; third-party / plugin menu items and commands (Phase 10 plugin
+ABI; `CommandCategory::Plugins` is reserved); right-drag menu; per-pane sequence status hint
+styling; MIME globs and content sniffing for Open With; Desktop Actions; a notice centre
+(docs/review/phase-7.md; the palette already reaches `edit.undo`).
+
+Work split for Phase 8: **contracts** (this diff) -> **commands** (`src/commands`: sequences,
+metadata, keymap file, ids and chords, `tests/commands`), **search** (`src/search`: palette ranking
+and history, `tests/search`) and **platform** (`src/platform`: Open With, `tests/platform`) in
+parallel -> **ui** (palette, Settings/keymap editor, menus and pins, sequence feed, keypad and
+Menu key translation, Open With popup, i18n) -> integration (root `CMakeLists.txt` needs no new
+subdirectory: all code goes into existing `src/commands`, `src/search`, `src/platform`, `src/ui`) ->
+**qa** (the restart smoke test, sequence timing with synthetic clocks, lenient-load fuzz, palette
+and menu "never first" invariants, Open With fixture trees, e2e keymap doc test) ->
+**design-reviewer** (palette, editor, menu search).
+
 ## Error policy
 
 - One policy: fallible functions return `navigator::Result<T>` (`types.hpp`). No exceptions across module boundaries.
@@ -914,6 +1094,7 @@ feedback).
 - Phase 6: `preview::*` and `thumbnail::*` pure helpers (marked Pure in the headers) are callable from any thread, including the UI thread for key computation. `IPreviewProvider::produce` is called concurrently on preview workers (providers are reentrant); `ProviderRegistry` is built on one thread and then shared read-only. `IPreviewService` owns its workers, is internally synchronized, never blocks the caller (except `shutdown`), and is drained by one consumer (`poll`, UI thread); results are shared immutable `std::shared_ptr<const PreviewResult>`. Thumbnail file functions and `platform::IProcessRunner::run` block (workers only). Textures are created on the UI thread only.
 - Phase 5: `search::*` free functions, `Query`, `TypeFilter` and the inline `index.hpp` helpers are pure (any thread, including the UI thread for the folder filter up to `kUiThreadFilterLimit` entries). A `search::Matcher` and an `fs::Walker` are single-thread-at-a-time objects; `Walker` blocks on I/O (workers only). An `IIndex` owns one service thread; `query()`/`status()` are callable from any thread concurrently, `start()`/`stop()`/`request_rescan()` from the owning (UI) thread.
 - Phase 7: `ops::IOperationQueue` members are thread-safe and non-blocking (UI thread calls them every frame); its workers run `run_operation`, which blocks. `ops::UndoStack` is UI-thread only. `trash::ITrash` members are thread-safe and block (workers only), except the lexical `is_inside_trash`. `transfer::*`, `ops::` pure helpers and `trash::` format helpers are pure (any thread).
+- Phase 8: `Keymap`, `SequenceMatcher`, `KeymapFile` and `palette::History` / `menu::Pins` values are UI-thread owned (the writers get copies). Pure functions (`keymap_from_json`, `to_json`, `apply_keymap_file`, `build_keymap`, `check_binding`, editor helpers, `palette::rank`, `menu::build` / `arrange` / `filter`, `openwith::parse_desktop_entry` / `parse_exec_tokens` / `expand_exec`) are callable from any thread. `load_keymap_file` / `save_keymap_file`, `palette::load_history` / `save_history`, `menu::load_pins` / `save_pins` and `openwith::list_handlers` / `default_handler` / `find_handler` / `mime_parents` / `set_default_handler` block (workers; the startup loads are the UI-thread exception). `openwith::launch_with` never waits (frame-end safe).
 - Cancellation uses `std::stop_token`; a cancelled call fails with `ErrorCode::Cancelled`.
 
 ## Public headers
@@ -922,7 +1103,11 @@ feedback).
 |--------|---------|--------|
 | `types.hpp` | `Path`, `FileId`, `Timestamp`, `Span`, `Arena` (decl), `ErrorCode`, `Error`, `Result`, `fail`, `ok` | Phase 0, concrete (`Timestamp` Phase 1) |
 | `detail/expected.hpp` | `std::expected` fallback used by `Result` | Phase 0, concrete |
-| `commands.hpp` | `CommandId`, `CursorArg`, `Command`, `CommandQueue`, `CommandInfo`, `CommandRegistry`; keymap: `Key`, `Modifiers` (+ operators, `has`), `KeyChord`, `to_string(Key/KeyChord)`, `parse_key_chord`, `KeyBinding`, `Keymap`, `load_default_keymap`, `resolve_command` | Phase 0; keymap + Phase 2 ids are a Phase 2 contract, implemented in `src/commands` (commands) |
+| `commands.hpp` | `CommandId`, `CursorArg`, `Command`, `CommandQueue`, `CommandInfo` (Phase 8: category, description, danger, arg kind, palette/bindable flags, context requirements), `CommandCategory`, `ArgKind`, `Danger`, `ContextFlags`, `CommandContext`, `is_applicable`, `effective_danger`, `CommandVariant`, `CommandRegistry`; keymap: `KeySequence`, `parse_key_sequence`, `validate_sequence`, `is_text_input_chord`, `SequenceBinding`, `BindingConflict`, `find_conflicts`, `SequenceMatcher`, `SequenceResult`, `to_command`, keypad / Menu `Key` values, `Key`, `Modifiers` (+ operators, `has`), `KeyChord`, `to_string(Key/KeyChord)`, `parse_key_chord`, `KeyBinding`, `Keymap`, `load_default_keymap`, `resolve_command` | Phase 0; keymap + Phase 2 ids are a Phase 2 contract, implemented in `src/commands` (commands) |
+| `keymap_file.hpp` | `KeymapFile`, `UserBinding`, `UserUnbind`, `Alias`, `is_valid_alias_name`, `alias_names_equal`, `keymap_from_json`, `to_json`, `LoadReport`, `load_keymap_file`, `save_keymap_file`, `keymap_file_path`, `ApplyReport`, `apply_keymap_file`, `build_keymap`, `effective_aliases`, `BindingWarning`, `BindingCheck`, `check_binding`, `is_destructive_bare_binding`, `set_binding`, `remove_binding`, `reset_command`, `reset_all`, `set_alias`, `remove_alias`, `set_sequence_timeout` | Phase 8 contract, implemented in `src/commands` (commands) |
+| `palette.hpp` | `palette::Entry`, `history_key`, `is_recordable`, `History`, `HistoryItem`, `history_boost`, `history_from_json`, `to_json`, `load_history`, `save_history`, `history_file`, `MatchedVia`, `Hit`, `SearchOptions`, `SearchResult`, `rank`, scoring constants | Phase 8 contract, implemented in `src/search` (search) |
+| `menu.hpp` | `menu::Item`, `MenuKind`, `Target`, `build`, `apply_shortcuts`, `Pins`, `pins_from_json`, `to_json`, `load_pins`, `save_pins`, `pins_file`, `arrange`, `Row`, `FilterResult`, `filter` | Phase 8 contract, implemented in `src/ui` (ui) |
+| `openwith.hpp` | `openwith::Options`, `system_options`, `Handler`, `parse_desktop_entry`, `shown_in`, `mime_parents`, `list_handlers`, `default_handler`, `find_handler`, `set_default_handler`, `parse_exec_tokens`, `ExpandOptions`, `expand_exec`, `default_terminal_prefix`, `LaunchOptions`, `launch_with` | Phase 8 contract, implemented in `src/platform` (platform) |
 | `ui.hpp` | `AppConfig` (Phase 2: `animations`, `start_path`; Phase 3: `config_dir`, `restore_session`, `restore_window_geometry`, `save_session`; Phase 5: `cache_dir`, `enable_index`; Phase 6: `thumbnail_dir`, `preview_cache_bytes`, `enable_thumbnails`, `enable_external_thumbnailers`), `Theme`, `FrameStats`, `App` (pimpl) | Phase 0, implemented in `src/ui`/`src/app` |
 | `places.hpp` | `places::LocationStatus`, `ResolvedLocation`, `is_tracked_volume`, `containing_volume`, `identity_for`, `resolve_location`, `deepest_containing`, `default_label`, `PlaceKind`, `label_key`, `Place`, `build_places`, `BookmarkId`, `Bookmark`, `BookmarkStore`, `RecentEntry`, `RecentsOptions`, `RecentsStore`, `bookmarks_to_json`/`_from_json`, `recents_to_json`/`_from_json`, `bookmarks_file`, `recents_file`, `load/save_bookmarks`, `load/save_recents`, constants | Phase 4 contract, implemented in `src/core` (core-fs) |
 | `path_input.hpp` | `path_input::normalize_absolute`, `EnvLookup`, `UserHomeLookup`, `ExpandContext`, `ExpandedPath`, `expand_user_path`, `CaseFix`, `fix_path_case`, `ResolvedInput`, `resolve_input`, `CompletionQuery`, `parse_completion_input`, `CompletionMatch`, `CompletionOptions`, `Completion`, `match_completions`, `complete_path`, `PathQuoting`, `quote_for_shell`, `format_paths_for_copy` | Phase 4 contract, implemented in `src/core` (core-fs) |
@@ -949,6 +1134,7 @@ Stub functions are declared only; nothing may call them until their phase lands.
 ## Commands
 
 - `CommandId` values are stable and never renumbered. Ranges: 1-999 app/view, 1000-1099 navigation, 1100-1199 list (activation, cursor, selection), 1200-1219 tabs, 1220-1239 panes, 1240-1249 named layouts, 1250-1259 windows, 1260-1279 sidebar/bookmarks/recents, 1280-1299 edit/clipboard, 1300-1319 filter/flatten/search/index, 1320-1339 Inspector/previews, 1340-1359 file operations / operations panel, 1360-1369 trash, 1370+ later phases.
+  - Phase 8: `ToggleCursorSelected = 1103` (`list.toggle_cursor_selected`, `Ctrl+Space`), `OpenPalette = 1370` (`palette.open`, `Ctrl+Shift+P`), `OpenSettings = 1371` (`settings.open`, `Ctrl+,`), `EditKeymap = 1372` (`keymap.edit`, sequence `Ctrl+K Ctrl+S`), `ResetKeymap = 1373` (`keymap.reset_defaults`, destructive), `ExportKeymap = 1374` (`keymap.export`), `ShowContextMenu = 1375` (`menu.show_context`, `Menu`, `Shift+F10`), `OpenWith = 1390` (`open_with.show`); `CursorArg::KeepSelection` (`Ctrl+Up` / `Ctrl+Down`); `ops.toggle_panel` gains `Ctrl+J`. New ranges 1370-1389 and 1390-1399. Details, metadata table and safety rules: "Phase 8" above.
   - Phase 7: `Copy = 1281` (`edit.copy`, `Ctrl+C`), `Cut = 1282` (`edit.cut`, `Ctrl+X`), `Paste = 1283` (`edit.paste`, `Ctrl+V`, arg `PasteArg`), `Undo = 1284` (`edit.undo`, `Ctrl+Z`), `Redo = 1285` (`edit.redo`, `Ctrl+Shift+Z`, `Ctrl+Y`), `MoveToTrash = 1340` (`file.trash`, `Delete`), `DeletePermanently = 1341` (`file.delete_permanently`, `Shift+Delete`), `Rename = 1342` (`file.rename`, `F2`), `NewFolder = 1343` (`file.new_folder`, `Ctrl+Shift+N`), `CopyToOtherPane = 1344` (`file.copy_to_other_pane`, `F7`), `MoveToOtherPane = 1345` (`file.move_to_other_pane`, `Shift+F7`), `OpenTerminalHere = 1346` (`file.open_terminal_here`, reserved no-op), `CancelOperation = 1347` (`ops.cancel`, arg OpId), `TogglePauseOperation = 1348` (`ops.toggle_pause`, arg OpId), `ToggleOperationsPanel = 1349` (`ops.toggle_panel`), `OpenTrash = 1360` (`trash.open`), `RestoreFromTrash = 1361` (`trash.restore`), `EmptyTrash = 1362` (`trash.empty`). Focus scoping: `docs/keymap.md` "Phase 7 defaults".
   - Phase 6: `Inspect = 1320` (`view.inspect`, `Space`, `Alt+KeypadEnter`), `ToggleInspectorLock = 1321` (`inspector.toggle_lock`), `InspectorZoomFit = 1322` (`inspector.zoom_fit`), `InspectorZoom1to1 = 1323` (`inspector.zoom_1to1`), `InspectorPlay = 1324` (`inspector.play`), `CycleInspectorPlacement = 1325` (`inspector.cycle_placement`), `ToggleInspectorGrid = 1326` (`inspector.toggle_grid`), `ToggleInspectorMinimap = 1327` (`inspector.toggle_minimap`). All arg 0. Space in text fields and Inspector focus routing: `docs/keymap.md` "Phase 6 defaults".
   - Phase 5: `FocusFilter = 1300` (`list.filter`, `Ctrl+F`), `ClearFilter = 1301` (`list.clear_filter`), `ToggleFlatten = 1302` (`search.flatten`, `Ctrl+E`), `FlattenVolume = 1303` (`search.flatten_volume`, `Ctrl+Shift+E`), `ToggleTypesPopup = 1304` (`search.types`, `Ctrl+Shift+F`), `ToggleFuzzy = 1305` (`search.toggle_fuzzy`), `CancelSearch = 1306` (`search.cancel`), `RebuildIndex = 1307` (`search.rebuild_index`). All arg 0. Filter-field focus scoping, type-to-filter and the Escape cascade: `docs/keymap.md` "Phase 5 defaults".
@@ -957,9 +1143,9 @@ Stub functions are declared only; nothing may call them until their phase lands.
   - Phase 3: `OpenInNewTab = 1116` (`list.open_in_new_tab`); tabs 1200-1209: `NewTab` (`tab.new`, arg `NewTabArg`), `CloseTab` (`tab.close`), `DuplicateTab` (`tab.duplicate`), `CloseLeftTabs` (`tab.close_left`), `ReopenClosedTab` (`tab.reopen_closed`), `NextTab` (`tab.next`), `PreviousTab` (`tab.previous`), `SearchTabs` (`tab.search`), `MoveTabLeft` (`tab.move_left`), `MoveTabRight` (`tab.move_right`); panes 1220-1224: `SplitRight` (`pane.split_right`), `SplitDown` (`pane.split_down`), `FocusNextPane` (`pane.focus_next`), `FocusPreviousPane` (`pane.focus_previous`), `ClosePane` (`pane.close`); layouts 1240-1242: `SaveLayout` (`layout.save`), `LoadLayout` (`layout.load`), `DeleteLayout` (`layout.delete`); windows: `NewWindow = 1250` (`window.new`, reserved, unbound). Tab commands take arg 0 (active tab) or a `TabId` value, pane commands 0 or a `PaneId` value.
   - Phase 2: `ToggleHidden = 4` (`view.toggle_hidden`); `NavigateBack = 1000` (`nav.back`), `NavigateForward = 1001` (`nav.forward`), `NavigateUp = 1002` (`nav.up`), `Refresh = 1003` (`nav.refresh`), `FocusAddressBar = 1004` (`nav.focus_address_bar`, Phase 4, registered and unbound); `Activate = 1100` (`list.activate`), `SelectAll = 1101` (`list.select_all`), `ClearSelection = 1102` (`list.clear_selection`), `CursorUp/Down/PageUp/PageDown/Home/End = 1110..1115` (`list.cursor_up`, `list.cursor_down`, `list.cursor_page_up`, `list.cursor_page_down`, `list.cursor_home`, `list.cursor_end`).
 - Variants are `Command::arg` bit flags, not extra ids: cursor commands take `CursorArg::Extend` (Shift: extend the selection from the anchor). The keymap binds a chord to (name, arg).
-- The keymap (`Keymap`, `KeyChord`, `Key`, `Modifiers`) lives in the commands module, with no SDL types; src/ui translates SDL keycodes/scancodes (and mouse X1/X2) into `Key`/`Modifiers` with the layout rules documented in `commands.hpp`. Canonical chord text is ASCII (`Ctrl+Shift+L`); the ui translates modifier names for display (`key.ctrl`, `key.shift`, `key.alt`, `key.super`). Multi-key sequences and aliases: Phase 8.
+- The keymap (`Keymap`, `KeyChord`, `Key`, `Modifiers`) lives in the commands module, with no SDL types; src/ui translates SDL keycodes/scancodes (and mouse X1/X2) into `Key`/`Modifiers` with the layout rules documented in `commands.hpp`. Canonical chord text is ASCII (`Ctrl+Shift+L`); the ui translates modifier names for display (`key.ctrl`, `key.shift`, `key.alt`, `key.super`). Phase 8 adds multi-chord sequences (`KeySequence`, `SequenceMatcher`), aliases and the keymap file (`keymap_file.hpp`).
 - i18n title keys: `cmd.` + name (`cmd.app.quit`, ...).
-- Every user action has a `CommandId`, appears in the palette, and gets its default binding from `docs/keymap.md`.
+- Every user action has a `CommandId`, appears in the palette (unless `CommandInfo::palette_visible` is false: cursor movement and reserved no-ops), is remappable (unless `bindable` is false) and gets its default binding from `docs/keymap.md`.
 
 ## Module ownership
 
@@ -1057,3 +1243,12 @@ stubs: `fs::EntryKind`, `fs::DirEntry`, `fs::SortKey`, `fs::ListOptions`, `fs::l
   - **features.md**: Navigator-extra rows for undo/redo, Trash view, conflict sheet, background progress, clipboard interop.
   - Known breakage until the parallel agents land: exhaustive `switch` over `CommandId` fails `-Werror=switch` (GCC 13) in `src/commands/builtin_commands.cpp` (`to_string`, line 96), `src/ui/browser/browser_model.cpp` (line 961) and `src/ui/workspace/workspace.cpp` (line 276). `tests/commands/keymap_test.cpp` (`read_keymap_doc` must learn "## Phase 7 defaults", and the expected row counts gain `phase_rows[7] == 12`) and `tests/integration/keymap_e2e_test.cpp` (Phase 7 rows) need updates by commands / qa when the chords are bound. Root `CMakeLists.txt` needs `navigator_add_subdir(src/ops)` and `navigator_add_subdir(tests/ops)` (integration).
 - Phase 7 integration: `AppConfig::trash_dir` (`--trash-dir`) added; headless `--frames` runs without it have no trash and refuse trashing/restoring/emptying (Unsupported). In the Trash view Enter restores; in the conflict sheet Escape cancels the operation; new folders are created first, then renamed inline. "Restore to…" is deferred (needs a destination field on `OpRequest`).
+- Phase 8 (contracts): command palette, remappable keymap with key sequences, aliases and numpad, searchable context menu, Open With. Additions only; the single-chord `Keymap` API is source compatible (the new `bind(const KeySequence&, ...)` overload is selected only for sequences; `KeySequence` converts implicitly from `KeyChord`), `CommandInfo{id, name, title_key}` aggregate initialisers keep compiling. Four new headers: `keymap_file.hpp`, `palette.hpp`, `menu.hpp`, `openwith.hpp`; `tests/contracts` compiles them alone (C++20 and C++23) and `phase8_usage.cpp`.
+  - **commands** (commands, `src/commands`): `Key::Menu = 116` and `Key::Keypad0..9 = 160..169`, `KeypadPlus/Minus/Multiply/Divide/Period = 170..174` with parse synonyms (`Numpad5`, `ContextMenu`, `Esc`, ...); F13..F24 were already present. `KeySequence` (1..4 chords), `to_string` / `parse_key_sequence`, `validate_sequence` (rules V1-V3), `is_text_input_chord`, `SequenceBinding`, `ConflictKind` / `BindingConflict` / `find_conflicts`. `Keymap` is now prefix-free: `bind(KeyChord)` can also fail with `AlreadyExists` when the chord is a strict prefix of a sequence; new `bind(const KeySequence&)`, `unbind(const KeySequence&)`, `find`, `lookup`, `sequences_for`, `sequence_bindings`, `all_bindings`; `bindings()` and `chords_for` still return single chords only. `SequenceMatcher` / `SequenceResult` (NoMatch, Pending, Match, Cancelled, Aborted; timeout default 1000 ms, range 200..5000, strictly-greater-than rule, `expire`, `deadline`, `reset`; no reference to the keymap), `to_command`. Command metadata: `CommandCategory`, `ArgKind`, `Danger`, `ContextFlags` (+ operators, `has`, `has_any`), `CommandContext`, `CommandInfo` gains `category`, `description_key`, `danger`, `arg_kind`, `palette_visible`, `bindable`, `requires_all`, `hidden_if_any`; `is_applicable`, `effective_danger`, `CommandVariant`, `builtin_command_variants`. New ids `1103`, `1370-1375`, `1390`; `CursorArg::KeepSelection`. `load_default_keymap` additionally binds `Ctrl+Shift+P`, `Ctrl+,`, `Shift+F10`, `Menu`, `Ctrl+Space`, `Ctrl+Up`, `Ctrl+Down`, `Ctrl+J` and the sequence `Ctrl+K Ctrl+S` (docs/keymap.md "Phase 8 defaults").
+  - **keymap_file** (new header, commands): `KeymapFile` model, JSON v1 (lenient, `LoadReport`, deterministic `to_json`, `.bad` for non-objects, `.bak` before overwriting a newer-version file), `load_keymap_file` / `save_keymap_file` (atomic, like the session), layering (`apply_keymap_file`, `build_keymap`: user wins over defaults, displaced defaults reported, earlier user entry wins over later), `effective_aliases`, editor helpers (`check_binding`, `BindingWarning`, `is_destructive_bare_binding`, `set_binding`, `remove_binding`, `reset_command`, `reset_all`, `set_alias`, `remove_alias`, `set_sequence_timeout`), limits.
+  - **palette** (new header, search): `Entry`, ranking rules R0-R7 over `search::Matcher` with documented constants, `History` (MRU, counts, `palette_history.json`, lenient, atomic), `rank`, safe-default rule (destructive never first, never recorded).
+  - **menu** (new header, ui): `Item` / `MenuKind` / `Target` / `build`, `arrange` (pinned first, destructive last and separated, not pinnable), `Pins` + `menu_pins.json`, `filter` (flattened, safe default, destructive last), rules M1-M7.
+  - **openwith** (new header, platform): `Handler`, `Options` / `system_options`, `parse_desktop_entry`, `mime_parents`, `list_handlers`, `default_handler`, `find_handler`, `set_default_handler`, `parse_exec_tokens`, `expand_exec`, `default_terminal_prefix`, `launch_with` (through `platform::IAppLauncher`, no shell, no GIO).
+  - **ui** (`ui.hpp`, comment only): `restore_session` / `save_session` also govern `keymap.json`, `palette_history.json`, `menu_pins.json`.
+  - **features.md**: Navigator-extra rows for the palette, Open With and the keymap editor warnings.
+  - Known breakage until the parallel agents land: exhaustive `switch` over `CommandId` fails `-Werror=switch` (GCC 13; clang the same) in `src/commands/builtin_commands.cpp` (`to_string`, line 114), `src/ui/browser/browser_model.cpp` (line 974) and `src/ui/workspace/workspace.cpp` (line 276): 8 new enumerators each (`ToggleCursorSelected`, `OpenPalette`, `OpenSettings`, `EditKeymap`, `ResetKeymap`, `ExportKeymap`, `ShowContextMenu`, `OpenWith`). Everything else in the tree compiles unchanged (GCC 13, header check in C++20 and C++23). Runtime tests that need updates by their owners once commands binds the rows: `tests/commands/keymap_test.cpp` (`read_keymap_doc` must also read `## Phase 8 defaults`, `phase_rows` grows to index 8 with 8 rows; `arg` column accepts `KeepSelection`; counts become 3 + 25 + 21 + 5 + 4 + 2 + 12 + 8 = 80 single chords; `bindings().size()` is 80, the sequence is in `sequence_bindings()` only; the expected `(unbound)` set loses `ToggleOperationsPanel` and gains `ResetKeymap`, `ExportKeymap`, `OpenWith`, and `EditKeymap` is bound by the sequence, not a chord; `OpenPalette`, `OpenSettings`, `ShowContextMenu`, `ToggleCursorSelected` are bound), `tests/integration/keymap_e2e_test.cpp` (per-phase table 7 -> 8 with `per_phase.at(8) == 8`, `bound.size()` 72 -> 80, the unbound set, near-miss lists lose `Ctrl+Space`, `Ctrl+Shift+P`, `Ctrl+,`; it must tolerate a `### Default sequences` table, which the generic parser stops at). Root `CMakeLists.txt` needs no new subdirectory.

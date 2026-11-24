@@ -1,13 +1,16 @@
 // load_default_keymap(): Navigator's default bindings.
 //
 // This table must match docs/keymap.md exactly: the Phase 0 table (minus "window close", which
-// is a window event, not a chord), then the Phase 2, 3, 4, 5, 6 and 7 tables, in the same row
-// order ("(unbound)" rows are skipped). The first chord of a command is its primary key hint, so
-// order matters. tests/commands checks the table.
+// is a window event, not a chord), then the Phase 2, 3, 4, 5, 6, 7 and 8 tables, in the same row
+// order ("(unbound)" rows are skipped), then the default sequences (docs/keymap.md "Default
+// sequences (Phase 8)"). The first chord of a command is its primary key hint, so order matters.
+// tests/commands checks the table.
 #include <array>
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include <navigator/commands.hpp>
 
@@ -26,6 +29,7 @@ constexpr Modifiers kShift = Modifiers::Shift;
 constexpr Modifiers kAlt = Modifiers::Alt;
 constexpr Modifiers kCtrlShift = Modifiers::Ctrl | Modifiers::Shift;
 constexpr std::uint64_t kExtend = CursorArg::Extend;
+constexpr std::uint64_t kKeepSelection = CursorArg::KeepSelection;
 
 constexpr std::array kDefaults{
     // Phase 0
@@ -107,24 +111,48 @@ constexpr std::array kDefaults{
     DefaultBinding{{Key::N, kCtrlShift}, "file.new_folder", 0},
     DefaultBinding{{Key::F7, kNone}, "file.copy_to_other_pane", 0},
     DefaultBinding{{Key::F7, kShift}, "file.move_to_other_pane", 0},
+    // Phase 8
+    DefaultBinding{{Key::P, kCtrlShift}, "palette.open", 0},
+    DefaultBinding{{Key::Comma, kCtrl}, "settings.open", 0},
+    DefaultBinding{{Key::F10, kShift}, "menu.show_context", 0},
+    DefaultBinding{{Key::Menu, kNone}, "menu.show_context", 0},
+    DefaultBinding{{Key::Space, kCtrl}, "list.toggle_cursor_selected", 0},
+    DefaultBinding{{Key::Up, kCtrl}, "list.cursor_up", kKeepSelection},
+    DefaultBinding{{Key::Down, kCtrl}, "list.cursor_down", kKeepSelection},
+    DefaultBinding{{Key::J, kCtrl}, "ops.toggle_panel", 0},
+};
+
+struct DefaultSequence {
+    std::array<KeyChord, 2> chords;
+    std::string_view command;
+    std::uint64_t arg;
+};
+
+constexpr std::array kDefaultSequences{
+    DefaultSequence{{KeyChord{Key::K, kCtrl}, KeyChord{Key::S, kCtrl}}, "keymap.edit", 0},
 };
 
 } // namespace
 
 Result<void> load_default_keymap(Keymap& keymap) {
-    // All-or-nothing: check every chord first so a conflict leaves the keymap unchanged. The
-    // table itself has no duplicate chords (tested), so only pre-existing bindings can clash.
+    // All-or-nothing: bind into a copy and replace the caller's map only when everything fit. The
+    // tables themselves have no internal conflicts (tested), so only pre-existing bindings can
+    // clash (identical chord, or a prefix relation with a sequence).
+    Keymap work = keymap;
     for (const DefaultBinding& d : kDefaults) {
-        if (const KeyBinding* existing = keymap.resolve(d.chord)) {
-            return fail(ErrorCode::AlreadyExists, "default chord " + to_string(d.chord) +
-                                                      " already bound to " + existing->command);
+        if (auto r = work.bind(d.chord, d.command, d.arg); !r) {
+            return fail(ErrorCode::AlreadyExists,
+                        "default chord " + to_string(d.chord) + ": " + r.error().message);
         }
     }
-    for (const DefaultBinding& d : kDefaults) {
-        if (auto r = keymap.bind(d.chord, d.command, d.arg); !r) {
-            return r; // unreachable: chords validated above and the table is well-formed
+    for (const DefaultSequence& d : kDefaultSequences) {
+        const KeySequence sequence(std::vector<KeyChord>(d.chords.begin(), d.chords.end()));
+        if (auto r = work.bind(sequence, d.command, d.arg); !r) {
+            return fail(ErrorCode::AlreadyExists,
+                        "default sequence " + to_string(sequence) + ": " + r.error().message);
         }
     }
+    keymap = std::move(work);
     return ok();
 }
 

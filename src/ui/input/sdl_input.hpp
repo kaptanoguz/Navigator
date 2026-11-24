@@ -5,7 +5,10 @@
 //   - match by keycode (the legend of the active layout); ASCII letters folded to lowercase;
 //   - a keycode that is not ASCII (Turkish ı ş ğ ü ö ç, Cyrillic, ...) falls back to the
 //     physical key position (scancode); an ASCII legend with no Key value does not fall back;
-//   - keypad digits/operators -> Key::Unknown, KP_ENTER -> Key::KeypadEnter;
+//   - keypad keys (Phase 8) map by the PHYSICAL keypad key (scancode), whatever NumLock does:
+//     KP_0..KP_9 -> Keypad0..Keypad9, KP_PLUS/MINUS/MULTIPLY/DIVIDE/PERIOD -> KeypadPlus..
+//     KeypadPeriod, KP_ENTER -> KeypadEnter; a keypad key never falls back to the digit row or
+//     to the navigation key it produces without NumLock; the Menu (application) key -> Key::Menu;
 //   - left/right modifiers merged; CapsLock, NumLock and AltGr (SDL_KMOD_MODE) are never
 //     modifiers, and AltGr is not Alt;
 //   - mouse X1/X2 -> MouseBack/MouseForward.
@@ -21,6 +24,8 @@
 
 #include <navigator/commands.hpp>
 
+#include "input/shortcut_text.hpp"
+
 namespace navigator::ui {
 
 [[nodiscard]] Key translate_key(SDL_Keycode keycode, SDL_Scancode scancode) noexcept;
@@ -30,8 +35,7 @@ namespace navigator::ui {
 // SDL mouse button index -> MouseBack / MouseForward, or Key::Unknown.
 [[nodiscard]] Key translate_mouse_button(std::uint8_t button) noexcept;
 
-// Keycap legends of a chord for hints: translated modifiers (tr("key.ctrl"), ...) in the order
-// Super, Ctrl, Alt, Shift, then the key legend ("A", "F5", "↑", "Enter", ...).
-[[nodiscard]] std::vector<std::string> chord_labels(const KeyChord& chord);
+// chord_labels() (key hint legends) lives in input/shortcut_text.hpp, included here for the
+// existing callers.
 
 } // namespace navigator::ui

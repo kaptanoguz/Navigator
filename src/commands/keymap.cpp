@@ -101,6 +101,7 @@ constexpr std::array kKeyNames{
     KeyName{Key::Tab, "Tab"},
     KeyName{Key::Space, "Space"},
     KeyName{Key::Insert, "Insert"},
+    KeyName{Key::Menu, "Menu"},
     KeyName{Key::Minus, "Minus"},
     KeyName{Key::Equals, "Equals"},
     KeyName{Key::Comma, "Comma"},
@@ -112,8 +113,50 @@ constexpr std::array kKeyNames{
     KeyName{Key::LeftBracket, "LeftBracket"},
     KeyName{Key::RightBracket, "RightBracket"},
     KeyName{Key::Grave, "Grave"},
+    KeyName{Key::Keypad0, "Keypad0"},
+    KeyName{Key::Keypad1, "Keypad1"},
+    KeyName{Key::Keypad2, "Keypad2"},
+    KeyName{Key::Keypad3, "Keypad3"},
+    KeyName{Key::Keypad4, "Keypad4"},
+    KeyName{Key::Keypad5, "Keypad5"},
+    KeyName{Key::Keypad6, "Keypad6"},
+    KeyName{Key::Keypad7, "Keypad7"},
+    KeyName{Key::Keypad8, "Keypad8"},
+    KeyName{Key::Keypad9, "Keypad9"},
+    KeyName{Key::KeypadPlus, "KeypadPlus"},
+    KeyName{Key::KeypadMinus, "KeypadMinus"},
+    KeyName{Key::KeypadMultiply, "KeypadMultiply"},
+    KeyName{Key::KeypadDivide, "KeypadDivide"},
+    KeyName{Key::KeypadPeriod, "KeypadPeriod"},
     KeyName{Key::MouseBack, "MouseBack"},
     KeyName{Key::MouseForward, "MouseForward"},
+};
+
+// Input-only spellings (Phase 8); output always uses the canonical name above.
+constexpr std::array kKeySynonyms{
+    KeyName{Key::Keypad0, "Numpad0"},
+    KeyName{Key::Keypad1, "Numpad1"},
+    KeyName{Key::Keypad2, "Numpad2"},
+    KeyName{Key::Keypad3, "Numpad3"},
+    KeyName{Key::Keypad4, "Numpad4"},
+    KeyName{Key::Keypad5, "Numpad5"},
+    KeyName{Key::Keypad6, "Numpad6"},
+    KeyName{Key::Keypad7, "Numpad7"},
+    KeyName{Key::Keypad8, "Numpad8"},
+    KeyName{Key::Keypad9, "Numpad9"},
+    KeyName{Key::KeypadEnter, "NumpadEnter"},
+    KeyName{Key::KeypadPlus, "NumpadPlus"},
+    KeyName{Key::KeypadMinus, "NumpadMinus"},
+    KeyName{Key::KeypadMultiply, "NumpadMultiply"},
+    KeyName{Key::KeypadDivide, "NumpadDivide"},
+    KeyName{Key::KeypadPeriod, "NumpadPeriod"},
+    KeyName{Key::Menu, "ContextMenu"},
+    KeyName{Key::Escape, "Esc"},
+    KeyName{Key::Enter, "Return"},
+    KeyName{Key::Delete, "Del"},
+    KeyName{Key::Insert, "Ins"},
+    KeyName{Key::PageUp, "PgUp"},
+    KeyName{Key::PageDown, "PgDn"},
 };
 
 struct ModifierName {
@@ -178,6 +221,11 @@ std::optional<Modifiers> parse_modifier(std::string_view token) noexcept {
 
 std::optional<Key> parse_key(std::string_view token) noexcept {
     for (const KeyName& k : kKeyNames) {
+        if (iequals(token, k.name)) {
+            return k.key;
+        }
+    }
+    for (const KeyName& k : kKeySynonyms) {
         if (iequals(token, k.name)) {
             return k.key;
         }
@@ -255,22 +303,177 @@ Result<KeyChord> parse_key_chord(std::string_view text) {
     return chord;
 }
 
-Result<void> Keymap::bind(KeyChord chord, std::string_view command, std::uint64_t arg) {
-    // Out-of-range Key values have no name ("Unknown") and are rejected like Key::Unknown.
-    if (chord.key == Key::Unknown || !is_known_key(chord.key)) {
-        return fail(ErrorCode::InvalidArgument, "cannot bind Key::Unknown");
+// ---------------------------------------------------------------------------------------------
+// Key sequences (Phase 8)
+// ---------------------------------------------------------------------------------------------
+
+std::string to_string(const KeySequence& sequence) {
+    std::string out;
+    for (const KeyChord& c : sequence.chords) {
+        if (!out.empty()) {
+            out += ' ';
+        }
+        out += to_string(c);
     }
-    if ((static_cast<std::uint8_t>(chord.mods) & static_cast<std::uint8_t>(~kModifierMask)) != 0U) {
-        return fail(ErrorCode::InvalidArgument, "modifier bits outside kModifierMask");
+    return out;
+}
+
+Result<KeySequence> parse_key_sequence(std::string_view text) {
+    std::vector<KeyChord> chords;
+    std::size_t pos = 0;
+    const auto is_sep = [](char c) { return c == ' ' || c == '\t'; };
+    while (pos < text.size()) {
+        while (pos < text.size() && is_sep(text[pos])) {
+            ++pos;
+        }
+        if (pos >= text.size()) {
+            break;
+        }
+        const std::size_t start = pos;
+        while (pos < text.size() && !is_sep(text[pos])) {
+            ++pos;
+        }
+        if (chords.size() == kMaxSequenceLength) {
+            return fail(ErrorCode::InvalidArgument,
+                        "invalid key sequence '" + std::string(text) + "': more than " +
+                            std::to_string(kMaxSequenceLength) + " chords");
+        }
+        const Result<KeyChord> parsed = parse_key_chord(text.substr(start, pos - start));
+        if (!parsed) {
+            return fail(ErrorCode::InvalidArgument, "invalid key sequence '" + std::string(text) +
+                                                        "': " + parsed.error().message);
+        }
+        chords.push_back(*parsed);
+    }
+    if (chords.empty()) {
+        return fail(ErrorCode::InvalidArgument, "invalid key sequence: empty");
+    }
+    return KeySequence{std::move(chords)};
+}
+
+bool is_text_input_chord(KeyChord chord) noexcept {
+    constexpr std::uint8_t kNonText = static_cast<std::uint8_t>(Modifiers::Ctrl) |
+                                      static_cast<std::uint8_t>(Modifiers::Alt) |
+                                      static_cast<std::uint8_t>(Modifiers::Super);
+    if ((static_cast<std::uint8_t>(chord.mods) & kNonText) != 0U) {
+        return false;
+    }
+    const auto v = static_cast<std::uint16_t>(chord.key);
+    const auto in = [v](Key first, Key last) {
+        return v >= static_cast<std::uint16_t>(first) && v <= static_cast<std::uint16_t>(last);
+    };
+    return in(Key::A, Key::Z) || in(Key::Digit0, Key::Digit9) || in(Key::Minus, Key::Grave) ||
+           chord.key == Key::Space || in(Key::Keypad0, Key::KeypadPeriod);
+}
+
+Result<void> validate_sequence(const KeySequence& sequence) {
+    if (sequence.empty() || sequence.size() > kMaxSequenceLength) {
+        return fail(ErrorCode::InvalidArgument,
+                    "V1: a key sequence has 1.." + std::to_string(kMaxSequenceLength) +
+                        " chords, got " + std::to_string(sequence.size()));
+    }
+    for (const KeyChord& c : sequence.chords) {
+        if (c.key == Key::Unknown || !is_known_key(c.key)) {
+            return fail(ErrorCode::InvalidArgument, "V1: a chord has no valid key");
+        }
+        if ((static_cast<std::uint8_t>(c.mods) & static_cast<std::uint8_t>(~kModifierMask)) != 0U) {
+            return fail(ErrorCode::InvalidArgument, "V1: modifier bits outside kModifierMask");
+        }
+    }
+    if (sequence.size() >= 2) {
+        if (is_text_input_chord(sequence.chords.front())) {
+            return fail(ErrorCode::InvalidArgument,
+                        "V2: a sequence cannot start with a text-input chord (" +
+                            to_string(sequence.chords.front()) + ")");
+        }
+        for (const KeyChord& c : sequence.chords) {
+            if (c.key == Key::Escape && c.mods == Modifiers::None) {
+                return fail(ErrorCode::InvalidArgument,
+                            "V3: a sequence cannot contain a bare Escape (it cancels a sequence)");
+            }
+            if (c.key == Key::MouseBack || c.key == Key::MouseForward) {
+                return fail(ErrorCode::InvalidArgument,
+                            "V3: a sequence cannot contain a mouse button");
+            }
+        }
+    }
+    return ok();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Keymap
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+bool starts_with_chords(const std::vector<KeyChord>& longer, const std::vector<KeyChord>& prefix) {
+    return prefix.size() <= longer.size() &&
+           std::equal(prefix.begin(), prefix.end(), longer.begin());
+}
+
+std::optional<ConflictKind> relation(const KeySequence& candidate, const KeySequence& existing) {
+    if (candidate.chords == existing.chords) {
+        return ConflictKind::Identical;
+    }
+    if (candidate.size() < existing.size() &&
+        starts_with_chords(existing.chords, candidate.chords)) {
+        return ConflictKind::PrefixOfExisting;
+    }
+    if (existing.size() < candidate.size() &&
+        starts_with_chords(candidate.chords, existing.chords)) {
+        return ConflictKind::ExtendsExisting;
+    }
+    return std::nullopt;
+}
+
+SequenceBinding to_sequence_binding(const KeyBinding& b) {
+    return SequenceBinding{KeySequence{b.chord}, b.command, b.arg};
+}
+
+} // namespace
+
+std::vector<BindingConflict> find_conflicts(const Keymap& keymap, const KeySequence& candidate) {
+    std::vector<BindingConflict> out;
+    if (candidate.empty()) {
+        return out;
+    }
+    for (const KeyBinding& b : keymap.bindings()) {
+        if (const auto kind = relation(candidate, KeySequence{b.chord})) {
+            out.push_back(BindingConflict{*kind, to_sequence_binding(b)});
+        }
+    }
+    for (const SequenceBinding& b : keymap.sequence_bindings()) {
+        if (const auto kind = relation(candidate, b.sequence)) {
+            out.push_back(BindingConflict{*kind, b});
+        }
+    }
+    return out;
+}
+
+Result<void> Keymap::bind(KeyChord chord, std::string_view command, std::uint64_t arg) {
+    return bind(KeySequence{chord}, command, arg);
+}
+
+Result<void> Keymap::bind(const KeySequence& sequence, std::string_view command,
+                          std::uint64_t arg) {
+    if (Result<void> valid = validate_sequence(sequence); !valid) {
+        return valid;
     }
     if (command.empty()) {
         return fail(ErrorCode::InvalidArgument, "empty command name");
     }
-    if (const KeyBinding* existing = resolve(chord)) {
-        return fail(ErrorCode::AlreadyExists,
-                    "chord " + to_string(chord) + " already bound to " + existing->command);
+    const std::vector<BindingConflict> conflicts = find_conflicts(*this, sequence);
+    if (!conflicts.empty()) {
+        const SequenceBinding& first = conflicts.front().existing;
+        return fail(ErrorCode::AlreadyExists, to_string(sequence) + " conflicts with " +
+                                                  to_string(first.sequence) + " (" + first.command +
+                                                  ")");
     }
-    bindings_.push_back(KeyBinding{chord, std::string(command), arg});
+    if (sequence.size() == 1) {
+        bindings_.push_back(KeyBinding{sequence.chords.front(), std::string(command), arg});
+    } else {
+        sequences_.push_back(SequenceBinding{sequence, std::string(command), arg});
+    }
     return ok();
 }
 
@@ -283,11 +486,64 @@ bool Keymap::unbind(KeyChord chord) noexcept {
     return true;
 }
 
-void Keymap::clear() noexcept { bindings_.clear(); }
+bool Keymap::unbind(const KeySequence& sequence) noexcept {
+    if (sequence.size() == 1) {
+        return unbind(sequence.chords.front());
+    }
+    const auto it = std::ranges::find(sequences_, sequence, &SequenceBinding::sequence);
+    if (it == sequences_.end()) {
+        return false;
+    }
+    sequences_.erase(it);
+    return true;
+}
+
+void Keymap::clear() noexcept {
+    bindings_.clear();
+    sequences_.clear();
+}
 
 const KeyBinding* Keymap::resolve(KeyChord chord) const noexcept {
     const auto it = std::ranges::find(bindings_, chord, &KeyBinding::chord);
     return it == bindings_.end() ? nullptr : &*it;
+}
+
+std::optional<SequenceBinding> Keymap::find(const KeySequence& sequence) const {
+    if (sequence.size() == 1) {
+        if (const KeyBinding* b = resolve(sequence.chords.front())) {
+            return to_sequence_binding(*b);
+        }
+        return std::nullopt;
+    }
+    const auto it = std::ranges::find(sequences_, sequence, &SequenceBinding::sequence);
+    if (it == sequences_.end()) {
+        return std::nullopt;
+    }
+    return *it;
+}
+
+Keymap::SequenceLookup Keymap::lookup(Span<const KeyChord> chords) const {
+    SequenceLookup out;
+    if (chords.empty()) {
+        return out;
+    }
+    if (chords.size() == 1) {
+        if (const KeyBinding* b = resolve(chords.front())) {
+            out.exact = to_sequence_binding(*b);
+        }
+    }
+    for (const SequenceBinding& b : sequences_) {
+        const std::vector<KeyChord>& c = b.sequence.chords;
+        if (c.size() < chords.size() || !std::equal(chords.begin(), chords.end(), c.begin())) {
+            continue;
+        }
+        if (c.size() == chords.size()) {
+            out.exact = b;
+        } else {
+            out.is_prefix = true;
+        }
+    }
+    return out;
 }
 
 std::vector<KeyChord> Keymap::chords_for(std::string_view command) const {
@@ -310,7 +566,49 @@ std::vector<KeyChord> Keymap::chords_for(std::string_view command, std::uint64_t
     return out;
 }
 
+std::vector<KeySequence> Keymap::sequences_for(std::string_view command) const {
+    std::vector<KeySequence> out;
+    for (const KeyBinding& b : bindings_) {
+        if (b.command == command) {
+            out.emplace_back(b.chord);
+        }
+    }
+    for (const SequenceBinding& b : sequences_) {
+        if (b.command == command) {
+            out.push_back(b.sequence);
+        }
+    }
+    return out;
+}
+
+std::vector<KeySequence> Keymap::sequences_for(std::string_view command, std::uint64_t arg) const {
+    std::vector<KeySequence> out;
+    for (const KeyBinding& b : bindings_) {
+        if (b.command == command && b.arg == arg) {
+            out.emplace_back(b.chord);
+        }
+    }
+    for (const SequenceBinding& b : sequences_) {
+        if (b.command == command && b.arg == arg) {
+            out.push_back(b.sequence);
+        }
+    }
+    return out;
+}
+
 Span<const KeyBinding> Keymap::bindings() const noexcept { return bindings_; }
+
+Span<const SequenceBinding> Keymap::sequence_bindings() const noexcept { return sequences_; }
+
+std::vector<SequenceBinding> Keymap::all_bindings() const {
+    std::vector<SequenceBinding> out;
+    out.reserve(bindings_.size() + sequences_.size());
+    for (const KeyBinding& b : bindings_) {
+        out.push_back(to_sequence_binding(b));
+    }
+    out.insert(out.end(), sequences_.begin(), sequences_.end());
+    return out;
+}
 
 std::optional<Command> resolve_command(const Keymap& keymap, const CommandRegistry& registry,
                                        KeyChord chord) noexcept {
@@ -323,6 +621,15 @@ std::optional<Command> resolve_command(const Keymap& keymap, const CommandRegist
         return std::nullopt;
     }
     return Command{info->id, binding->arg};
+}
+
+std::optional<Command> to_command(const CommandRegistry& registry,
+                                  const SequenceBinding& binding) noexcept {
+    const CommandInfo* info = registry.find(std::string_view{binding.command});
+    if (info == nullptr) {
+        return std::nullopt;
+    }
+    return Command{info->id, binding.arg};
 }
 
 } // namespace navigator

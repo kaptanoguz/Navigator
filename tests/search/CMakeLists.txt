@@ -8,6 +8,8 @@ add_executable(navigator_search_tests
     index_regression_test.cpp
     index_test.cpp
     match_test.cpp
+    palette_history_test.cpp
+    palette_test.cpp
     types_test.cpp
 )
 target_include_directories(navigator_search_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src/search)

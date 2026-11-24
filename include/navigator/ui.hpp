@@ -58,6 +58,13 @@ struct AppConfig {
     // (places.hpp): restore_session = false starts with empty bookmarks and recents,
     // save_session = false never writes them.
     bool save_session = true;
+    // Phase 8: restore_session / save_session also govern <config_dir>/keymap.json
+    // (keymap_file.hpp), palette_history.json (palette.hpp) and menu_pins.json (menu.hpp):
+    // restore_session = false starts with the default keymap, no aliases, empty history and no
+    // pins; save_session = false never writes them (a rebind then lasts for the run only). The
+    // headless rule is the one of the session: with max_frames > 0 and no config_dir, none of these
+    // files is read or written. A rebind is saved when it is made (debounced about 250 ms), so it
+    // survives a restart.
 
     // Phase 5: name index (index.hpp, docs/architecture.md "Phase 5").
     // Navigator cache root holding index/<id>.idx; copied by App::create. Empty:
