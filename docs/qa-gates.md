@@ -211,8 +211,8 @@ temporary `HOME`, `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` and expli
 `--config-dir`, `--cache-dir`, `--trash-dir`, on `SDL_VIDEODRIVER=dummy` or a private Xvfb, never
 display `:0`.
 
-New suites: `navigator_ops_integration_tests` (ctest prefix `integration.ops.`, labels
-`integration;ops`; `ops_trash_e2e_test.cpp`, `ops_fault_test.cpp`), the keymap e2e cases in
+New suites: `navigator_ops_integration_tests` (ctest prefix `integration.ops.`, label
+`integration`; `ops_trash_e2e_test.cpp`, `ops_fault_test.cpp`), the keymap e2e cases in
 `navigator_browser_integration_tests`, and the app script `integration.app_ops_adversarial`
 (`tests/integration/ops_app_smoke.sh`, label `app`).
 

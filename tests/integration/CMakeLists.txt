@@ -181,7 +181,7 @@ if(TARGET navigator_ops)
     catch_discover_tests(navigator_ops_integration_tests
         TEST_PREFIX "integration.ops."
         DISCOVERY_MODE PRE_TEST
-        PROPERTIES TIMEOUT 900 LABELS "integration;ops"
+        PROPERTIES TIMEOUT 900 LABELS integration
     )
 endif()
 

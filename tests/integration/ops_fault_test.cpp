@@ -197,6 +197,43 @@ void make_xdev(Rig& rig, std::function<int(IoSite, const Path&, std::uint64_t)> 
     };
 }
 
+// True when a private user+mount namespace with a tmpfs mount can be created here. Runs in a
+// forked child (no Catch assertions: a SKIP after a passed assertion would make ctest report the
+// test as Failed, not Skipped). NAVIGATOR_TEST_NO_USERNS=1 forces "no" (CI runners restrict it).
+bool userns_tmpfs_usable() {
+    if (const char* no = std::getenv("NAVIGATOR_TEST_NO_USERNS"); no != nullptr && no[0] == '1') {
+        return false;
+    }
+    Fixture fx;
+    const Path mnt = fx.dir("probe-mnt");
+    const pid_t pid = ::fork();
+    if (pid < 0) {
+        return false;
+    }
+    if (pid == 0) {
+        const uid_t uid = ::getuid();
+        const gid_t gid = ::getgid();
+        const auto put = [](const char* file, const std::string& text) {
+            const int fd = ::open(file, O_WRONLY);
+            if (fd < 0) {
+                return false;
+            }
+            const bool ok =
+                ::write(fd, text.data(), text.size()) == static_cast<ssize_t>(text.size());
+            ::close(fd);
+            return ok;
+        };
+        const bool ok =
+            ::unshare(CLONE_NEWUSER | CLONE_NEWNS) == 0 && put("/proc/self/setgroups", "deny") &&
+            put("/proc/self/uid_map", std::to_string(uid) + " " + std::to_string(uid) + " 1") &&
+            put("/proc/self/gid_map", std::to_string(gid) + " " + std::to_string(gid) + " 1") &&
+            ::mount("tmpfs", mnt.c_str(), "tmpfs", MS_NOSUID | MS_NODEV, "size=1m") == 0;
+        ::_exit(ok ? 0 : 77);
+    }
+    int status = 0;
+    return ::waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
 } // namespace
 
 TEST_CASE(
@@ -530,6 +567,11 @@ TEST_CASE(
         // the same case runs in the plain and ASan builds.
         SUCCEED("not run under ThreadSanitizer");
         return;
+    }
+    // Probe FIRST, before any assertion: a SKIP after a passed assertion is reported by ctest as
+    // Failed (Catch2's exit code is then not the skip code).
+    if (!userns_tmpfs_usable()) {
+        SKIP("cannot create a user+mount namespace here (restricted unprivileged user namespaces)");
     }
     Fixture fx;
     const Path mnt = fx.dir("mnt");
