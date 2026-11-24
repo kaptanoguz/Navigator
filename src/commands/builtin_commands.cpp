@@ -203,7 +203,7 @@ constexpr std::array kBuiltins{
         .needs(ContextFlags::HasSelection | ContextFlags::MultiplePanes)
         .hidden_when(ContextFlags::SidebarFocused | ContextFlags::TrashView),
     entry(CommandId::OpenTerminalHere, "file.open_terminal_here", CommandCategory::Files)
-        .reserved(),
+        .hidden_when(ContextFlags::TrashView),
     entry(CommandId::CancelOperation, "ops.cancel", CommandCategory::Operations)
         .arg(ArgKind::OpId)
         .needs(ContextFlags::OperationsRunning),
@@ -278,6 +278,16 @@ constexpr std::array kBuiltins{
     entry(CommandId::FontSizeDecrease, "view.font_size_decrease", CommandCategory::View),
     entry(CommandId::FontSizeReset, "view.font_size_reset", CommandCategory::View),
     entry(CommandId::OpenAppearanceSettings, "settings.appearance", CommandCategory::Settings),
+    // Phase 10: Miller columns, content search, archives, plugins, GVfs unmount.
+    entry(CommandId::ViewModeColumns, "view.mode_columns", CommandCategory::View)
+        .hidden_when(ContextFlags::TrashView),
+    entry(CommandId::ContentSearch, "search.content", CommandCategory::Search)
+        .hidden_when(ContextFlags::TrashView),
+    entry(CommandId::ArchiveExtractHere, "archive.extract_here", CommandCategory::Files)
+        .needs(ContextFlags::HasCursorRow)
+        .hidden_when(ContextFlags::TrashView | ContextFlags::SidebarFocused),
+    entry(CommandId::ReloadPlugins, "plugins.reload", CommandCategory::Plugins),
+    entry(CommandId::UnmountVolume, "volume.unmount", CommandCategory::Sidebar),
 };
 
 } // namespace
@@ -462,6 +472,11 @@ std::string_view to_string(CommandId id) noexcept {
     case CommandId::FontSizeDecrease: return "view.font_size_decrease";
     case CommandId::FontSizeReset: return "view.font_size_reset";
     case CommandId::OpenAppearanceSettings: return "settings.appearance";
+    case CommandId::ViewModeColumns: return "view.mode_columns";
+    case CommandId::ContentSearch: return "search.content";
+    case CommandId::ArchiveExtractHere: return "archive.extract_here";
+    case CommandId::ReloadPlugins: return "plugins.reload";
+    case CommandId::UnmountVolume: return "volume.unmount";
     }
     return "unknown";
 }

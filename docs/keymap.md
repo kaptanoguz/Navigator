@@ -446,7 +446,6 @@ order.
 | `Ctrl+Shift+N` | `file.new_folder` | `NewFolder` (1343) | 0 | File Pilot behaviour per `features.md` |
 | `F7` | `file.copy_to_other_pane` | `CopyToOtherPane` (1344) | 0 | Into the previously active pane's folder |
 | `Shift+F7` | `file.move_to_other_pane` | `MoveToOtherPane` (1345) | 0 | |
-| (unbound) | `file.open_terminal_here` | `OpenTerminalHere` (1346) | 0 | Reserved no-op until Phase 10 ("Open console here") |
 | (unbound) | `ops.cancel` | `CancelOperation` (1347) | 0 | Stop button of the progress bar (arg: an operation id) |
 | (unbound) | `ops.toggle_pause` | `TogglePauseOperation` (1348) | 0 | Pause button (arg: an operation id) |
 | (unbound) | `ops.toggle_panel` | `ToggleOperationsPanel` (1349) | 0 | Status-bar operations button |
@@ -758,11 +757,11 @@ Trash view, running operations, undo state) before it takes focus.
 
 ## Phase 10 defaults (Linux extras)
 
-| CommandId | Name | Default shortcut | Notes |
-|---|---|---|---|
-| `OpenTerminalHere` | `file.open_terminal_here` | `F4` | Opens user's terminal emulator in the active tab's folder |
-| `ViewModeColumns` | `view.mode_columns` | `Ctrl+5` | Switches active tab to Miller Columns view |
-| `ContentSearch` | `search.content` | `Ctrl+Shift+F` | Opens/focuses the cancellable Content Search overlay |
-| `ArchiveExtractHere` | `archive.extract_here` | *(unbound)* | Extracts selected archive(s) into the current folder (palette & context menu) |
-| `ReloadPlugins` | `plugins.reload` | *(unbound)* | Reloads C ABI plugins from `<config>/plugins` (palette) |
-| `UnmountVolume` | `volume.unmount` | *(unbound)* | Unmounts the selected GVfs mount in the sidebar |
+| Chord | Command name | CommandId | arg | Notes |
+|-------|--------------|-----------|-----|-------|
+| `F4` | `file.open_terminal_here` | `OpenTerminalHere` (1346) | 0 | Open user's terminal emulator in the active tab's folder |
+| `Ctrl+5` | `view.mode_columns` | `ViewModeColumns` (1440) | 0 | Switch active tab to Miller Columns view |
+| `Ctrl+Shift+G` | `search.content` | `ContentSearch` (1441) | 0 | Open/focus cancellable Content Search overlay |
+| (unbound) | `archive.extract_here` | `ArchiveExtractHere` (1442) | 0 | Extract selected archive(s) into the current folder |
+| (unbound) | `plugins.reload` | `ReloadPlugins` (1443) | 0 | Reload C ABI plugins from `<config>/plugins` |
+| (unbound) | `volume.unmount` | `UnmountVolume` (1444) | 0 | Unmount selected GVfs mount in the sidebar |
