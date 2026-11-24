@@ -376,6 +376,8 @@ BrowserFrame WorkspaceView::browser_frame(const ShellFrame& f, const Strip& s, l
             s.active_pane && f.ops_chip_width
                 ? (f.ops_chip_width() > 0.0F ? f.ops_chip_width() + f.painter.px(10.0F) : 0.0F)
                 : 0.0F,
+        .git_status = f.git_status,
+        .plugins = f.plugins,
     };
 }
 

@@ -105,6 +105,19 @@ struct AppConfig {
     // and no trash_dir, NO trash exists: trashing, restoring and emptying fail with Unsupported,
     // so a smoke test can never move a real file into the owner's trash.
     std::string_view trash_dir;
+
+    // Phase 10: single-instance IPC, C ABI plugins, Git status overlays, GVfs mounts.
+    // ipc_socket_path: empty uses platform::default_ipc_socket_path() when enable_ipc is true
+    // (disabled automatically in headless --frames runs unless explicitly set).
+    std::string_view ipc_socket_path;
+    // plugin_dir: directory scanned for *.so plugins; empty uses <config_dir>/plugins.
+    std::string_view plugin_dir;
+    // select_path: if non-empty, the initial tab opens its parent directory and selects this item.
+    std::string_view select_path;
+    bool enable_ipc = true;
+    bool enable_plugins = true;
+    bool enable_git = true;
+    bool enable_gvfs = true;
 };
 
 struct FrameStats {

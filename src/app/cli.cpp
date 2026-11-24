@@ -221,6 +221,44 @@ Result<CliOptions> parse_cli(const std::vector<std::string_view>& args) {
             o.config.show_fps = false;
         } else if (a == "--no-animations") {
             o.config.animations = false;
+        } else if (a == "--new-tab") {
+            o.new_tab = true;
+        } else if (a == "--new-instance") {
+            o.new_instance = true;
+            o.config.enable_ipc = false;
+        } else if (a == "--select") {
+            auto v = value(a);
+            if (!v) {
+                return fail(v.error().code, v.error().message);
+            }
+            if (v->empty()) {
+                return fail(ErrorCode::InvalidArgument, "--select must not be empty");
+            }
+            o.select_path = std::string(*v);
+        } else if (a == "--ipc-socket") {
+            auto v = value(a);
+            if (!v) {
+                return fail(v.error().code, v.error().message);
+            }
+            if (v->empty()) {
+                return fail(ErrorCode::InvalidArgument, "--ipc-socket must not be empty");
+            }
+            o.ipc_socket = std::string(*v);
+        } else if (a == "--plugin-dir") {
+            auto v = value(a);
+            if (!v) {
+                return fail(v.error().code, v.error().message);
+            }
+            if (v->empty()) {
+                return fail(ErrorCode::InvalidArgument, "--plugin-dir must not be empty");
+            }
+            o.plugin_dir = std::string(*v);
+        } else if (a == "--no-plugins") {
+            o.config.enable_plugins = false;
+        } else if (a == "--no-git") {
+            o.config.enable_git = false;
+        } else if (a == "--no-gvfs") {
+            o.config.enable_gvfs = false;
         } else if (a == "--debug-script") {
             auto v = value(a);
             if (!v) {
@@ -311,6 +349,14 @@ std::string usage_text(std::string_view program) {
          "  --fps, --no-fps   show or hide the performance overlay (default: hidden)\n"
          "  --no-animations   turn off UI animations such as smooth scrolling\n"
          "                    (also: NAVIGATOR_NO_ANIMATIONS=1)\n"
+         "  --new-tab         open PATH as a new tab in a running Navigator instance\n"
+         "  --select PATH     open PATH's parent folder and select PATH\n"
+         "  --new-instance    start an independent instance (skip single-instance IPC)\n"
+         "  --ipc-socket FILE override the single-instance Unix socket path\n"
+         "  --plugin-dir DIR  load C ABI plugins (*.so) from DIR\n"
+         "  --no-plugins      do not load plugins\n"
+         "  --no-git          disable Git status overlays\n"
+         "  --no-gvfs         disable GVfs/MTP/SMB sidebar mounts\n"
          "  -V, --version     print the version and exit\n"
          "  -h, --help        print this help and exit\n"
          "  --                end of options; the next argument is the PATH\n";

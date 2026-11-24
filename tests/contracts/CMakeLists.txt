@@ -42,6 +42,10 @@ set(NAVIGATOR_CONTRACT_HEADERS
     view_settings
     batch_rename
     appearance
+    plugins
+    archive
+    content_search
+    git
     detail/expected
 )
 
@@ -142,6 +146,11 @@ foreach(std IN ITEMS 20 23)
     _navigator_header_object(navigator_contract_phase9b_cxx${std}
                              "${CMAKE_CURRENT_SOURCE_DIR}/phase9b_usage.cpp" CXX ${std})
     list(APPEND _nav_check_targets navigator_contract_phase9b_cxx${std})
+
+    # Phase 10 GVfs, IPC, terminal, archive, content search, git status, C ABI plugins (compile only).
+    _navigator_header_object(navigator_contract_phase10_cxx${std}
+                             "${CMAKE_CURRENT_SOURCE_DIR}/phase10_usage.cpp" CXX ${std})
+    list(APPEND _nav_check_targets navigator_contract_phase10_cxx${std})
 endforeach()
 
 # plugin.h from C11

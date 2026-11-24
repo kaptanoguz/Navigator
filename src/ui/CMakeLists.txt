@@ -65,6 +65,7 @@ target_link_libraries(navigator_ui_browser
         navigator::platform
         navigator::search
         navigator::ops
+        navigator::plugins
         Threads::Threads
     PRIVATE
         navigator::options
@@ -98,6 +99,7 @@ add_library(navigator_ui STATIC
     inspector/texture_cache.cpp
     render/backend_name.cpp
     render/renderer.cpp
+    search/content_search_overlay.cpp
     settings/appearance_page.cpp
     shell/app.cpp
     shell/background.cpp

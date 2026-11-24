@@ -3,6 +3,7 @@
 # cases) and asserts that every path it hands to the engine lies inside a fixture; the trash is
 # the fixture-local FakeTrash (fake_trash.hpp), never the real XDG trash (S16).
 add_executable(navigator_ops_tests
+    archive_test.cpp
     batch_rename_test.cpp
     cancel_fault_test.cpp
     conflict_test.cpp

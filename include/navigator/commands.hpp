@@ -284,8 +284,9 @@ enum class CommandId : std::uint32_t {
                                   //   the active tab folder of the previously active pane
                                   //   ("previous pane", docs/features.md); no-op with one pane
     MoveToOtherPane = 1345,       // "file.move_to_other_pane"  same with OpKind::Move
-    OpenTerminalHere = 1346,      // "file.open_terminal_here"  RESERVED: registered, unbound, no-op
-                                  //   until platform::open_terminal lands (Phase 10)
+    OpenTerminalHere = 1346,      // "file.open_terminal_here"  Phase 10: opens the user's
+                                  //   terminal emulator in the active tab's folder (F4 / context
+                                  //   menu / palette) via platform::open_terminal
     CancelOperation = 1347,       // "ops.cancel"  arg: ops::OpId::value; 0 = the most recently
                                   //   started unfinished operation (progress bar stop button)
     TogglePauseOperation = 1348,  // "ops.toggle_pause"  arg as ops.cancel
@@ -373,6 +374,15 @@ enum class CommandId : std::uint32_t {
     FontSizeDecrease = 1434,       // "view.font_size_decrease"     step UI font scale down
     FontSizeReset = 1435,          // "view.font_size_reset"        reset UI font scale to 100%
     OpenAppearanceSettings = 1436, // "settings.appearance"        open Settings on Appearance page
+
+    // Phase 10: Miller columns, content search, archives, plugins, GVfs unmount. arg: 0.
+    ViewModeColumns = 1440, // "view.mode_columns"     switch active tab to Miller Columns (Ctrl+5)
+    ContentSearch =
+        1441, // "search.content"        open/focus content search overlay (Ctrl+Shift+G)
+    ArchiveExtractHere =
+        1442,             // "archive.extract_here"  extract selected archive(s) into current dir
+    ReloadPlugins = 1443, // "plugins.reload"        reload C ABI plugins from plugin_dir
+    UnmountVolume = 1444, // "volume.unmount"        unmount selected GVfs mount in sidebar
 };
 
 // Bit flags for the `arg` of CopyPath. Unknown bits are ignored (reserved).

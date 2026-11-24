@@ -4,6 +4,9 @@
 #include <algorithm>
 #include <utility>
 
+#include <navigator/archive.hpp>
+#include <navigator/platform.hpp>
+
 namespace navigator::ui {
 
 ListingWorker::ListingWorker(std::function<void()> wake)
@@ -48,7 +51,18 @@ ListingResult ListingWorker::list_one(std::uint64_t generation, const Path& dir,
     result.generation = generation;
     result.dir = dir;
     result.started = std::chrono::steady_clock::now();
-    result.entries = fs::list_directory(dir, options, token);
+    if (const auto arch = archive::parse_archive_path(dir.native()); arch) {
+        result.entries =
+            archive::list_archive_directory(arch->archive_file, arch->inner_path, token);
+    } else if (platform::is_gvfs_uri(dir.native())) {
+        if (auto gvfs = platform::create_gvfs_backend(); gvfs) {
+            result.entries = (*gvfs)->list_uri(dir.native(), token);
+        } else {
+            result.entries = Unexpected<Error>(std::move(gvfs.error()));
+        }
+    } else {
+        result.entries = fs::list_directory(dir, options, token);
+    }
     if (result.entries) {
         std::vector<fs::DirEntry>& entries = *result.entries;
         for (const fs::DirEntry& e : entries) {

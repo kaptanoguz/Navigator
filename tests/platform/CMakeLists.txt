@@ -17,6 +17,7 @@ add_executable(navigator_platform_tests
     mime_test.cpp
     mountinfo_test.cpp
     openwith_test.cpp
+    phase10_platform_test.cpp
     process_runner_test.cpp
     program_dirs_test.cpp
     proc_source_test.cpp

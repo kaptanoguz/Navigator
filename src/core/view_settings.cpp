@@ -51,6 +51,7 @@ std::string_view to_string(ViewMode mode) noexcept {
     case ViewMode::Icons: return "icons";
     case ViewMode::List: return "list";
     case ViewMode::Tree: return "tree";
+    case ViewMode::Columns: return "columns";
     }
     return "details";
 }
@@ -67,6 +68,9 @@ std::optional<ViewMode> parse_view_mode(std::string_view name) noexcept {
     }
     if (name == "tree") {
         return ViewMode::Tree;
+    }
+    if (name == "columns") {
+        return ViewMode::Columns;
     }
     return std::nullopt;
 }

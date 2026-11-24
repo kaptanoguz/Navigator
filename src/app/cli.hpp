@@ -43,6 +43,12 @@ struct CliOptions {
     // Phase 7: --trash-dir DIR (raw bytes); empty: the real XDG trash (never in a --frames run,
     // see AppConfig::trash_dir). main() points config.trash_dir at it.
     std::string trash_dir;
+    // Phase 10: single-instance IPC, --new-tab, --select, plugins, git, gvfs.
+    std::string ipc_socket;
+    std::string plugin_dir;
+    std::string select_path;
+    bool new_tab = false;
+    bool new_instance = false;
     bool show_help = false;
     bool show_version = false;
     std::optional<Language> language;               // --lang overrides the environment

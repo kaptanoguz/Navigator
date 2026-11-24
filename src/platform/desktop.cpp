@@ -221,8 +221,57 @@ Result<void> move_to_trash(const Path& path) {
     return ok();
 }
 
-Result<void> open_terminal(const Path& /*dir*/) {
-    return fail(ErrorCode::Unsupported, "open_terminal: not implemented yet");
+Result<void> open_terminal(const Path& dir, IAppLauncher& launcher) {
+    try {
+        if (dir.empty() || !dir.is_absolute()) {
+            return fail(ErrorCode::InvalidArgument,
+                        "open_terminal: directory must be absolute: '" + dir.native() + "'");
+        }
+        struct stat st {};
+        if (::stat(dir.c_str(), &st) != 0) {
+            return Unexpected<Error>(stat_error(errno, "open_terminal: stat", dir));
+        }
+        if (!S_ISDIR(st.st_mode)) {
+            return fail(ErrorCode::InvalidArgument,
+                        "open_terminal: path is not a directory: '" + dir.native() + "'");
+        }
+
+        std::vector<std::string> candidates;
+        candidates.emplace_back("xdg-terminal-exec");
+        if (const std::string_view term = env_value("TERMINAL"); !term.empty()) {
+            candidates.emplace_back(term);
+        }
+        candidates.emplace_back("x-terminal-emulator");
+        constexpr const char* kFallbacks[] = {
+            "gnome-terminal", "kgx",     "konsole", "xfce4-terminal", "mate-terminal", "kitty",
+            "alacritty",      "wezterm", "foot",    "tilix",          "xterm",
+        };
+        for (const char* name : kFallbacks) {
+            candidates.emplace_back(name);
+        }
+
+        for (const std::string& candidate : candidates) {
+            Result<void> res = launcher.launch(LaunchRequest{{candidate}, dir});
+            if (res || res.error().code != ErrorCode::NotFound) {
+                return res;
+            }
+        }
+        return fail(ErrorCode::Unsupported, "open_terminal: no supported terminal emulator found");
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::OutOfMemory, "open_terminal: out of memory");
+    }
+}
+
+Result<void> open_terminal(const Path& dir) {
+    if (dir.empty() || !dir.is_absolute()) {
+        return fail(ErrorCode::InvalidArgument,
+                    "open_terminal: directory must be absolute: '" + dir.native() + "'");
+    }
+    static const Result<std::unique_ptr<IAppLauncher>> shared = create_default_launcher();
+    if (!shared) {
+        return Unexpected<Error>(shared.error());
+    }
+    return open_terminal(dir, **shared);
 }
 
 } // namespace navigator::platform

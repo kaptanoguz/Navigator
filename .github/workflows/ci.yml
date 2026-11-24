@@ -25,6 +25,7 @@ env:
     nlohmann-json3-dev
     libpng-dev libjpeg-turbo8-dev libwebp-dev libexif-dev
     libheif-dev libavformat-dev libavcodec-dev libswscale-dev libavutil-dev librsvg2-dev
+    libglib2.0-dev libarchive-dev
 
 jobs:
   format:

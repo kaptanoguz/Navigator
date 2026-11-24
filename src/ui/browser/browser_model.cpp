@@ -1194,7 +1194,13 @@ bool BrowserModel::execute(const Command& command) {
     case CommandId::FontSizeIncrease:
     case CommandId::FontSizeDecrease:
     case CommandId::FontSizeReset:
-    case CommandId::OpenAppearanceSettings: return false;
+    case CommandId::OpenAppearanceSettings:
+    // Phase 10: Miller columns, content search, archives, plugins, GVfs unmount (shell level).
+    case CommandId::ViewModeColumns:
+    case CommandId::ContentSearch:
+    case CommandId::ArchiveExtractHere:
+    case CommandId::ReloadPlugins:
+    case CommandId::UnmountVolume: return false;
     case CommandId::TreeExpand: tree_expand_cursor(); return true;
     case CommandId::TreeCollapse: tree_collapse_cursor(); return true;
     case CommandId::TreeCollapseAll: tree_collapse_all(); return true;

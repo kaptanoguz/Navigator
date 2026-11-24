@@ -166,7 +166,8 @@ std::string unquote(const std::string& cell) {
 struct KeymapDoc {
     std::vector<DocRow> rows;
     std::vector<std::string> unbound;
-    std::size_t phase_rows[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; // chord rows per phase (1 unused)
+    std::size_t phase_rows[11] = {0, 0, 0, 0, 0, 0,
+                                  0, 0, 0, 0, 0}; // chord rows per phase (1 unused)
 };
 
 KeymapDoc read_keymap_doc() {
@@ -197,6 +198,8 @@ KeymapDoc read_keymap_doc() {
                 section = 8;
             } else if (line.starts_with("## Phase 9 defaults")) {
                 section = 9;
+            } else if (line.starts_with("## Phase 10 defaults")) {
+                section = 10;
             } else {
                 in_table = false;
             }
@@ -480,8 +483,9 @@ TEST_CASE("load_default_keymap binds exactly the docs/keymap.md tables, in order
     CHECK(parsed.phase_rows[7] == 12); // Phase 7 chords
     CHECK(parsed.phase_rows[8] == 8);  // Phase 8 chords
     CHECK(parsed.phase_rows[9] == 11); // Phase 9A (10) + Phase 9B (1) chords
-    REQUIRE(doc.size() == 3 + 25 + 21 + 5 + 4 + 2 + 12 + 8 + 11);
-    CHECK(doc.size() == 91); // 80 through Phase 8 + 11 Phase 9 chords
+    CHECK(parsed.phase_rows[10] == 3); // Phase 10 chords (F4, Ctrl+5, Ctrl+Shift+G)
+    REQUIRE(doc.size() == 3 + 25 + 21 + 5 + 4 + 2 + 12 + 8 + 11 + 3);
+    CHECK(doc.size() == 94); // 91 through Phase 9 + 3 Phase 10 chords
 
     Keymap keymap;
     REQUIRE(navigator::load_default_keymap(keymap));
@@ -537,7 +541,6 @@ TEST_CASE("every default binding resolves to a registered built-in", "[keymap][d
                                       CommandId::CycleInspectorPlacement,
                                       CommandId::ToggleInspectorGrid,
                                       CommandId::ToggleInspectorMinimap,
-                                      CommandId::OpenTerminalHere,
                                       CommandId::CancelOperation,
                                       CommandId::TogglePauseOperation,
                                       CommandId::OpenTrash,
@@ -565,7 +568,10 @@ TEST_CASE("every default binding resolves to a registered built-in", "[keymap][d
                                       CommandId::FontSizeIncrease,
                                       CommandId::FontSizeDecrease,
                                       CommandId::FontSizeReset,
-                                      CommandId::OpenAppearanceSettings};
+                                      CommandId::OpenAppearanceSettings,
+                                      CommandId::ArchiveExtractHere,
+                                      CommandId::ReloadPlugins,
+                                      CommandId::UnmountVolume};
     for (const CommandInfo& info : registry.all()) {
         INFO("command " << info.name);
         CHECK(bound.contains(info.id) == !unbound.contains(info.id));
@@ -608,7 +614,6 @@ TEST_CASE("docs/keymap.md (unbound) rows are exactly the unbound built-ins", "[k
                                               "inspector.cycle_placement",
                                               "inspector.toggle_grid",
                                               "inspector.toggle_minimap",
-                                              "file.open_terminal_here",
                                               "ops.cancel",
                                               "ops.toggle_pause",
                                               "trash.open",
@@ -636,7 +641,10 @@ TEST_CASE("docs/keymap.md (unbound) rows are exactly the unbound built-ins", "[k
                                               "view.font_size_increase",
                                               "view.font_size_decrease",
                                               "view.font_size_reset",
-                                              "settings.appearance"});
+                                              "settings.appearance",
+                                              "archive.extract_here",
+                                              "plugins.reload",
+                                              "volume.unmount"});
     std::set<std::string> actual;
     for (const CommandInfo& info : registry.all()) {
         if (keymap.chords_for(info.name).empty()) {
@@ -1121,14 +1129,13 @@ TEST_CASE("a Phase 7 key sequence becomes the expected command list",
     };
     CHECK(ran == expected);
     CHECK(queue.empty());
-    // ops.cancel / ops.toggle_pause, trash.* and file.open_terminal_here remain unbound
-    // (ops.toggle_panel gained Ctrl+J in Phase 8).
+    // ops.cancel / ops.toggle_pause and trash.* remain unbound (ops.toggle_panel gained Ctrl+J in
+    // Phase 8; file.open_terminal_here gained F4 in Phase 10).
     for (const KeyBinding& b : keymap.bindings()) {
         INFO("binding " << to_string(b.chord) << " -> " << b.command);
         CHECK(b.command != "ops.cancel");
         CHECK(b.command != "ops.toggle_pause");
         CHECK_FALSE(b.command.starts_with("trash."));
-        CHECK(b.command != "file.open_terminal_here");
         if (b.command == "edit.paste") {
             CHECK(b.arg == navigator::PasteArg::None);
         }

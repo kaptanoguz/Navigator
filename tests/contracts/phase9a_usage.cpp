@@ -14,7 +14,8 @@ static_assert(step_zoom(ViewMode::Details, 100, 1).first == ViewMode::Icons);
 static_assert(step_zoom(ViewMode::Details, 100, -1).first == ViewMode::Details);
 static_assert(step_zoom(ViewMode::Icons, kMinZoomPercent, -1).first == ViewMode::Details);
 static_assert(reorder_column(kDefaultColumnOrder, 0, 2)[2] == ColumnId::Name);
-static_assert(next_view_mode(ViewMode::Tree) == ViewMode::Details);
+static_assert(next_view_mode(ViewMode::Tree) == ViewMode::Columns);
+static_assert(next_view_mode(ViewMode::Columns) == ViewMode::Details);
 static_assert(next_group_by(GroupBy::Size) == GroupBy::None);
 static_assert(next_view_scope(ViewScope::Hierarchy) == ViewScope::Global);
 

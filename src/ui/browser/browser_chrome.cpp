@@ -634,6 +634,11 @@ void BrowserView::draw_status(const BrowserFrame& f, const Layout& l) {
         if (!m.show_hidden() && m.hidden_count() > 0) {
             left.push_back({tr_count("status.hidden", m.hidden_count()), false});
         }
+        if (f.git_status != nullptr) {
+            if (const auto branch = f.git_status->branch_for(m.current_dir()); branch) {
+                left.push_back({"git: " + *branch, true});
+            }
+        }
     }
     if (m.busy()) {
         left.push_back({std::string(tr("status.loading")), false});

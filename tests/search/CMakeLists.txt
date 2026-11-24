@@ -4,6 +4,7 @@
 # never depends on src/platform.
 
 add_executable(navigator_search_tests
+    content_search_test.cpp
     index_file_test.cpp
     index_regression_test.cpp
     index_test.cpp

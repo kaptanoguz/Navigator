@@ -24,6 +24,7 @@
 #include <string_view>
 #include <vector>
 
+#include <navigator/fs.hpp>
 #include <navigator/types.hpp>
 
 namespace navigator::platform {
@@ -117,8 +118,16 @@ public:
 // Errors: those of trash::create_trash and trash::ITrash::trash.
 [[nodiscard]] Result<void> move_to_trash(const Path& path);
 
-// Stub (Phase 10; file.open_terminal_here is reserved). Opens the user's terminal emulator with
-// `dir` as working directory.
+// Phase 10: Opens the user's terminal emulator with `dir` as working directory.
+// Resolution order:
+//   1. `xdg-terminal-exec` (if in $PATH)
+//   2. `$TERMINAL` environment variable (if set and found in $PATH)
+//   3. `x-terminal-emulator` (Debian/Ubuntu/Mint alternative)
+//   4. Common Linux terminals in order: `gnome-terminal`, `kgx`, `konsole`, `xfce4-terminal`,
+//      `mate-terminal`, `kitty`, `alacritty`, `wezterm`, `foot`, `tilix`, `xterm`.
+// Errors: InvalidArgument (empty/relative dir), NotFound (dir does not exist),
+//         Unsupported (no terminal emulator found), PlatformError (spawn failed).
+[[nodiscard]] Result<void> open_terminal(const Path& dir, IAppLauncher& launcher);
 [[nodiscard]] Result<void> open_terminal(const Path& dir);
 
 // ---------------------------------------------------------------------------------------------
@@ -301,5 +310,106 @@ public:
 
 // Errors: OutOfMemory.
 [[nodiscard]] Result<std::unique_ptr<IProcessRunner>> create_default_process_runner();
+
+// ---------------------------------------------------------------------------------------------
+// Phase 10: GVfs mounts & remote/device URIs (MTP, SMB, SFTP, etc.)
+// ---------------------------------------------------------------------------------------------
+
+struct GvfsMount {
+    std::string id;     // stable mount identifier (typically root URI)
+    std::string name;   // user-visible label (e.g. "Pixel 8", "nas on server")
+    std::string uri;    // root URI (e.g. "mtp://...", "smb://host/share/", "sftp://...")
+    std::string scheme; // lowercase URI scheme ("mtp", "smb", "sftp", ...)
+    Path local_path;    // FUSE mount path under /run/user/<uid>/gvfs/... if available, else empty
+    bool can_unmount = true;
+
+    friend bool operator==(const GvfsMount&, const GvfsMount&) = default;
+};
+
+// True when Navigator was compiled with GIO/GVfs support (NAVIGATOR_HAVE_GVFS).
+[[nodiscard]] bool gvfs_available() noexcept;
+
+// True when `raw` looks like a GVfs remote/device URI (e.g. smb://, sftp://, mtp://, ftp://,
+// dav://, davs://, afc://, gphoto2://). Pure.
+[[nodiscard]] bool is_gvfs_uri(std::string_view raw) noexcept;
+
+// Abstract GVfs backend so tests can inject a mock without a live D-Bus/GVfs daemon.
+// Thread-safety: methods may block on D-Bus/network I/O; call off the UI thread.
+class IGvfsBackend {
+public:
+    IGvfsBackend() = default;
+    virtual ~IGvfsBackend() = default;
+    IGvfsBackend(const IGvfsBackend&) = delete;
+    IGvfsBackend& operator=(const IGvfsBackend&) = delete;
+    IGvfsBackend(IGvfsBackend&&) = delete;
+    IGvfsBackend& operator=(IGvfsBackend&&) = delete;
+
+    // Lists currently mounted GVfs volumes/mounts (MTP, SMB, SFTP, etc.).
+    [[nodiscard]] virtual Result<std::vector<GvfsMount>> list_mounts() = 0;
+
+    // Lists directory entries at a GVfs URI (e.g. "mtp://..." or "smb://host/share/dir").
+    [[nodiscard]] virtual Result<std::vector<fs::DirEntry>> list_uri(std::string_view uri,
+                                                                     std::stop_token stop = {}) = 0;
+
+    // Resolves a GVfs URI to a local FUSE path if mounted, or returns NotFound.
+    [[nodiscard]] virtual Result<Path> local_path_for_uri(std::string_view uri) = 0;
+
+    // Unmounts the GVfs mount identified by `uri`.
+    [[nodiscard]] virtual Result<void> unmount(std::string_view uri) = 0;
+};
+
+// Creates the GIO-backed GVfs backend when NAVIGATOR_HAVE_GVFS is enabled, or a clean stub
+// returning empty mounts / Unsupported when built without GVfs.
+[[nodiscard]] Result<std::unique_ptr<IGvfsBackend>> create_gvfs_backend();
+
+// ---------------------------------------------------------------------------------------------
+// Phase 10: Single-instance IPC (Unix domain socket)
+// ---------------------------------------------------------------------------------------------
+
+enum class IpcAction : std::uint8_t {
+    FocusWindow = 0,
+    OpenPath = 1,   // navigate or open path in a new tab
+    NewTab = 2,     // explicitly open path in a new tab
+    SelectPath = 3, // open parent folder in a tab and select the target item
+};
+
+struct IpcMessage {
+    IpcAction action = IpcAction::FocusWindow;
+    Path path;
+
+    friend bool operator==(const IpcMessage&, const IpcMessage&) = default;
+};
+
+// Default per-user Unix domain socket path: "$XDG_RUNTIME_DIR/navigator.sock" (falling back to
+// "/tmp/navigator-<uid>.sock").
+[[nodiscard]] Result<Path> default_ipc_socket_path();
+
+// Connects to an existing Navigator instance listening on `socket_path` and sends `message`.
+// Returns true if delivered to a running instance, false if no instance is listening (including
+// missing socket or ECONNREFUSED on a stale socket).
+[[nodiscard]] Result<bool> send_to_running_instance(const Path& socket_path,
+                                                    const IpcMessage& message);
+
+// Non-blocking Unix domain socket listener owned by the primary Navigator instance.
+// Thread-safety: poll() is non-blocking and called from the UI thread each frame.
+class ISingleInstanceServer {
+public:
+    ISingleInstanceServer() = default;
+    virtual ~ISingleInstanceServer() = default;
+    ISingleInstanceServer(const ISingleInstanceServer&) = delete;
+    ISingleInstanceServer& operator=(const ISingleInstanceServer&) = delete;
+    ISingleInstanceServer(ISingleInstanceServer&&) = delete;
+    ISingleInstanceServer& operator=(ISingleInstanceServer&&) = delete;
+
+    // Accepts any pending connections and returns decoded messages without blocking.
+    [[nodiscard]] virtual std::vector<IpcMessage> poll() = 0;
+
+    [[nodiscard]] virtual const Path& socket_path() const noexcept = 0;
+};
+
+// Binds and listens on `socket_path` (cleaning up a stale unlistening socket if present).
+// Errors: AlreadyExists (another live instance is listening), PlatformError, InvalidArgument.
+[[nodiscard]] Result<std::unique_ptr<ISingleInstanceServer>>
+create_single_instance_server(const Path& socket_path);
 
 } // namespace navigator::platform
