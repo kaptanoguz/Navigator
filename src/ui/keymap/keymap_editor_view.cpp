@@ -11,6 +11,7 @@
 #include <navigator/i18n.hpp>
 
 #include "input/shortcut_text.hpp"
+#include "settings/appearance_page.hpp"
 #include "widgets/text_field.hpp"
 #include "widgets/text_fit.hpp"
 
@@ -43,8 +44,10 @@ std::string_view warning_key(BindingWarning w) noexcept {
 
 } // namespace
 
-void KeymapSettingsOverlay::open(const CommandRegistry& registry, const Keymap& effective) {
+void KeymapSettingsOverlay::open(const CommandRegistry& registry, const Keymap& effective,
+                                 Page page) {
     open_ = true;
+    page_ = page;
     capturing_ = false;
     captured_seq_.chords.clear();
     check_.reset();
@@ -161,6 +164,12 @@ KeymapEditorEvent KeymapSettingsOverlay::handle_key(KeyChord chord, KeymapFile& 
     if (!open_) {
         return ev;
     }
+    if (page_ == Page::Appearance) {
+        if (chord.key == Key::Escape && chord.mods == Modifiers::None) {
+            close();
+        }
+        return ev;
+    }
 
     if (capturing_) {
         if (chord.key == Key::Escape && chord.mods == Modifiers::None) {
@@ -213,11 +222,11 @@ KeymapEditorEvent KeymapSettingsOverlay::handle_key(KeyChord chord, KeymapFile& 
     return ev;
 }
 
-KeymapEditorEvent KeymapSettingsOverlay::draw(const Painter& p, const Palette& pal,
-                                              const RectF& viewport, const PointerInput& pointer,
-                                              KeymapFile& file, const Keymap& effective,
-                                              const Keymap& defaults,
-                                              const CommandRegistry& registry) {
+KeymapEditorEvent KeymapSettingsOverlay::draw(
+    const Painter& p, const Palette& pal, const RectF& viewport, const PointerInput& pointer,
+    KeymapFile& file, const Keymap& effective, const Keymap& defaults,
+    const CommandRegistry& registry, appearance::AppearanceSettings& appearance,
+    const std::vector<appearance::ThemeScheme>& custom_themes) {
     KeymapEditorEvent ev;
     if (!open_) {
         return ev;
@@ -235,7 +244,7 @@ KeymapEditorEvent KeymapSettingsOverlay::draw(const Painter& p, const Palette& p
         return ev;
     }
 
-    const float rad = p.px(radius::lg);
+    const float rad = p.px(p.radii().lg);
     r.drop_shadow(card, rad, p.px(18.0F), p.px(6.0F), pal.shadow.with_alpha(0.35F));
     r.fill_rounded_rect(card, rad, pal.surface_raised);
     r.stroke_rounded_rect(card, rad, p.px(1.0F), pal.border);
@@ -245,11 +254,43 @@ KeymapEditorEvent KeymapSettingsOverlay::draw(const Painter& p, const Palette& p
     const float footer_h = p.px(kFooterHeight);
     const float row_h = p.px(kRowHeight);
 
-    // Header: "Settings — Keyboard" + Export + Reset Defaults buttons.
-    const std::string hdr =
-        std::string(tr("settings.title")) + " — " + std::string(tr("settings.page.keyboard"));
-    p.draw(p.shape(type::popup_title, hdr), card.x + p.px(16.0F), card.y + header_h * 0.66F,
-           pal.text_primary);
+    // Header: "Settings" + page tabs (Appearance | Keyboard) + Keyboard action buttons.
+    const ShapedText title_t = p.shape(type::popup_title, tr("settings.title"));
+    p.draw(title_t, card.x + p.px(16.0F), card.y + header_h * 0.66F, pal.text_primary);
+
+    auto draw_page_tab = [&](std::string_view label, float left_x, Page target) -> RectF {
+        const ShapedText tt = p.shape(type::caption, label);
+        const float tw = tt.width() + p.px(18.0F);
+        const float th = p.px(26.0F);
+        const RectF tr_rect{left_x, card.y + (header_h - th) * 0.5F, tw, th};
+        const bool active = page_ == target;
+        const bool hov = contains(tr_rect, pointer.x, pointer.y);
+        const float tab_rad = p.px(p.radii().sm);
+        r.fill_rounded_rect(tr_rect, tab_rad,
+                            active ? pal.chip : (hov ? pal.control_hover : pal.surface));
+        r.stroke_rounded_rect(tr_rect, tab_rad, p.px(1.0F), active ? pal.accent : pal.border);
+        p.draw(tt, tr_rect.x + p.px(9.0F), tr_rect.y + th * 0.68F,
+               active ? pal.chip_text : pal.text_primary);
+        if (pointer.pressed && hov && page_ != target) {
+            page_ = target;
+            cancel_capture();
+        }
+        return tr_rect;
+    };
+
+    const RectF app_tab = draw_page_tab(tr("settings.page.appearance"),
+                                        card.x + p.px(24.0F) + title_t.width(), Page::Appearance);
+    (void)draw_page_tab(tr("settings.page.keyboard"), app_tab.right() + p.px(6.0F), Page::Keyboard);
+
+    if (page_ == Page::Appearance) {
+        r.fill_rect(RectF{card.x, card.y + header_h, card.w, p.px(1.0F)}, pal.border);
+        const RectF body{card.x, card.y + header_h + p.px(1.0F), card.w,
+                         card.h - header_h - p.px(1.0F)};
+        if (draw_appearance_page(p, pal, body, pointer, appearance, custom_themes)) {
+            ev.appearance_dirty = true;
+        }
+        return ev;
+    }
 
     auto draw_button = [&](std::string_view label, float right_x, float cy, bool danger) -> RectF {
         const ShapedText bt = p.shape(type::caption, label);

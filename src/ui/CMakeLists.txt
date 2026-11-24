@@ -86,6 +86,7 @@ add_library(navigator_ui STATIC
     keymap/keymap_editor_view.cpp
     menu/context_menu_view.cpp
     menu/openwith_popup.cpp
+    ops/batch_rename_view.cpp
     ops/ops_view.cpp
     palette/palette_view.cpp
     platform/outgoing_drag.cpp
@@ -97,6 +98,7 @@ add_library(navigator_ui STATIC
     inspector/texture_cache.cpp
     render/backend_name.cpp
     render/renderer.cpp
+    settings/appearance_page.cpp
     shell/app.cpp
     shell/background.cpp
     shell/debug_volumes.cpp

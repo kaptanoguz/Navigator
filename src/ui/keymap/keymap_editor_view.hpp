@@ -18,6 +18,7 @@
 #include <string_view>
 #include <vector>
 
+#include <navigator/appearance.hpp>
 #include <navigator/commands.hpp>
 #include <navigator/keymap_file.hpp>
 
@@ -31,19 +32,31 @@ namespace navigator::ui {
 
 struct KeymapEditorEvent {
     bool keymap_dirty = false;          // caller rebuilds Keymap, resets SequenceMatcher & saves
+    bool appearance_dirty = false;      // Phase 9B: caller applies & persists AppearanceSettings
     std::optional<Command> enqueue_cmd; // e.g. ResetKeymap or ExportKeymap
 };
 
 class KeymapSettingsOverlay {
 public:
+    enum class Page : std::uint8_t {
+        Appearance = 0,
+        Keyboard = 1,
+    };
+
     [[nodiscard]] bool is_open() const noexcept { return open_; }
-    [[nodiscard]] bool is_capturing() const noexcept { return open_ && capturing_; }
-    [[nodiscard]] bool wants_text_input() const noexcept { return open_ && !capturing_; }
+    [[nodiscard]] Page page() const noexcept { return page_; }
+    [[nodiscard]] bool is_capturing() const noexcept {
+        return open_ && page_ == Page::Keyboard && capturing_;
+    }
+    [[nodiscard]] bool wants_text_input() const noexcept {
+        return open_ && page_ == Page::Keyboard && !capturing_;
+    }
     [[nodiscard]] TextEdit* active_field() noexcept {
-        return (open_ && !capturing_) ? &search_ : nullptr;
+        return (open_ && page_ == Page::Keyboard && !capturing_) ? &search_ : nullptr;
     }
 
-    void open(const CommandRegistry& registry, const Keymap& effective);
+    void open(const CommandRegistry& registry, const Keymap& effective,
+              Page page = Page::Keyboard);
     void close() noexcept;
 
     // Refresh displayed shortcuts after the effective Keymap changes.
@@ -57,7 +70,9 @@ public:
 
     KeymapEditorEvent draw(const Painter& p, const Palette& pal, const RectF& viewport,
                            const PointerInput& pointer, KeymapFile& file, const Keymap& effective,
-                           const Keymap& defaults, const CommandRegistry& registry);
+                           const Keymap& defaults, const CommandRegistry& registry,
+                           appearance::AppearanceSettings& appearance,
+                           const std::vector<appearance::ThemeScheme>& custom_themes);
 
 private:
     struct Row {
@@ -77,6 +92,7 @@ private:
                                      bool replace_conflicts);
 
     bool open_ = false;
+    Page page_ = Page::Appearance;
     std::vector<Row> rows_;
     std::vector<std::size_t> filtered_;
     std::size_t selected_ = 0;

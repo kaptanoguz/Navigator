@@ -144,6 +144,47 @@ Color mix(const Color& a, const Color& b, float t) noexcept {
 
 const Palette& palette(Theme theme) noexcept { return theme == Theme::Light ? kLight : kDark; }
 
+Palette palette_from_scheme(const appearance::ThemeScheme& scheme) noexcept {
+    Palette p = palette(scheme.base);
+    constexpr float inv = 1.0F / 255.0F;
+    auto to_color = [](appearance::Rgba8 c) noexcept {
+        return Color{static_cast<float>(c.r) * inv, static_cast<float>(c.g) * inv,
+                     static_cast<float>(c.b) * inv, static_cast<float>(c.a) * inv};
+    };
+    const appearance::ThemeColors& c = scheme.colors;
+    if (c.background) p.background = to_color(*c.background);
+    if (c.background_alt) p.background_alt = to_color(*c.background_alt);
+    if (c.surface) p.surface = to_color(*c.surface);
+    if (c.surface_raised) p.surface_raised = to_color(*c.surface_raised);
+    if (c.text_primary) p.text_primary = to_color(*c.text_primary);
+    if (c.text_secondary) p.text_secondary = to_color(*c.text_secondary);
+    if (c.text_muted) p.text_muted = to_color(*c.text_muted);
+    if (c.accent) {
+        p.accent = to_color(*c.accent);
+        p.selection_marker = p.accent;
+        p.match = p.accent;
+        p.chip = p.accent.with_alpha(scheme.base == Theme::Light ? 0.14F : 0.18F);
+        p.chip_text = p.accent;
+        if (!c.selection) {
+            p.selection = p.accent.with_alpha(scheme.base == Theme::Light ? 0.14F : 0.20F);
+        }
+        if (!c.focus_ring) {
+            p.focus_ring = p.accent.with_alpha(0.82F);
+        }
+    }
+    if (c.on_accent) p.on_accent = to_color(*c.on_accent);
+    if (c.border) p.border = to_color(*c.border);
+    if (c.danger) p.danger = to_color(*c.danger);
+    if (c.warning) p.warning = to_color(*c.warning);
+    if (c.selection) p.selection = to_color(*c.selection);
+    if (c.row_alt) p.row_alt = to_color(*c.row_alt);
+    if (c.row_hover) p.row_hover = to_color(*c.row_hover);
+    if (c.focus_ring) p.focus_ring = to_color(*c.focus_ring);
+    if (c.icon_folder_back) p.icon_folder_back = to_color(*c.icon_folder_back);
+    if (c.icon_folder_front) p.icon_folder_front = to_color(*c.icon_folder_front);
+    return p;
+}
+
 Palette mix(const Palette& a, const Palette& b, float t) noexcept {
     return Palette{
         .background = mix(a.background, b.background, t),

@@ -41,7 +41,7 @@ constexpr float kFolderMinRoomDp = 260.0F; // name room needed before Folder get
 
 BrowserView::Layout BrowserView::compute_layout(const BrowserFrame& f) const {
     const Painter& p = f.painter;
-    const DensityMetrics dm = density_metrics(f.density);
+    const DensityMetrics dm = density_metrics(f.density, f.spacing_scale_percent);
     Layout l;
     const RectF b = f.bounds;
     const float w = b.w;
@@ -242,7 +242,8 @@ void BrowserView::update(const BrowserFrame& f) {
                 hscroll_ = htarget_;
             }
         } else if (ptr.wheel_y != 0.0F) {
-            target_ -= ptr.wheel_y * kWheelRows * density_metrics(f.density).row_height;
+            target_ -= ptr.wheel_y * kWheelRows *
+                       density_metrics(f.density, f.spacing_scale_percent).row_height;
             target_ = std::clamp(target_, 0.0F, max_scroll_);
             if (!f.animations) {
                 scroll_ = target_;
@@ -761,7 +762,7 @@ void BrowserView::draw_rows(const BrowserFrame& f, const Layout& l) {
     // 1. Alternating stripes and hover.
     for (std::size_t i = first; i <= last; ++i) {
         const RectF row = snap(RectF{rx, row_y(i), rw, l.row_h});
-        if (i % 2 == 1) {
+        if (f.alternating_rows && i % 2 == 1) {
             r.fill_rounded_rect(row, rad, pal.row_alt);
         }
         if (i == hover && !m.is_selected(i)) {

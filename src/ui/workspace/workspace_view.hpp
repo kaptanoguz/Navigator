@@ -63,7 +63,9 @@ struct ShellFrame {
     float height = 0.0F;
     bool focused = true; // window has keyboard focus
     bool animations = true;
+    bool alternating_rows = true;
     Density density = Density::Compact;
+    int spacing_scale_percent = 100;
     double dt_ms = 16.0;
     double now_ms = 0.0; // monotonic, for toasts
     Timestamp now{};

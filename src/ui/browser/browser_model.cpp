@@ -1185,7 +1185,16 @@ bool BrowserModel::execute(const Command& command) {
     case CommandId::GroupCycle:
     case CommandId::ViewLockFolder:
     case CommandId::ViewLockHierarchy:
-    case CommandId::ViewLockGlobal: return false;
+    case CommandId::ViewLockGlobal:
+    // Phase 9B: batch rename and appearance commands are handled at shell level.
+    case CommandId::BatchRename:
+    case CommandId::ToggleAnimations:
+    case CommandId::ToggleAlternatingRows:
+    case CommandId::CycleDensity:
+    case CommandId::FontSizeIncrease:
+    case CommandId::FontSizeDecrease:
+    case CommandId::FontSizeReset:
+    case CommandId::OpenAppearanceSettings: return false;
     case CommandId::TreeExpand: tree_expand_cursor(); return true;
     case CommandId::TreeCollapse: tree_collapse_cursor(); return true;
     case CommandId::TreeCollapseAll: tree_collapse_all(); return true;

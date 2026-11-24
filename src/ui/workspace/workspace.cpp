@@ -528,6 +528,14 @@ bool Workspace::execute(const Command& command) {
     case CommandId::ViewLockFolder:
     case CommandId::ViewLockHierarchy:
     case CommandId::ViewLockGlobal:
+    case CommandId::BatchRename:
+    case CommandId::ToggleAnimations:
+    case CommandId::ToggleAlternatingRows:
+    case CommandId::CycleDensity:
+    case CommandId::FontSizeIncrease:
+    case CommandId::FontSizeDecrease:
+    case CommandId::FontSizeReset:
+    case CommandId::OpenAppearanceSettings:
     case CommandId::None:
     case CommandId::Quit:
     case CommandId::ToggleFpsOverlay:

@@ -180,6 +180,7 @@ void OpsView::op_glyph(const OpsFrame& f, ops::OpKind kind, float cx, float cy, 
         line(-5, 5, 1, 5);
         break;
     case ops::OpKind::Rename:
+    case ops::OpKind::BatchRename:
         line(-6, 6, 4, -4);
         line(2, -6, 6, -2);
         line(-6, 6, -6, 3);

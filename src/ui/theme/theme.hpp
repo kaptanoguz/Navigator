@@ -8,6 +8,7 @@
 
 #include <cstdint>
 
+#include <navigator/appearance.hpp>
 #include <navigator/ui.hpp>
 
 namespace navigator::ui {
@@ -106,6 +107,7 @@ struct Palette {
 };
 
 [[nodiscard]] const Palette& palette(Theme theme) noexcept;
+[[nodiscard]] Palette palette_from_scheme(const appearance::ThemeScheme& scheme) noexcept;
 [[nodiscard]] Palette mix(const Palette& a, const Palette& b, float t) noexcept;
 [[nodiscard]] Theme toggled(Theme theme) noexcept;
 
@@ -183,6 +185,23 @@ inline constexpr float lg = 12.0F;
 inline constexpr float pill = 999.0F;
 } // namespace radius
 
+// Dynamic corner radii derived from AppearanceSettings::corner_radius_dp (0..14).
+struct RadiusTokens {
+    float sm = radius::sm;
+    float md = radius::md;
+    float lg = radius::lg;
+    float pill = radius::pill;
+};
+
+[[nodiscard]] constexpr RadiusTokens radius_tokens(int corner_radius_dp) noexcept {
+    const int c = appearance::clamp_corner_radius(corner_radius_dp);
+    if (c == 0) {
+        return RadiusTokens{0.0F, 0.0F, 0.0F, 0.0F};
+    }
+    const float base = static_cast<float>(c);
+    return RadiusTokens{base * (5.0F / 6.0F), base * (8.0F / 6.0F), base * 2.0F, radius::pill};
+}
+
 namespace motion {
 inline constexpr double theme_crossfade_ms = 180.0;
 inline constexpr double scroll_settle_ms = 90.0; // smooth-scroll time constant (exponential)
@@ -216,11 +235,25 @@ struct DensityMetrics {
     float tab_bar_height; // Phase 3: a pane's tab strip
 };
 
-[[nodiscard]] constexpr DensityMetrics density_metrics(Density d) noexcept {
-    if (d == Density::Comfortable) {
-        return DensityMetrics{52.0F, 32.0F, 30.0F, 10.0F, 30.0F, 28.0F, 40.0F, 38.0F};
+[[nodiscard]] constexpr Density to_ui_density(appearance::UiDensity d) noexcept {
+    return d == appearance::UiDensity::Comfortable ? Density::Comfortable : Density::Compact;
+}
+
+[[nodiscard]] constexpr DensityMetrics density_metrics(Density d,
+                                                       int spacing_scale_percent = 100) noexcept {
+    const DensityMetrics base =
+        (d == Density::Comfortable)
+            ? DensityMetrics{52.0F, 32.0F, 30.0F, 10.0F, 30.0F, 28.0F, 40.0F, 38.0F}
+            : DensityMetrics{44.0F, 30.0F, 26.0F, 8.0F, 26.0F, 24.0F, 36.0F, 34.0F};
+    const int clamped = appearance::clamp_spacing_scale(spacing_scale_percent);
+    if (clamped == 100) {
+        return base;
     }
-    return DensityMetrics{44.0F, 30.0F, 26.0F, 8.0F, 26.0F, 24.0F, 36.0F, 34.0F};
+    const float f = static_cast<float>(clamped) * 0.01F;
+    return DensityMetrics{base.top_bar_height * f, base.tool_button * f,
+                          base.status_bar_height * f, base.panel_margin * f,
+                          base.header_height * f, base.row_height * f,
+                          base.notice_height * f, base.tab_bar_height * f};
 }
 
 } // namespace navigator::ui

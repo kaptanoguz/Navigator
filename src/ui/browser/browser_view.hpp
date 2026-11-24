@@ -80,7 +80,9 @@ struct BrowserFrame {
     bool pane_active = true;
     bool marked = false;
     bool animations = true;
+    bool alternating_rows = true;
     Density density = Density::Compact;
+    int spacing_scale_percent = 100;
     double dt_ms = 16.0;        // since the previous frame
     Timestamp now{};            // for "Today"/"Yesterday"
     const Path* home = nullptr; // breadcrumb "Home" root (may be null)
