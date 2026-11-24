@@ -80,7 +80,11 @@ add_library(navigator_ui STATIC
     browser/browser_search_view.cpp
     browser/browser_view.cpp
     input/sdl_input.cpp
+    keymap/keymap_editor_view.cpp
+    menu/context_menu_view.cpp
+    menu/openwith_popup.cpp
     ops/ops_view.cpp
+    palette/palette_view.cpp
     platform/outgoing_drag.cpp
     platform/wayland_drag.cpp
     platform/xdnd_source.cpp
