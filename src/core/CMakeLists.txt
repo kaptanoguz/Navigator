@@ -10,6 +10,7 @@
 # CaseFolding.txt (Ubuntu unicode-data); the build does not regenerate it.
 
 add_library(navigator_core STATIC
+    appearance.cpp
     case_fold.cpp
     document_files.cpp
     entry_meta.cpp
