@@ -14,6 +14,7 @@
 #include <optional>
 #include <ranges>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -237,6 +238,7 @@ void undo_step(Context& ctx, const UndoStep& s, std::vector<UndoStep>& redo) {
         return;
     }
     case OpKind::DeletePermanently:
+    case OpKind::BatchRename:
     case OpKind::Undo:
     case OpKind::Redo: break;
     }
@@ -342,6 +344,7 @@ void redo_step(Context& ctx, const UndoStep& s) {
         return;
     }
     case OpKind::DeletePermanently:
+    case OpKind::BatchRename:
     case OpKind::Undo:
     case OpKind::Redo: break;
     }
@@ -360,10 +363,140 @@ void redo_step(Context& ctx, const UndoStep& s) {
     return s.before.empty() || s.kind == OpKind::CreateSymlink ? s.after.path : s.before;
 }
 
+// Staged undo/redo for OpKind::BatchRename records so cyclic renames (e.g. a->b, b->a) invert
+// cleanly without false conflicts while still verifying every ItemGuard (S12).
+Result<void> run_batch_rename_undo_redo(Context& ctx, bool is_undo) {
+    const UndoRecord& rec = *ctx.request().record;
+    const std::size_t n = rec.steps.size();
+    ctx.set_top_level_total(n);
+    ctx.add_total(n, 0);
+    ctx.set_totals_final();
+    PhaseScope working(ctx, OpPhase::Working);
+
+    // Pair (from_path, to_path, expected_guard) for each step.
+    struct Entry {
+        const UndoStep* step = nullptr;
+        Path from;
+        Path to;
+        bool valid = true;
+        bool staged = false;
+        std::string temp_name;
+    };
+    std::vector<Entry> entries;
+    entries.reserve(n);
+    std::unordered_set<std::string> targets;
+    targets.reserve(n);
+    for (const UndoStep& s : rec.steps) {
+        Entry e;
+        e.step = &s;
+        e.from = is_undo ? s.after.path : s.before;
+        e.to = is_undo ? s.before : s.after.path;
+        ctx.add_touched(e.from.parent_path());
+        ctx.add_touched(e.to.parent_path());
+        targets.insert(e.to.native());
+        entries.push_back(std::move(e));
+    }
+
+    if (ctx.request().options.dry_run) {
+        for (const Entry& e : entries) {
+            if (auto changed = verify(e.from, e.step->after)) {
+                ctx.finish_item(std::move(*changed));
+            } else {
+                ctx.finish_item(outcome(e.from, ItemStatus::Done));
+            }
+        }
+        return ok();
+    }
+
+    // Phase 1: verify guards & stage entries whose `from` is another entry's `to`.
+    std::vector<std::optional<ItemOutcome>> early_outcome(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        Entry& e = entries[i];
+        if (auto changed = verify(e.from, e.step->after)) {
+            e.valid = false;
+            early_outcome[i] = std::move(*changed);
+            continue;
+        }
+        const Path to_dir = e.to.parent_path();
+        if (auto err = check_source(ctx, e.from, true, &to_dir)) {
+            e.valid = false;
+            early_outcome[i] = outcome(e.from, ItemStatus::Failed, std::move(err));
+            continue;
+        }
+        if (targets.contains(e.from.native())) {
+            const Fd dir(open_dir_path(e.from.parent_path()));
+            if (!dir.valid()) {
+                e.valid = false;
+                early_outcome[i] =
+                    outcome(e.from, ItemStatus::Failed, errno_error(errno, "open dir", e.from));
+                continue;
+            }
+            std::string tmp = temp_name_for(e.from.filename().native());
+            const int rc =
+                rename_no_overwrite(dir.get(), e.from.filename().native(), dir.get(), tmp, false);
+            if (rc != 0) {
+                e.valid = false;
+                early_outcome[i] =
+                    outcome(e.from, ItemStatus::Failed, errno_error(rc, "stage undo", e.from));
+                continue;
+            }
+            e.staged = true;
+            e.temp_name = std::move(tmp);
+        }
+    }
+
+    // Phase 2: commit each valid entry to `to`.
+    std::vector<UndoStep> next_steps;
+    next_steps.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        Entry& e = entries[i];
+        if (!e.valid) {
+            ctx.finish_item(std::move(*early_outcome[i]));
+            continue;
+        }
+        ctx.set_current(e.from);
+        const Path parent = e.to.parent_path();
+        const Fd dir(open_dir_path(parent));
+        if (!dir.valid()) {
+            ctx.finish_item(
+                outcome(e.from, ItemStatus::Failed, errno_error(errno, "open dir", parent)));
+            continue;
+        }
+        const std::string src_name = e.staged ? e.temp_name : e.from.filename().native();
+        const int rc =
+            rename_no_overwrite(dir.get(), src_name, dir.get(), e.to.filename().native(), false);
+        if (rc != 0) {
+            if (e.staged) {
+                (void)rename_no_overwrite(dir.get(), e.temp_name, dir.get(),
+                                          e.from.filename().native(), false);
+            }
+            ctx.finish_item(outcome(e.from, ItemStatus::Failed, errno_error(rc, "rename", e.from)));
+            continue;
+        }
+        UndoStep ns;
+        ns.kind = OpKind::Rename;
+        ns.before = e.step->before;
+        ns.after = guard_at(e.to);
+        if (is_undo) {
+            // Redo-side step: guard matches the item now at `before`, target path is `after.path`.
+            ns.after.path = e.step->after.path;
+        }
+        next_steps.push_back(std::move(ns));
+        ItemOutcome o = outcome(e.from, ItemStatus::Done);
+        o.destination = e.to;
+        ctx.finish_item(std::move(o));
+    }
+    ctx.add_steps(std::move(next_steps));
+    return ok();
+}
+
 } // namespace
 
 Result<void> run_undo(Context& ctx) {
     const UndoRecord& rec = *ctx.request().record;
+    if (rec.kind == OpKind::BatchRename) {
+        return run_batch_rename_undo_redo(ctx, true);
+    }
     ctx.set_top_level_total(rec.steps.size());
     ctx.add_total(rec.steps.size(), 0);
     ctx.set_totals_final();
@@ -408,6 +541,9 @@ Result<void> run_undo(Context& ctx) {
 
 Result<void> run_redo(Context& ctx) {
     const UndoRecord& rec = *ctx.request().record;
+    if (rec.kind == OpKind::BatchRename) {
+        return run_batch_rename_undo_redo(ctx, false);
+    }
     ctx.set_top_level_total(rec.steps.size());
     ctx.add_total(rec.steps.size(), 0);
     ctx.set_totals_final();

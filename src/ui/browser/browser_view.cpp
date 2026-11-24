@@ -41,7 +41,7 @@ constexpr float kFolderMinRoomDp = 260.0F; // name room needed before Folder get
 
 BrowserView::Layout BrowserView::compute_layout(const BrowserFrame& f) const {
     const Painter& p = f.painter;
-    const DensityMetrics dm = density_metrics(f.density);
+    const DensityMetrics dm = density_metrics(f.density, f.spacing_scale_percent);
     Layout l;
     const RectF b = f.bounds;
     const float w = b.w;
@@ -56,7 +56,10 @@ BrowserView::Layout BrowserView::compute_layout(const BrowserFrame& f) const {
     l.status = RectF{b.x, b.bottom() - status_h, w, status_h};
     l.panel =
         RectF{b.x + margin, y, std::max(w - (2.0F * margin), 0.0F), std::max(l.status.y - y, 0.0F)};
-    l.header = RectF{l.panel.x, l.panel.y, l.panel.w, std::round(p.px(dm.header_height))};
+    const bool has_header = f.model.view_mode() == view::ViewMode::Details ||
+                            f.model.view_mode() == view::ViewMode::Tree;
+    l.header = RectF{l.panel.x, l.panel.y, l.panel.w,
+                     has_header ? std::round(p.px(dm.header_height)) : 0.0F};
     l.body = RectF{l.panel.x, l.header.bottom(), l.panel.w,
                    std::max(l.panel.bottom() - l.header.bottom(), 0.0F)};
     l.pad = std::round(p.px(kListPad));
@@ -66,40 +69,58 @@ BrowserView::Layout BrowserView::compute_layout(const BrowserFrame& f) const {
     const float left = std::round(l.panel.x + inset + p.px(kTextPad));
     const float right = std::round(l.panel.right() - inset - p.px(kTextPad));
     const float gap = std::round(p.px(kColumnGap));
-    l.name_x = left;
-    l.text_x = std::round(left + p.px(metrics::icon_size + kGlyphGap));
+    const float icon_gap_px = std::round(p.px(metrics::icon_size + kGlyphGap));
 
     // Columns degrade gracefully in narrow panes (plan_columns): Type goes first, then
     // Modified shortens, then Size goes; Modified is the last to go. Name always stays.
-    const ColumnPlan plan = plan_columns((right - l.text_x) / p.scale());
+    const ColumnPlan plan = plan_columns((right - (left + icon_gap_px)) / p.scale());
     l.show_size = plan.size;
     l.show_type = plan.type;
     l.show_date = plan.date;
     l.short_date = plan.short_date;
 
-    float edge = right;
-    if (l.show_date) {
-        l.date_r = edge;
-        l.date_x = std::round(edge - p.px(l.short_date ? kShortDateWidthDp : kDateWidth));
-        edge = l.date_x - gap;
-    } else {
-        l.date_x = l.date_r = edge;
+    const float size_w = l.show_size ? std::round(p.px(kSizeWidth)) : 0.0F;
+    const float type_w = l.show_type ? std::round(p.px(kTypeWidth)) : 0.0F;
+    const float date_w =
+        l.show_date ? std::round(p.px(l.short_date ? kShortDateWidthDp : kDateWidth)) : 0.0F;
+    const int vis_meta = (l.show_size ? 1 : 0) + (l.show_type ? 1 : 0) + (l.show_date ? 1 : 0);
+    const float fixed_w = size_w + type_w + date_w + (static_cast<float>(vis_meta) * gap);
+    const float name_w = std::max((right - left) - fixed_w, icon_gap_px + p.px(40.0F));
+
+    // Lay out visible columns left-to-right in the user's configured column order (Phase 9A).
+    float cx = left;
+    const view::ColumnOrder& order = f.model.column_order();
+    for (view::ColumnId col : order) {
+        switch (col) {
+        case view::ColumnId::Name:
+            l.name_x = cx;
+            l.text_x = std::round(cx + icon_gap_px);
+            l.name_r = cx + name_w;
+            cx = l.name_r + gap;
+            break;
+        case view::ColumnId::Size:
+            if (l.show_size) {
+                l.size_x = cx;
+                l.size_r = cx + size_w;
+                cx = l.size_r + gap;
+            }
+            break;
+        case view::ColumnId::Type:
+            if (l.show_type) {
+                l.type_x = cx;
+                l.type_r = cx + type_w;
+                cx = l.type_r + gap;
+            }
+            break;
+        case view::ColumnId::Modified:
+            if (l.show_date) {
+                l.date_x = cx;
+                l.date_r = cx + date_w;
+                cx = l.date_r + gap;
+            }
+            break;
+        }
     }
-    if (l.show_type) {
-        l.type_r = edge;
-        l.type_x = std::round(edge - p.px(kTypeWidth));
-        edge = l.type_x - gap;
-    } else {
-        l.type_x = l.type_r = edge;
-    }
-    if (l.show_size) {
-        l.size_r = edge;
-        l.size_x = std::round(l.size_r - p.px(kSizeWidth));
-        edge = l.size_x - gap;
-    } else {
-        l.size_x = l.size_r = edge + gap;
-    }
-    l.name_r = std::max(edge, l.text_x + p.px(40.0F));
 
     // Phase 5: a flattened view adds the Folder column (relative parent path) next to Name so
     // rows with the same name can be told apart; narrow panes show it after the name instead.
@@ -168,11 +189,27 @@ void BrowserView::update(const BrowserFrame& f) {
     const Layout l = compute_layout(f);
     const BrowserModel& m = f.model;
     const float scale = f.painter.scale();
-    const auto n = static_cast<float>(m.row_count());
-    const float content_dp = (2.0F * l.pad / scale) + (n * (l.row_h / scale));
+    if (m.group_by() != view::GroupBy::None && !m.flattened() &&
+        (m.view_mode() == view::ViewMode::Details || m.view_mode() == view::ViewMode::Icons)) {
+        ensure_grouped_cache(f);
+    }
+    const float content_dp = compute_mode_content_dp(f, l);
     max_scroll_ = std::max(0.0F, content_dp - (l.body.h / scale));
     page_rows_ =
         l.row_h > 0.0F ? std::max<std::size_t>(1, static_cast<std::size_t>(l.body.h / l.row_h)) : 1;
+
+    // Horizontal scroll extent for List/Columns mode.
+    if (m.view_mode() == view::ViewMode::List && l.row_h > 0.0F) {
+        const float pad_px = std::round(f.painter.px(6.0F));
+        const std::size_t rows_per_col = std::max<std::size_t>(
+            1, static_cast<std::size_t>(std::max(l.body.h - (2.0F * pad_px), 0.0F) / l.row_h));
+        const std::size_t total_cols = (m.row_count() + rows_per_col - 1) / rows_per_col;
+        const float total_w_dp = 12.0F + (static_cast<float>(total_cols) * 228.0F);
+        hmax_scroll_ = std::max(0.0F, total_w_dp - (l.body.w / scale));
+    } else {
+        hmax_scroll_ = 0.0F;
+        hscroll_ = htarget_ = 0.0F;
+    }
 
     if (!primed_ || m.location_serial() != seen_location_) {
         primed_ = true;
@@ -196,11 +233,21 @@ void BrowserView::update(const BrowserFrame& f) {
     }
 
     const PointerInput& ptr = f.pointer;
-    if (ptr.wheel_y != 0.0F && contains(l.panel, ptr.x, ptr.y)) {
-        target_ -= ptr.wheel_y * kWheelRows * density_metrics(f.density).row_height;
-        target_ = std::clamp(target_, 0.0F, max_scroll_);
-        if (!f.animations) {
-            scroll_ = target_;
+    if ((ptr.wheel_y != 0.0F || ptr.wheel_x != 0.0F) && !has(ptr.mods, Modifiers::Ctrl) &&
+        contains(l.panel, ptr.x, ptr.y)) {
+        if (m.view_mode() == view::ViewMode::List) {
+            const float delta = ptr.wheel_x != 0.0F ? ptr.wheel_x : -ptr.wheel_y;
+            htarget_ = std::clamp(htarget_ + (delta * 114.0F), 0.0F, hmax_scroll_);
+            if (!f.animations) {
+                hscroll_ = htarget_;
+            }
+        } else if (ptr.wheel_y != 0.0F) {
+            target_ -= ptr.wheel_y * kWheelRows *
+                       density_metrics(f.density, f.spacing_scale_percent).row_height;
+            target_ = std::clamp(target_, 0.0F, max_scroll_);
+            if (!f.animations) {
+                scroll_ = target_;
+            }
         }
     }
 
@@ -264,9 +311,16 @@ void BrowserView::update(const BrowserFrame& f) {
         if (std::abs(target_ - scroll_) < 0.3F) {
             scroll_ = target_;
         }
+        hscroll_ += (htarget_ - hscroll_) * static_cast<float>(k);
+        if (std::abs(htarget_ - hscroll_) < 0.3F) {
+            hscroll_ = htarget_;
+        }
     } else {
         scroll_ = target_;
+        hscroll_ = htarget_;
     }
+    htarget_ = std::clamp(htarget_, 0.0F, hmax_scroll_);
+    hscroll_ = std::clamp(hscroll_, 0.0F, hmax_scroll_);
     clamp_scroll();
 }
 
@@ -288,14 +342,29 @@ void BrowserView::draw(const BrowserFrame& f) {
     const float rad = std::round(f.painter.px(radius::lg - 2.0F));
     const float hair = std::max(1.0F, std::round(f.painter.px(1.0F)));
     r.fill_rounded_rect(l.panel, rad, f.palette.surface);
-    draw_header(f, l);
+    if (l.header.h > 0.0F) {
+        draw_header(f, l);
+    }
+    // Phase 9A: Ctrl+wheel zooms along the Details <-> Icons axis.
+    if (f.pointer.wheel_y != 0.0F && has(f.pointer.mods, Modifiers::Ctrl) &&
+        contains(l.panel, f.pointer.x, f.pointer.y)) {
+        Intent zi;
+        zi.kind = Intent::Kind::StepZoom;
+        zi.position = f.pointer.wheel_y > 0.0F ? 1.0 : -1.0;
+        f.intents.push_back(std::move(zi));
+    }
     if (f.slots != nullptr && f.model.loaded() && !f.model.current_dir().empty() &&
         !f.model.flattened()) {
         f.slots->push_back(DropSlot{l.panel, f.model.current_dir(), SlotKind::Pane, f.tab,
                                     display_name(f.model.current_dir().filename().string())});
     }
 
-    handle_list_pointer(f, l);
+    const view::ViewMode mode = f.model.view_mode();
+    const bool grouped_details = mode == view::ViewMode::Details &&
+                                 f.model.group_by() != view::GroupBy::None && !f.model.flattened();
+    if (mode == view::ViewMode::Details && !grouped_details) {
+        handle_list_pointer(f, l);
+    }
     // Rows scroll under the header and stop one list pad above the card's bottom edge.
     r.set_clip(RectF{l.body.x + hair, l.body.y, l.body.w - (2.0F * hair),
                      std::max(l.body.h - l.pad, 0.0F)});
@@ -308,6 +377,14 @@ void BrowserView::draw(const BrowserFrame& f) {
         } else {
             draw_empty_state(f, l);
         }
+    } else if (mode == view::ViewMode::Icons) {
+        draw_icons_view(f, l);
+    } else if (mode == view::ViewMode::List) {
+        draw_list_view(f, l);
+    } else if (mode == view::ViewMode::Tree) {
+        draw_tree_view(f, l);
+    } else if (grouped_details) {
+        draw_grouped_details(f, l);
     } else {
         draw_rows(f, l);
         draw_band(f, l);
@@ -346,22 +423,36 @@ void BrowserView::draw_header(const BrowserFrame& f, const Layout& l) {
     struct Column {
         std::string_view key;
         fs::SortKey sort;
+        view::ColumnId col_id;
         float x0;
         float x1;
         bool right;
     };
     const float gap = std::round(p.px(kColumnGap));
-    std::vector<Column> cols{
-        {"column.name", fs::SortKey::Name, l.name_x, l.name_r, false},
-    };
-    if (l.show_size) {
-        cols.push_back({"column.size", fs::SortKey::Size, l.size_x, l.size_r, true});
-    }
-    if (l.show_type) {
-        cols.push_back({"column.type", fs::SortKey::Extension, l.type_x, l.type_r, false});
-    }
-    if (l.show_date) {
-        cols.push_back({"column.modified", fs::SortKey::Modified, l.date_x, l.date_r, false});
+    std::vector<Column> cols;
+    for (view::ColumnId cid : f.model.column_order()) {
+        switch (cid) {
+        case view::ColumnId::Name:
+            cols.push_back({"column.name", fs::SortKey::Name, cid, l.name_x, l.name_r, false});
+            break;
+        case view::ColumnId::Size:
+            if (l.show_size) {
+                cols.push_back({"column.size", fs::SortKey::Size, cid, l.size_x, l.size_r, true});
+            }
+            break;
+        case view::ColumnId::Type:
+            if (l.show_type) {
+                cols.push_back(
+                    {"column.type", fs::SortKey::Extension, cid, l.type_x, l.type_r, false});
+            }
+            break;
+        case view::ColumnId::Modified:
+            if (l.show_date) {
+                cols.push_back(
+                    {"column.modified", fs::SortKey::Modified, cid, l.date_x, l.date_r, false});
+            }
+            break;
+        }
     }
     if (l.show_folder) {
         // Not sortable: drawn as a label only (the flattened order ties on it).
@@ -385,13 +476,39 @@ void BrowserView::draw_header(const BrowserFrame& f, const Layout& l) {
         if (ptr.pressed && hover) {
             active_ = WidgetId::Header;
             active_index_ = i;
+            drag_col_from_ = col_index_of(f, c.col_id);
+            drag_col_to_ = drag_col_from_;
+            drag_col_start_x_ = ptr.x;
+            col_dragging_ = false;
         }
         const bool pressed = active_ == WidgetId::Header && active_index_ == i;
-        if (pressed && ptr.released && contains(cell, ptr.x, ptr.y)) {
-            Intent in;
-            in.kind = Intent::Kind::SortBy;
-            in.sort_key = c.sort;
-            f.intents.push_back(in);
+        if (pressed && ptr.down && std::abs(ptr.x - drag_col_start_x_) > p.px(6.0F)) {
+            col_dragging_ = true;
+        }
+        if (col_dragging_ && active_ == WidgetId::Header && ptr.x >= cell.x &&
+            ptr.x <= cell.right()) {
+            drag_col_to_ = col_index_of(f, c.col_id);
+        }
+        if (pressed && ptr.released) {
+            if (col_dragging_ && drag_col_from_ != drag_col_to_) {
+                Intent in;
+                in.kind = Intent::Kind::ReorderColumn;
+                in.row = drag_col_from_;
+                in.row_last = drag_col_to_;
+                f.intents.push_back(in);
+            } else if (!col_dragging_ && contains(cell, ptr.x, ptr.y)) {
+                Intent in;
+                in.kind = Intent::Kind::SortBy;
+                in.sort_key = c.sort;
+                f.intents.push_back(in);
+            }
+            col_dragging_ = false;
+        }
+        if (col_dragging_ && active_ == WidgetId::Header &&
+            drag_col_to_ == col_index_of(f, c.col_id) && drag_col_from_ != drag_col_to_) {
+            r.fill_rect(RectF{cell.x, l.header.y + p.px(4.0F), std::max(2.0F, p.px(2.0F)),
+                              l.header.h - p.px(8.0F)},
+                        pal.accent);
         }
         if (hover || pressed) {
             r.fill_rounded_rect(snap(cell), p.px(radius::sm),
@@ -645,7 +762,7 @@ void BrowserView::draw_rows(const BrowserFrame& f, const Layout& l) {
     // 1. Alternating stripes and hover.
     for (std::size_t i = first; i <= last; ++i) {
         const RectF row = snap(RectF{rx, row_y(i), rw, l.row_h});
-        if (i % 2 == 1) {
+        if (f.alternating_rows && i % 2 == 1) {
             r.fill_rounded_rect(row, rad, pal.row_alt);
         }
         if (i == hover && !m.is_selected(i)) {

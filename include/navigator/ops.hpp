@@ -154,10 +154,12 @@ enum class OpKind : std::uint8_t {
     DeletePermanently = 7, // sources and/or `trashed` items, removed for good (S1a, S3)
     Undo = 8,              // run the inverse of `record` (S12)
     Redo = 9,              // run `record` again
+    BatchRename = 10,      // Phase 9B: sources[i] -> same folder, new_names[i] (staged for swaps)
 };
 
 // Stable lowercase identifier for logs and tests ("copy", "move", "rename", "make_directory",
-// "create_symlink", "trash", "restore", "delete_permanently", "undo", "redo"). Pure.
+// "create_symlink", "trash", "restore", "delete_permanently", "undo", "redo", "batch_rename").
+// Pure.
 [[nodiscard]] constexpr std::string_view to_string(OpKind kind) noexcept {
     switch (kind) {
     case OpKind::Copy: return "copy";
@@ -170,6 +172,7 @@ enum class OpKind : std::uint8_t {
     case OpKind::DeletePermanently: return "delete_permanently";
     case OpKind::Undo: return "undo";
     case OpKind::Redo: return "redo";
+    case OpKind::BatchRename: return "batch_rename";
     }
     return "copy";
 }
@@ -280,6 +283,9 @@ struct OpRequest {
     Path destination;
     // Rename: the new name in the same folder. MakeDirectory: the folder name. Others: unused.
     std::string new_name;
+    // BatchRename (Phase 9B): parallel to `sources`; sources[i] is renamed to new_names[i] in its
+    // own parent folder. Two-phase staging handles swaps/cycles atomically.
+    std::vector<std::string> new_names;
     // Restore and DeletePermanently (Trash view, trash.empty): items from ITrash::list().
     std::vector<trash::TrashedItem> trashed;
     // Undo / Redo: the record to invert / repeat (from UndoStack).

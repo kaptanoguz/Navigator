@@ -64,10 +64,13 @@
 #include <navigator/platform.hpp>
 #include <navigator/search.hpp>
 #include <navigator/types.hpp>
+#include <navigator/view_settings.hpp>
 #include <navigator/walk.hpp>
 #include <navigator/watch.hpp>
 
 #include "browser/listing_worker.hpp"
+#include "browser/tree_model.hpp"
+#include "browser/view_rows.hpp"
 #include "browser/watch_worker.hpp"
 #include "search/flatten_walk.hpp"
 #include "search/organize.hpp"
@@ -352,6 +355,46 @@ public:
     // Scroll offset (dp) to restore after the last location change (Back/Forward).
     [[nodiscard]] float restored_scroll() const noexcept { return restored_scroll_; }
 
+    // ---- Phase 9A (views, zoom, grouping, columns, tree, hierarchical lock) ------------------
+    [[nodiscard]] view::ViewSettings view_settings() const noexcept;
+    [[nodiscard]] view::ViewMode view_mode() const noexcept { return view_mode_; }
+    [[nodiscard]] int zoom_percent() const noexcept { return zoom_percent_; }
+    [[nodiscard]] view::GroupBy group_by() const noexcept { return group_by_; }
+    [[nodiscard]] const view::ColumnOrder& column_order() const noexcept { return column_order_; }
+    [[nodiscard]] view::ViewScope view_scope() const noexcept { return view_scope_; }
+    [[nodiscard]] const Path& view_rule_path() const noexcept { return view_rule_path_; }
+
+    // Applies resolved hierarchical settings (mode, zoom, group_by, columns, sort, show_hidden)
+    // and records the governing lock scope. Re-lists if sort or show_hidden changed.
+    void apply_view_settings(const view::ViewSettings& raw, view::ViewScope scope, Path rule_path);
+    void set_view_mode(view::ViewMode mode);
+    void set_zoom_percent(int percent);
+    void step_zoom(int delta_steps);
+    void set_group_by(view::GroupBy group);
+    void reorder_column(std::size_t from, std::size_t to);
+    void set_view_scope(view::ViewScope scope, Path rule_path) noexcept;
+
+    void toggle_group_collapsed(std::uint8_t bucket);
+    [[nodiscard]] bool is_group_collapsed(std::uint8_t bucket) const {
+        return collapsed_groups_.contains(bucket);
+    }
+    [[nodiscard]] const std::unordered_set<std::uint8_t>& collapsed_groups() const noexcept {
+        return collapsed_groups_;
+    }
+
+    // Virtualized Tree view state (preserved across mode switches on the same folder).
+    [[nodiscard]] const std::vector<TreeRow>& tree_rows() const noexcept { return tree_.rows(); }
+    [[nodiscard]] std::size_t tree_cursor() const noexcept { return tree_cursor_; }
+    void set_tree_cursor(std::size_t idx);
+    void tree_toggle(const Path& dir);
+    void tree_expand_cursor();
+    void tree_collapse_cursor();
+    void tree_collapse_all();
+    [[nodiscard]] bool tree_busy() const noexcept { return tree_.busy(); }
+    [[nodiscard]] bool wait_tree_idle(std::chrono::milliseconds timeout) {
+        return tree_.wait_idle(timeout);
+    }
+
 private:
     enum class NavKind : std::uint8_t { Start, Push, Back, Forward, Up, Refresh, Relist };
     struct Pending {
@@ -483,6 +526,7 @@ private:
     std::uint64_t content_serial_ = 0;
 
     // ---- Phase 5 ------------------------------------------------------------------------------
+    // (existing Phase 5 private members below)
     TextEdit filter_{search::kMaxQueryBytes};
     search::MatchMode list_mode_ = search::MatchMode::Substring;
     search::Query query_;     // the filter text compiled for the LISTING (list_mode_)
@@ -512,6 +556,19 @@ private:
     mutable std::vector<search::TypeCount> type_rows_;
     mutable std::uint64_t type_rows_key_ = 0;
     mutable bool type_rows_valid_ = false;
+
+    // ---- Phase 9A (views, grouping, tree, hierarchical settings) ------------------------------
+    view::ViewMode view_mode_ = view::ViewMode::Details;
+    int zoom_percent_ = view::kDefaultZoomPercent;
+    view::GroupBy group_by_ = view::GroupBy::None;
+    view::ColumnOrder column_order_ = view::kDefaultColumnOrder;
+    view::ViewScope view_scope_ = view::ViewScope::Global;
+    Path view_rule_path_;
+    std::unordered_set<std::uint8_t> collapsed_groups_;
+    TreeModel tree_;
+    std::size_t tree_cursor_ = kNoRow;
+    Path tree_root_dir_;
+    void rebuild_tree();
 };
 
 // The flattened view's state (UI thread). Defined here so both browser_model*.cpp see it.

@@ -31,9 +31,10 @@ Path normalize(const Path& dir) {
 
 } // namespace
 
-BrowserModel::BrowserModel(Options options) : options_(std::move(options)) {
+BrowserModel::BrowserModel(Options options) : options_(std::move(options)), tree_(options_.wake) {
     if (options_.start_suspended) {
         suspended_ = true;
+        tree_.suspend();
     } else {
         start_workers();
     }
@@ -82,6 +83,7 @@ void BrowserModel::suspend() {
         flat_->query_due.reset();
     }
     worker_.reset();
+    tree_.suspend();
     if (listing_job_out_) {
         listing_job_out_ = false;
         ++listing_job_; // the lost result is re-requested by the next commit (resume re-lists)
@@ -94,6 +96,7 @@ void BrowserModel::resume() {
         return;
     }
     suspended_ = false;
+    tree_.resume();
     start_workers();
     if (deferred_) {
         Deferred d = std::move(*deferred_);
@@ -156,6 +159,12 @@ void BrowserModel::copy_from(const BrowserModel& other) {
     // text and the flattened view are runtime-only and do not (tab.duplicate opens unfiltered).
     types_ = other.types_;
     list_mode_ = other.list_mode_;
+    view_mode_ = other.view_mode_;
+    zoom_percent_ = other.zoom_percent_;
+    group_by_ = other.group_by_;
+    column_order_ = other.column_order_;
+    view_scope_ = other.view_scope_;
+    view_rule_path_ = other.view_rule_path_;
     ++listing_version_;
     compile_query();
     {
@@ -254,6 +263,13 @@ bool BrowserModel::frame_start() {
         return false; // suspended
     }
     changed = apply_search_results() || changed;
+    if (tree_.poll()) {
+        if (view_mode_ == view::ViewMode::Tree) {
+            rebuild_tree();
+        }
+        ++content_serial_;
+        changed = true;
+    }
     for (ListingResult& result : lister_->take()) {
         if (!pending_ || result.generation != pending_->generation) {
             continue; // stale
@@ -560,6 +576,12 @@ void BrowserModel::commit(Pending& pending, ListingResult& result) {
     }
 
     current_.dir = pending.target.dir;
+    if (current_.dir != tree_root_dir_) {
+        tree_.reset();
+        tree_cursor_ = kNoRow;
+        collapsed_groups_.clear();
+        tree_root_dir_ = current_.dir;
+    }
     entries_ = std::move(*result.entries);
     ++listing_version_;
     hidden_names_.clear();
@@ -653,6 +675,9 @@ void BrowserModel::commit(Pending& pending, ListingResult& result) {
         anchor_ = kNoRow;
     }
     recount();
+    if (view_mode_ == view::ViewMode::Tree) {
+        rebuild_tree();
+    }
     ++content_serial_;
     ++cursor_serial_;
 }
@@ -1142,7 +1167,37 @@ bool BrowserModel::execute(const Command& command) {
     case CommandId::ResetKeymap:
     case CommandId::ExportKeymap:
     case CommandId::ShowContextMenu:
-    case CommandId::OpenWith: return false;
+    case CommandId::OpenWith:
+    // Phase 9A: view/zoom/group/lock commands are handled at shell level so ViewSettingsStore
+    // persists them; tree commands run directly on this model.
+    case CommandId::ViewModeDetails:
+    case CommandId::ViewModeIcons:
+    case CommandId::ViewModeList:
+    case CommandId::ViewModeTree:
+    case CommandId::ViewCycleMode:
+    case CommandId::ViewZoomIn:
+    case CommandId::ViewZoomOut:
+    case CommandId::ViewZoomReset:
+    case CommandId::GroupByNone:
+    case CommandId::GroupByDate:
+    case CommandId::GroupByType:
+    case CommandId::GroupBySize:
+    case CommandId::GroupCycle:
+    case CommandId::ViewLockFolder:
+    case CommandId::ViewLockHierarchy:
+    case CommandId::ViewLockGlobal:
+    // Phase 9B: batch rename and appearance commands are handled at shell level.
+    case CommandId::BatchRename:
+    case CommandId::ToggleAnimations:
+    case CommandId::ToggleAlternatingRows:
+    case CommandId::CycleDensity:
+    case CommandId::FontSizeIncrease:
+    case CommandId::FontSizeDecrease:
+    case CommandId::FontSizeReset:
+    case CommandId::OpenAppearanceSettings: return false;
+    case CommandId::TreeExpand: tree_expand_cursor(); return true;
+    case CommandId::TreeCollapse: tree_collapse_cursor(); return true;
+    case CommandId::TreeCollapseAll: tree_collapse_all(); return true;
     }
     return false;
 }
@@ -1428,6 +1483,230 @@ bool BrowserModel::apply_watch_batch(const WatchBatch& batch) {
         changed = true;
     }
     return changed;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Phase 9A: view modes, zoom, grouping, column order, tree, hierarchical view lock
+// ---------------------------------------------------------------------------------------------
+
+view::ViewSettings BrowserModel::view_settings() const noexcept {
+    view::ViewSettings s;
+    s.mode = view_mode_;
+    s.zoom_percent = zoom_percent_;
+    s.group_by = group_by_;
+    s.sort = sort_;
+    s.show_hidden = show_hidden_;
+    s.columns = column_order_;
+    return s;
+}
+
+void BrowserModel::rebuild_tree() {
+    auto entry_fn = [](const void* ctx, std::size_t row) -> const fs::DirEntry* {
+        const auto* self = static_cast<const BrowserModel*>(ctx);
+        if (row >= self->row_count()) {
+            return nullptr;
+        }
+        return &self->row_entry(row);
+    };
+    const Path prev_path =
+        tree_cursor_ < tree_.rows().size() ? tree_.rows()[tree_cursor_].full_path : Path{};
+    tree_.rebuild(current_.dir, row_count(), entry_fn, this, sort_, show_hidden_);
+    const auto& tr = tree_.rows();
+    if (tr.empty()) {
+        tree_cursor_ = kNoRow;
+        return;
+    }
+    if (!prev_path.empty()) {
+        if (const std::size_t idx = tree_.find_path(prev_path); idx != kTreeNoRootRow) {
+            tree_cursor_ = idx;
+            return;
+        }
+    }
+    if (cursor_ < row_count()) {
+        const Path cur_path = current_.dir / row_entry(cursor_).name;
+        if (const std::size_t idx = tree_.find_path(cur_path); idx != kTreeNoRootRow) {
+            tree_cursor_ = idx;
+            return;
+        }
+    }
+    tree_cursor_ = std::min(tree_cursor_ == kNoRow ? std::size_t{0} : tree_cursor_, tr.size() - 1);
+}
+
+void BrowserModel::apply_view_settings(const view::ViewSettings& raw, view::ViewScope scope,
+                                       Path rule_path) {
+    const view::ViewSettings s = view::normalize(raw);
+    const bool sort_changed = s.sort != sort_;
+    const bool hidden_changed = s.show_hidden != show_hidden_;
+    const bool group_changed = s.group_by != group_by_;
+    view_mode_ = s.mode;
+    zoom_percent_ = s.zoom_percent;
+    group_by_ = s.group_by;
+    column_order_ = s.columns;
+    view_scope_ = scope;
+    view_rule_path_ = std::move(rule_path);
+    if (group_changed) {
+        collapsed_groups_.clear();
+    }
+    if (sort_changed) {
+        sort_ = s.sort;
+        tree_.resort_cached(sort_);
+    }
+    if (hidden_changed) {
+        show_hidden_ = s.show_hidden;
+        tree_.reload_expanded(sort_, show_hidden_);
+    }
+    if ((sort_changed || hidden_changed) && loaded_) {
+        request(NavKind::Relist, here());
+    }
+    if (view_mode_ == view::ViewMode::Tree) {
+        rebuild_tree();
+    }
+    ++content_serial_;
+}
+
+void BrowserModel::set_view_mode(view::ViewMode mode) {
+    if (view_mode_ == mode) {
+        return;
+    }
+    view_mode_ = mode;
+    if (view_mode_ == view::ViewMode::Tree) {
+        rebuild_tree();
+    } else if (tree_cursor_ < tree_.rows().size()) {
+        // Carry cursor back to the corresponding depth-0 row when leaving Tree.
+        std::size_t idx = tree_cursor_;
+        while (idx != kTreeNoRootRow && idx < tree_.rows().size() &&
+               tree_.rows()[idx].root_row == kTreeNoRootRow) {
+            idx = tree_.rows()[idx].parent_index;
+        }
+        if (idx != kTreeNoRootRow && idx < tree_.rows().size()) {
+            const std::size_t r = tree_.rows()[idx].root_row;
+            if (r < row_count()) {
+                cursor_ = r;
+                ++cursor_serial_;
+            }
+        }
+    }
+    ++content_serial_;
+}
+
+void BrowserModel::set_zoom_percent(int percent) {
+    const int clamped = view::clamp_zoom(percent);
+    if (zoom_percent_ == clamped) {
+        return;
+    }
+    zoom_percent_ = clamped;
+    ++content_serial_;
+}
+
+void BrowserModel::step_zoom(int delta_steps) {
+    const auto [next_mode, next_zoom] = view::step_zoom(view_mode_, zoom_percent_, delta_steps);
+    const bool changed = next_mode != view_mode_ || next_zoom != zoom_percent_;
+    zoom_percent_ = next_zoom;
+    if (next_mode != view_mode_) {
+        set_view_mode(next_mode);
+    } else if (changed) {
+        ++content_serial_;
+    }
+}
+
+void BrowserModel::set_group_by(view::GroupBy group) {
+    if (group_by_ == group) {
+        return;
+    }
+    group_by_ = group;
+    collapsed_groups_.clear();
+    ++content_serial_;
+}
+
+void BrowserModel::reorder_column(std::size_t from, std::size_t to) {
+    const view::ColumnOrder next = view::reorder_column(column_order_, from, to);
+    if (next == column_order_) {
+        return;
+    }
+    column_order_ = next;
+    ++content_serial_;
+}
+
+void BrowserModel::set_view_scope(view::ViewScope scope, Path rule_path) noexcept {
+    view_scope_ = scope;
+    view_rule_path_ = std::move(rule_path);
+}
+
+void BrowserModel::toggle_group_collapsed(std::uint8_t bucket) {
+    if (collapsed_groups_.contains(bucket)) {
+        collapsed_groups_.erase(bucket);
+    } else {
+        collapsed_groups_.insert(bucket);
+    }
+    ++content_serial_;
+}
+
+void BrowserModel::set_tree_cursor(std::size_t idx) {
+    const auto& tr = tree_.rows();
+    if (tr.empty()) {
+        tree_cursor_ = kNoRow;
+        return;
+    }
+    tree_cursor_ = std::min(idx, tr.size() - 1);
+    if (tr[tree_cursor_].root_row != kTreeNoRootRow && tr[tree_cursor_].root_row < row_count()) {
+        cursor_ = tr[tree_cursor_].root_row;
+    }
+    ++cursor_serial_;
+}
+
+void BrowserModel::tree_toggle(const Path& dir) {
+    if (tree_.toggle(dir, sort_, show_hidden_)) {
+        rebuild_tree();
+        ++content_serial_;
+    }
+}
+
+void BrowserModel::tree_expand_cursor() {
+    if (view_mode_ != view::ViewMode::Tree) {
+        return;
+    }
+    const auto& tr = tree_.rows();
+    if (tree_cursor_ >= tr.size()) {
+        return;
+    }
+    const TreeRow& row = tr[tree_cursor_];
+    if (!row.expandable) {
+        return;
+    }
+    if (!row.expanded) {
+        if (tree_.expand(row.full_path, sort_, show_hidden_)) {
+            rebuild_tree();
+            ++content_serial_;
+        }
+    } else if (tree_cursor_ + 1 < tr.size() && tr[tree_cursor_ + 1].parent_index == tree_cursor_) {
+        set_tree_cursor(tree_cursor_ + 1);
+    }
+}
+
+void BrowserModel::tree_collapse_cursor() {
+    if (view_mode_ != view::ViewMode::Tree) {
+        return;
+    }
+    const auto& tr = tree_.rows();
+    if (tree_cursor_ >= tr.size()) {
+        return;
+    }
+    const TreeRow& row = tr[tree_cursor_];
+    if (row.expanded) {
+        if (tree_.collapse(row.full_path)) {
+            rebuild_tree();
+            ++content_serial_;
+        }
+    } else if (row.parent_index != kTreeNoRootRow && row.parent_index < tr.size()) {
+        set_tree_cursor(row.parent_index);
+    }
+}
+
+void BrowserModel::tree_collapse_all() {
+    if (tree_.collapse_all()) {
+        rebuild_tree();
+        ++content_serial_;
+    }
 }
 
 } // namespace navigator::ui

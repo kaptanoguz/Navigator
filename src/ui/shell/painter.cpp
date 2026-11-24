@@ -7,7 +7,12 @@
 namespace navigator::ui {
 
 ShapedText Painter::shape(const TextStyle& style, std::string_view utf8) const {
-    return ShapedText{fonts_->shape(style, scale_, utf8, language_)};
+    if (font_scale_ == 1.0F) {
+        return ShapedText{fonts_->shape(style, scale_, utf8, language_)};
+    }
+    TextStyle scaled = style;
+    scaled.size = std::max(8.0F, style.size * font_scale_);
+    return ShapedText{fonts_->shape(scaled, scale_, utf8, language_)};
 }
 
 void Painter::draw(const ShapedText& text, float x, float baseline, const Color& color) const {

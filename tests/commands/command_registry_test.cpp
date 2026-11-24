@@ -25,7 +25,7 @@ constexpr auto kTestB = static_cast<CommandId>(901);
 // OpenInNewTab, 10 tab, 5 pane, 3 layout, 1 window; Phase 4: 2 view, GoTo, 1 sidebar,
 // 4 bookmarks, 2 recents, 1 edit; Phase 5: 2 list filter, 6 search; Phase 6: view.inspect,
 // 7 inspector; Phase 7: 5 edit, 7 file, 3 ops, 3 trash.
-constexpr std::size_t kBuiltinCount = 18 + 20 + 11 + 8 + 8 + 18 + 8;
+constexpr std::size_t kBuiltinCount = 18 + 20 + 11 + 8 + 8 + 18 + 8 + 19 + 8;
 
 struct Expected {
     CommandId id;

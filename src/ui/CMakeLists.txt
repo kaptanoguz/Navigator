@@ -18,6 +18,8 @@ add_library(navigator_ui_browser STATIC
     browser/browser_model_search.cpp
     browser/format.cpp
     browser/listing_worker.cpp
+    browser/tree_model.cpp
+    browser/view_rows.cpp
     browser/watch_worker.cpp
     dnd/file_drag.cpp
     i18n/i18n.cpp
@@ -77,12 +79,14 @@ endif()
 
 add_library(navigator_ui STATIC
     browser/browser_chrome.cpp
+    browser/browser_modes_view.cpp
     browser/browser_search_view.cpp
     browser/browser_view.cpp
     input/sdl_input.cpp
     keymap/keymap_editor_view.cpp
     menu/context_menu_view.cpp
     menu/openwith_popup.cpp
+    ops/batch_rename_view.cpp
     ops/ops_view.cpp
     palette/palette_view.cpp
     platform/outgoing_drag.cpp
@@ -94,6 +98,7 @@ add_library(navigator_ui STATIC
     inspector/texture_cache.cpp
     render/backend_name.cpp
     render/renderer.cpp
+    settings/appearance_page.cpp
     shell/app.cpp
     shell/background.cpp
     shell/debug_volumes.cpp

@@ -2,6 +2,7 @@
 # temp_directory_path()/navigator-test-<random> directory (temp_dir.hpp) and removes it.
 
 add_executable(navigator_core_tests
+    appearance_test.cpp
     fold_into_test.cpp
     layout_files_test.cpp
     layout_json_test.cpp
@@ -14,6 +15,7 @@ add_executable(navigator_core_tests
     places_json_test.cpp
     places_test.cpp
     sort_test.cpp
+    view_settings_test.cpp
     walk_test.cpp
 )
 target_link_libraries(navigator_core_tests

@@ -200,6 +200,7 @@ UndoLabel make_label(const UndoRecord& record) {
     case OpKind::Copy: label.key = "undo.label.copy"; break;
     case OpKind::Move: label.key = "undo.label.move"; break;
     case OpKind::Rename: label.key = "undo.label.rename"; break;
+    case OpKind::BatchRename: label.key = "undo.label.batch_rename"; break;
     case OpKind::MakeDirectory: label.key = "undo.label.make_directory"; break;
     case OpKind::CreateSymlink: label.key = "undo.label.create_symlink"; break;
     case OpKind::Trash: label.key = "undo.label.trash"; break;

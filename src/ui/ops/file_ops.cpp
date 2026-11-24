@@ -438,6 +438,15 @@ void FileOps::new_folder(const FileTarget& target) {
     submit(std::move(r), m);
 }
 
+void FileOps::submit_batch_rename(ops::OpRequest request) {
+    if (request.kind != ops::OpKind::BatchRename || request.sources.empty()) {
+        return;
+    }
+    Meta m;
+    m.folder = request.sources.front().parent_path();
+    submit(std::move(request), m);
+}
+
 void FileOps::undo() {
     if (!queue_) {
         return;

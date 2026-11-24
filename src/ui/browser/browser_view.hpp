@@ -80,7 +80,9 @@ struct BrowserFrame {
     bool pane_active = true;
     bool marked = false;
     bool animations = true;
+    bool alternating_rows = true;
     Density density = Density::Compact;
+    int spacing_scale_percent = 100;
     double dt_ms = 16.0;        // since the previous frame
     Timestamp now{};            // for "Today"/"Yesterday"
     const Path* home = nullptr; // breadcrumb "Home" root (may be null)
@@ -214,6 +216,18 @@ private:
     float draw_key_hint(const BrowserFrame& f, std::string_view command, std::string_view label,
                         float center_x, float center_y, bool measure_only);
 
+    // Phase 9A (browser_modes_view.cpp).
+    void ensure_grouped_cache(const BrowserFrame& f);
+    void draw_view_lock_button(const BrowserFrame& f, const RectF& rect);
+    float draw_view_footer_controls(const BrowserFrame& f, const Layout& l, float right_edge);
+    void draw_grouped_details(const BrowserFrame& f, const Layout& l);
+    void draw_icons_view(const BrowserFrame& f, const Layout& l);
+    void draw_list_view(const BrowserFrame& f, const Layout& l);
+    void draw_tree_view(const BrowserFrame& f, const Layout& l);
+    [[nodiscard]] float compute_mode_content_dp(const BrowserFrame& f, const Layout& l) const;
+    [[nodiscard]] std::size_t col_index_of(const BrowserFrame& f,
+                                           view::ColumnId col) const noexcept;
+
     // Scroll state (dp).
     float scroll_ = 0.0F;
     float target_ = 0.0F;
@@ -266,6 +280,19 @@ private:
     std::uint64_t hl_gen_ = ~std::uint64_t{0};
     search::Matcher hl_matcher_;
     std::unordered_map<std::string, std::vector<search::HighlightRange>> hl_cache_;
+
+    // Phase 9A: grouped display cache, horizontal scroll (List mode), column drag.
+    GroupedRows grouped_cache_;
+    std::uint64_t grouped_serial_ = 0;
+    view::GroupBy grouped_by_ = view::GroupBy::None;
+    std::size_t grouped_rows_n_ = 0;
+    float hscroll_ = 0.0F;
+    float htarget_ = 0.0F;
+    float hmax_scroll_ = 0.0F;
+    std::size_t drag_col_from_ = static_cast<std::size_t>(-1);
+    std::size_t drag_col_to_ = static_cast<std::size_t>(-1);
+    float drag_col_start_x_ = 0.0F;
+    bool col_dragging_ = false;
 };
 
 } // namespace navigator::ui

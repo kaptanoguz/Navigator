@@ -6,6 +6,7 @@
 #include <optional>
 #include <ranges>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -30,12 +31,12 @@ namespace {
 
 [[nodiscard]] bool needs_sources(OpKind k) noexcept {
     return k == OpKind::Copy || k == OpKind::Move || k == OpKind::Rename ||
-           k == OpKind::CreateSymlink || k == OpKind::Trash;
+           k == OpKind::BatchRename || k == OpKind::CreateSymlink || k == OpKind::Trash;
 }
 
 [[nodiscard]] bool protects_sources(OpKind k) noexcept {
-    return k == OpKind::Move || k == OpKind::Rename || k == OpKind::Trash ||
-           k == OpKind::DeletePermanently;
+    return k == OpKind::Move || k == OpKind::Rename || k == OpKind::BatchRename ||
+           k == OpKind::Trash || k == OpKind::DeletePermanently;
 }
 
 [[nodiscard]] std::vector<Path> dedup(const std::vector<Path>& in) {
@@ -109,6 +110,27 @@ Result<void> validate_request(const OpRequest& request, const ProtectedPaths& pr
     if (r.kind == OpKind::Rename && r.sources.size() != 1) {
         return invalid("rename takes exactly one source");
     }
+    if (r.kind == OpKind::BatchRename) {
+        if (r.sources.size() != r.new_names.size()) {
+            return invalid("batch rename requires one new name per source");
+        }
+        std::unordered_set<std::string> seen_src;
+        std::unordered_set<std::string> seen_dst;
+        seen_src.reserve(r.sources.size());
+        seen_dst.reserve(r.sources.size());
+        for (std::size_t i = 0; i < r.sources.size(); ++i) {
+            if (validate_new_name(r.new_names[i]) != NameError::None) {
+                return invalid("invalid new name in batch rename");
+            }
+            if (!seen_src.insert(r.sources[i].native()).second) {
+                return invalid("duplicate source in batch rename");
+            }
+            const Path dst = r.sources[i].parent_path() / r.new_names[i];
+            if (!seen_dst.insert(dst.native()).second) {
+                return invalid("duplicate target in batch rename");
+            }
+        }
+    }
     if (r.kind == OpKind::Restore && r.trashed.empty()) {
         return invalid("no trashed items");
     }
@@ -170,6 +192,11 @@ std::vector<Path> request_paths(const OpRequest& r) {
     case OpKind::Rename:
         if (!r.sources.empty()) {
             out.push_back(r.sources.front().parent_path() / r.new_name);
+        }
+        break;
+    case OpKind::BatchRename:
+        for (std::size_t i = 0; i < r.sources.size() && i < r.new_names.size(); ++i) {
+            out.push_back(r.sources[i].parent_path() / r.new_names[i]);
         }
         break;
     case OpKind::Trash:
@@ -472,6 +499,196 @@ Result<void> run_rename(Context& ctx) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// BatchRename (Phase 9B): two-phase staging handles swaps/cycles (e.g. a->b, b->a) atomically.
+// ---------------------------------------------------------------------------------------------
+
+Result<void> run_batch_rename(Context& ctx) {
+    const OpRequest& r = ctx.request();
+    const std::size_t n = r.sources.size();
+    ctx.set_top_level_total(n);
+    ctx.add_total(n, 0);
+    ctx.set_totals_final();
+    PhaseScope working(ctx, OpPhase::Working);
+
+    std::vector<Path> targets;
+    targets.reserve(n);
+    std::unordered_set<std::string> active_sources;
+    std::unordered_set<std::string> active_targets;
+    active_sources.reserve(n);
+    active_targets.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const Path parent = r.sources[i].parent_path();
+        ctx.add_touched(parent);
+        Path dst = parent / r.new_names[i];
+        if (dst != r.sources[i]) {
+            active_sources.insert(r.sources[i].native());
+            active_targets.insert(dst.native());
+        }
+        targets.push_back(std::move(dst));
+    }
+
+    if (r.options.dry_run) {
+        for (std::size_t i = 0; i < n; ++i) {
+            ItemOutcome o;
+            o.source = r.sources[i];
+            o.destination = targets[i];
+            if (r.sources[i] == targets[i]) {
+                o.status = ItemStatus::Skipped;
+            } else {
+                struct stat st {};
+                if (lstat_path(targets[i], st) == 0 &&
+                    !active_sources.contains(targets[i].native())) {
+                    o.status = ItemStatus::Conflict;
+                }
+            }
+            ctx.finish_item(std::move(o));
+        }
+        return ok();
+    }
+
+    // Phase 1: stage any item whose source path is another item's target path.
+    struct Staged {
+        bool needed = false;
+        bool staged = false;
+        Path temp_path;
+        std::string temp_name;
+    };
+    std::vector<Staged> stage(n);
+    std::vector<bool> failed_early(n, false);
+    std::vector<std::optional<Error>> early_err(n);
+
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!ctx.checkpoint()) {
+            // Roll back any already-staged items back to their original names.
+            for (std::size_t j = 0; j < i; ++j) {
+                if (stage[j].staged) {
+                    const Fd dir(open_dir_path(r.sources[j].parent_path()));
+                    if (dir.valid()) {
+                        (void)rename_no_overwrite(dir.get(), stage[j].temp_name, dir.get(),
+                                                  r.sources[j].filename().native(), false);
+                    }
+                }
+            }
+            finish_remaining_cancelled(ctx, r.sources, 0);
+            return ok();
+        }
+        if (r.sources[i] == targets[i]) {
+            continue;
+        }
+        if (auto e = check_source(ctx, r.sources[i], true, nullptr)) {
+            failed_early[i] = true;
+            early_err[i] = std::move(*e);
+            continue;
+        }
+        if (active_targets.contains(r.sources[i].native())) {
+            stage[i].needed = true;
+            const Path parent = r.sources[i].parent_path();
+            const Fd dir(open_dir_path(parent));
+            if (!dir.valid()) {
+                failed_early[i] = true;
+                early_err[i] = errno_error(errno, "open directory", parent);
+                continue;
+            }
+            std::string tmp_name = temp_name_for(r.sources[i].filename().native());
+            const int rc = rename_no_overwrite(dir.get(), r.sources[i].filename().native(),
+                                               dir.get(), tmp_name, false);
+            if (rc != 0) {
+                failed_early[i] = true;
+                early_err[i] = errno_error(rc, "stage batch rename", r.sources[i]);
+                continue;
+            }
+            stage[i].staged = true;
+            stage[i].temp_name = std::move(tmp_name);
+            stage[i].temp_path = parent / stage[i].temp_name;
+        }
+    }
+
+    // Phase 2: commit each item to its final target name.
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!ctx.checkpoint()) {
+            // Restore remaining staged items so no temp names are left on disk.
+            for (std::size_t j = i; j < n; ++j) {
+                if (stage[j].staged) {
+                    const Fd dir(open_dir_path(r.sources[j].parent_path()));
+                    if (dir.valid()) {
+                        (void)rename_no_overwrite(dir.get(), stage[j].temp_name, dir.get(),
+                                                  r.sources[j].filename().native(), false);
+                    }
+                }
+            }
+            finish_remaining_cancelled(ctx, r.sources, i);
+            break;
+        }
+        if (failed_early[i]) {
+            ctx.finish_item(failed_item(r.sources[i], early_err[i].value_or(Error{})));
+            continue;
+        }
+        if (r.sources[i] == targets[i]) {
+            ItemOutcome o;
+            o.source = r.sources[i];
+            o.destination = r.sources[i];
+            o.status = ItemStatus::Skipped;
+            ctx.finish_item(std::move(o));
+            continue;
+        }
+        ctx.set_current(r.sources[i]);
+        if (ctx.inject(r.sources[i])) {
+            if (stage[i].staged) {
+                const Fd dir(open_dir_path(r.sources[i].parent_path()));
+                if (dir.valid()) {
+                    (void)rename_no_overwrite(dir.get(), stage[i].temp_name, dir.get(),
+                                              r.sources[i].filename().native(), false);
+                }
+            }
+            ctx.finish_item(
+                failed_item(r.sources[i],
+                            make_error(ErrorCode::IoError, "injected: " + r.sources[i].native())));
+            continue;
+        }
+
+        const Path parent = r.sources[i].parent_path();
+        const Path& cur_path = stage[i].staged ? stage[i].temp_path : r.sources[i];
+        const std::string cur_name =
+            stage[i].staged ? stage[i].temp_name : r.sources[i].filename().native();
+        const Fd dir(open_dir_path(parent));
+        if (!dir.valid()) {
+            ctx.finish_item(
+                failed_item(r.sources[i], errno_error(errno, "open directory", parent)));
+            continue;
+        }
+        const int rc = rename_no_overwrite(dir.get(), cur_name, dir.get(), r.new_names[i], false);
+        if (rc != 0) {
+            if (stage[i].staged) {
+                (void)rename_no_overwrite(dir.get(), cur_name, dir.get(),
+                                          r.sources[i].filename().native(), false);
+            }
+            ctx.finish_item(failed_item(r.sources[i], errno_error(rc, "rename", cur_path)));
+            continue;
+        }
+
+        struct stat st {};
+        ItemGuard after;
+        if (lstat_path(targets[i], st) == 0) {
+            after = guard_from(targets[i], st);
+        } else {
+            after.path = targets[i];
+        }
+        UndoStep step;
+        step.kind = OpKind::Rename;
+        step.before = r.sources[i];
+        step.after = std::move(after);
+        ctx.add_step(std::move(step));
+
+        ItemOutcome o;
+        o.source = r.sources[i];
+        o.destination = targets[i];
+        o.status = ItemStatus::Done;
+        ctx.finish_item(std::move(o));
+    }
+    return ok();
+}
+
+// ---------------------------------------------------------------------------------------------
 // Entry points
 // ---------------------------------------------------------------------------------------------
 
@@ -493,6 +710,12 @@ Result<OpResult> run_operation_ex(const OpRequest& request, const EngineOptions&
         case OpKind::Rename:
             run = run_rename(ctx);
             record_dest = request.sources.front().parent_path();
+            break;
+        case OpKind::BatchRename:
+            run = run_batch_rename(ctx);
+            if (!request.sources.empty()) {
+                record_dest = request.sources.front().parent_path();
+            }
             break;
         case OpKind::MakeDirectory: run = run_make_directory(ctx); break;
         case OpKind::CreateSymlink: run = run_create_symlink(ctx); break;

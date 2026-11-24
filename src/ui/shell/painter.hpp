@@ -31,11 +31,15 @@ struct ShapedText {
 class Painter {
 public:
     Painter(Renderer& renderer, text::TextRenderer& text, text::FontCache& fonts, float scale,
-            std::string_view language) noexcept
-        : renderer_(&renderer), text_(&text), fonts_(&fonts), scale_(scale), language_(language) {}
+            std::string_view language, float font_scale = 1.0F,
+            int corner_radius_dp = appearance::kDefaultCornerRadiusDp) noexcept
+        : renderer_(&renderer), text_(&text), fonts_(&fonts), scale_(scale),
+          font_scale_(font_scale), radii_(radius_tokens(corner_radius_dp)), language_(language) {}
 
     [[nodiscard]] float px(float dp) const noexcept { return dp * scale_; }
     [[nodiscard]] float scale() const noexcept { return scale_; }
+    [[nodiscard]] float font_scale() const noexcept { return font_scale_; }
+    [[nodiscard]] const RadiusTokens& radii() const noexcept { return radii_; }
     [[nodiscard]] Renderer& renderer() const noexcept { return *renderer_; }
 
     [[nodiscard]] ShapedText shape(const TextStyle& style, std::string_view utf8) const;
@@ -58,6 +62,8 @@ private:
     text::TextRenderer* text_;
     text::FontCache* fonts_;
     float scale_;
+    float font_scale_ = 1.0F;
+    RadiusTokens radii_;
     std::string_view language_;
 };
 

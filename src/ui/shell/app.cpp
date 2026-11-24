@@ -90,6 +90,8 @@
 #include <SDL3/SDL.h>
 #include <unistd.h>
 
+#include <navigator/appearance.hpp>
+#include <navigator/batch_rename.hpp>
 #include <navigator/i18n.hpp>
 #include <navigator/keymap_file.hpp>
 #include <navigator/layout.hpp>
@@ -104,6 +106,7 @@
 #include <navigator/transfer.hpp>
 #include <navigator/trash.hpp>
 #include <navigator/ui.hpp>
+#include <navigator/view_settings.hpp>
 #include <navigator/watch.hpp>
 
 #include "browser/browser_model.hpp"
@@ -122,6 +125,7 @@
 #include "menu/context_menu_view.hpp"
 #include "menu/openwith_popup.hpp"
 #include "ops/app_trash.hpp"
+#include "ops/batch_rename_view.hpp"
 #include "ops/clipboard.hpp"
 #include "ops/file_ops.hpp"
 #include "ops/ops_view.hpp"
@@ -379,6 +383,22 @@ struct App::Impl {
     bool keymap_dirty = false;
     bool history_dirty = false;
     bool pins_dirty = false;
+    // Phase 9A: hierarchical per-folder view settings (Global / Hierarchy / Folder).
+    view::ViewSettingsStore view_settings;
+    bool view_settings_dirty = false;
+    std::unordered_map<std::uint32_t, std::uint64_t> tab_view_serials;
+    void sync_tab_view_settings(ui::BrowserModel& m, std::uint32_t tab_val);
+    void persist_view_change(ui::BrowserModel& m);
+    // Phase 9B: appearance settings, custom JSON themes, and interactive batch rename.
+    appearance::AppearanceSettings appearance_settings;
+    std::vector<appearance::ThemeScheme> custom_themes;
+    bool appearance_dirty = false;
+    ui::Palette previous_palette = ui::palette(Theme::Dark);
+    ui::BatchRenameOverlay batch_rename_overlay;
+    [[nodiscard]] ui::Palette resolve_palette(const std::string& theme_id,
+                                              Theme& out_base) const noexcept;
+    void apply_appearance_settings();
+    void open_batch_rename_overlay();
     ui::PaletteOverlay palette_overlay;
     ui::ContextMenuOverlay context_menu;
     ui::KeymapSettingsOverlay keymap_settings;
@@ -600,6 +620,30 @@ Result<void> App::Impl::init(const AppConfig& config) {
         if (auto mp = menu::load_pins(menu::pins_file(config_root)); mp) {
             menu_pins = std::move(*mp);
         }
+        if (auto vs = view::load_view_settings(view::view_settings_file(config_root)); vs) {
+            view_settings = std::move(*vs);
+        }
+        custom_themes = appearance::list_custom_themes(appearance::themes_dir(config_root));
+        if (auto ap = appearance::load_appearance_settings(appearance::settings_file(config_root));
+            ap) {
+            appearance_settings = std::move(*ap);
+            if (!config.animations) {
+                appearance_settings.animations = false;
+            }
+            apply_appearance_settings();
+        } else {
+            appearance_settings.theme_id = (config.theme == Theme::Light)
+                                               ? std::string(appearance::kBuiltinLightId)
+                                               : std::string(appearance::kBuiltinDarkId);
+            appearance_settings.animations = animations;
+            previous_palette = resolve_palette(appearance_settings.theme_id, theme);
+        }
+    } else {
+        appearance_settings.theme_id = (config.theme == Theme::Light)
+                                           ? std::string(appearance::kBuiltinLightId)
+                                           : std::string(appearance::kBuiltinDarkId);
+        appearance_settings.animations = animations;
+        previous_palette = resolve_palette(appearance_settings.theme_id, theme);
     }
     rebuild_keymap_from_file();
     std::optional<layout::Session> restored;
@@ -1000,13 +1044,130 @@ void App::Impl::flush_phase8_files() {
         pins_dirty = false;
         (void)menu::save_pins(menu::pins_file(config_root), menu_pins);
     }
+    if (view_settings_dirty) {
+        view_settings_dirty = false;
+        (void)view::save_view_settings(view::view_settings_file(config_root), view_settings);
+    }
+    if (appearance_dirty) {
+        appearance_dirty = false;
+        (void)appearance::save_appearance_settings(appearance::settings_file(config_root),
+                                                   appearance_settings);
+    }
+}
+
+ui::Palette App::Impl::resolve_palette(const std::string& theme_id,
+                                       Theme& out_base) const noexcept {
+    if (theme_id == appearance::kBuiltinLightId) {
+        out_base = Theme::Light;
+        return ui::palette(Theme::Light);
+    }
+    if (theme_id == appearance::kBuiltinDarkId) {
+        out_base = Theme::Dark;
+        return ui::palette(Theme::Dark);
+    }
+    for (const appearance::ThemeScheme& sc : custom_themes) {
+        if (sc.id == theme_id) {
+            out_base = sc.base;
+            return ui::palette_from_scheme(sc);
+        }
+    }
+    out_base = Theme::Dark;
+    return ui::palette(Theme::Dark);
+}
+
+void App::Impl::apply_appearance_settings() {
+    Theme prev_base = theme;
+    previous_palette = resolve_palette(appearance_settings.theme_id, prev_base);
+    Theme next_base = theme;
+    (void)resolve_palette(appearance_settings.theme_id, next_base);
+    previous_theme = theme;
+    theme = next_base;
+    density = ui::to_ui_density(appearance_settings.density);
+    animations = appearance_settings.animations;
+    if (!animations) {
+        fade_start_ms = -1.0;
+    }
+    dirty = true;
+}
+
+void App::Impl::open_batch_rename_overlay() {
+    if (trash_active() || file_ops->sheet_open()) {
+        return;
+    }
+    ui::BrowserModel& m = workspace->active_model();
+    if (!m.loaded() || m.current_dir().empty()) {
+        return;
+    }
+    const std::size_t n = m.row_count();
+    if (n == 0) {
+        return;
+    }
+    std::vector<ops::BatchRenameItem> items;
+    std::vector<std::string> siblings;
+    siblings.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const fs::DirEntry& e = m.row_entry(i);
+        siblings.push_back(e.name);
+        if (m.is_selected(i)) {
+            ops::BatchRenameItem it;
+            it.path = m.row_path(i);
+            it.original_name = e.name;
+            it.is_directory = fs::is_directory_like(e);
+            it.mtime = e.mtime;
+            it.size = e.size;
+            items.push_back(std::move(it));
+        }
+    }
+    if (items.empty() && m.cursor() < n) {
+        const std::size_t c = m.cursor();
+        const fs::DirEntry& e = m.row_entry(c);
+        ops::BatchRenameItem it;
+        it.path = m.row_path(c);
+        it.original_name = e.name;
+        it.is_directory = fs::is_directory_like(e);
+        it.mtime = e.mtime;
+        it.size = e.size;
+        items.push_back(std::move(it));
+    }
+    if (items.empty()) {
+        return;
+    }
+    seq_matcher.reset();
+    seq_status_text.clear();
+    palette_overlay.close();
+    context_menu.close();
+    openwith_overlay.close();
+    keymap_settings.close();
+    batch_rename_overlay.open(std::move(items), std::move(siblings));
+    dirty = true;
+}
+
+void App::Impl::sync_tab_view_settings(ui::BrowserModel& m, std::uint32_t tab_val) {
+    if (!m.loaded() || m.current_dir().empty()) {
+        return;
+    }
+    const std::uint64_t loc_s = m.location_serial();
+    auto it = tab_view_serials.find(tab_val);
+    if (it != tab_view_serials.end() && it->second == loc_s) {
+        return;
+    }
+    tab_view_serials[tab_val] = loc_s;
+    const view::ResolvedViewSettings resolved = view_settings.resolve(m.current_dir());
+    m.apply_view_settings(resolved.settings, resolved.scope, resolved.rule_path);
+}
+
+void App::Impl::persist_view_change(ui::BrowserModel& m) {
+    if (!m.current_dir().empty()) {
+        view_settings.apply_change(m.current_dir(), m.view_settings());
+        view_settings_dirty = true;
+    }
 }
 
 void App::Impl::persist_tick(double t_ms) {
     if (places) {
         places->tick(t_ms);
     }
-    if (keymap_dirty || history_dirty || pins_dirty) {
+    if (keymap_dirty || history_dirty || pins_dirty || view_settings_dirty || appearance_dirty) {
         flush_phase8_files();
     }
     if (workspace->persist_serial() != seen_persist) {
@@ -1261,6 +1422,45 @@ void App::Impl::handle_key(const KeyChord& chord, bool repeat) {
             }
             reset_keymap_confirm = false;
             return;
+        }
+        return;
+    }
+    // Phase 9B: Batch Rename overlay.
+    if (batch_rename_overlay.is_open()) {
+        dirty = true;
+        if (ui::TextEdit* f = batch_rename_overlay.active_field(); f != nullptr) {
+            const ui::FieldKeyResult r = ui::apply_field_key(*f, chord, [] {
+                std::string out;
+                if (char* t = SDL_GetClipboardText(); t != nullptr) {
+                    out = t;
+                    SDL_free(t);
+                }
+                return out;
+            });
+            if (r.handled) {
+                if (r.clipboard) {
+                    set_clipboard(*r.clipboard);
+                }
+                if (r.changed) {
+                    batch_rename_overlay.field_changed();
+                }
+                return;
+            }
+        }
+        if (ui::field_consumes_as_text(chord)) {
+            return;
+        }
+        if (!repeat) {
+            const ui::BatchRenameEvent ev = batch_rename_overlay.handle_key(chord);
+            if (ev.request_paste_clipboard) {
+                if (char* t = SDL_GetClipboardText(); t != nullptr) {
+                    batch_rename_overlay.paste_text(t);
+                    SDL_free(t);
+                }
+            }
+            if (ev.apply_request) {
+                file_ops->submit_batch_rename(*ev.apply_request);
+            }
         }
         return;
     }
@@ -1545,6 +1745,9 @@ void App::Impl::handle_key(const KeyChord& chord, bool repeat) {
 }
 
 ui::TextEdit* App::Impl::text_field() noexcept {
+    if (batch_rename_overlay.is_open()) {
+        return batch_rename_overlay.active_field();
+    }
     if (palette_overlay.is_open()) {
         return palette_overlay.active_field();
     }
@@ -1602,6 +1805,14 @@ void App::Impl::filter_escape() {
 }
 
 void App::Impl::handle_text(std::string_view typed) {
+    if (batch_rename_overlay.is_open()) {
+        if (ui::TextEdit* f = batch_rename_overlay.active_field();
+            f != nullptr && f->insert(typed)) {
+            batch_rename_overlay.field_changed();
+            dirty = true;
+        }
+        return;
+    }
     if (ui::TextEdit* f = text_field();
         f != nullptr &&
         (file_ops->inline_edit() != nullptr || file_ops->sheet_kind() == ui::SheetKind::Conflict)) {
@@ -2252,11 +2463,18 @@ void App::Impl::execute(const Command& command) {
         show_fps = !show_fps;
         stats_reset = true;
         return;
-    case CommandId::ToggleTheme:
+    case CommandId::ToggleTheme: {
+        Theme cur_base = theme;
+        previous_palette = resolve_palette(appearance_settings.theme_id, cur_base);
         previous_theme = theme;
         theme = ui::toggled(theme);
+        appearance_settings.theme_id = (theme == Theme::Light)
+                                           ? std::string(appearance::kBuiltinLightId)
+                                           : std::string(appearance::kBuiltinDarkId);
+        appearance_dirty = true;
         fade_start_ms = animations ? now_ms() : -1.0;
         return;
+    }
     case CommandId::SearchTabs:
         view.open_search_tabs(*workspace, home.empty() ? nullptr : &home);
         return;
@@ -2274,7 +2492,85 @@ void App::Impl::execute(const Command& command) {
         }
         return;
     }
-    case CommandId::ToggleViewLock: return; // stub (docs/keymap.md)
+    case CommandId::ToggleViewLock: {
+        ui::BrowserModel& m = workspace->active_model();
+        if (!m.current_dir().empty()) {
+            const view::ViewScope next =
+                view_settings.cycle_lock(m.current_dir(), m.view_settings());
+            const view::ResolvedViewSettings res = view_settings.resolve(m.current_dir());
+            m.set_view_scope(res.scope, res.rule_path);
+            view_settings_dirty = true;
+            const char* key = next == view::ViewScope::Folder      ? "view.lock.folder"
+                              : next == view::ViewScope::Hierarchy ? "view.lock.hierarchy"
+                                                                   : "view.lock.global";
+            toast(std::string(tr(key)));
+        }
+        return;
+    }
+    case CommandId::ViewLockFolder:
+    case CommandId::ViewLockHierarchy:
+    case CommandId::ViewLockGlobal: {
+        ui::BrowserModel& m = workspace->active_model();
+        if (!m.current_dir().empty()) {
+            const view::ViewScope scope =
+                command.id == CommandId::ViewLockFolder      ? view::ViewScope::Folder
+                : command.id == CommandId::ViewLockHierarchy ? view::ViewScope::Hierarchy
+                                                             : view::ViewScope::Global;
+            view_settings.set_lock(m.current_dir(), scope, m.view_settings());
+            const view::ResolvedViewSettings res = view_settings.resolve(m.current_dir());
+            m.apply_view_settings(res.settings, res.scope, res.rule_path);
+            view_settings_dirty = true;
+            const char* key = scope == view::ViewScope::Folder      ? "view.lock.folder"
+                              : scope == view::ViewScope::Hierarchy ? "view.lock.hierarchy"
+                                                                    : "view.lock.global";
+            toast(std::string(tr(key)));
+        }
+        return;
+    }
+    case CommandId::ViewModeDetails:
+    case CommandId::ViewModeIcons:
+    case CommandId::ViewModeList:
+    case CommandId::ViewModeTree:
+    case CommandId::ViewCycleMode: {
+        ui::BrowserModel& m = workspace->active_model();
+        const view::ViewMode next =
+            command.id == CommandId::ViewModeDetails ? view::ViewMode::Details
+            : command.id == CommandId::ViewModeIcons ? view::ViewMode::Icons
+            : command.id == CommandId::ViewModeList  ? view::ViewMode::List
+            : command.id == CommandId::ViewModeTree  ? view::ViewMode::Tree
+                                                     : view::next_view_mode(m.view_mode());
+        m.set_view_mode(next);
+        persist_view_change(m);
+        return;
+    }
+    case CommandId::ViewZoomIn:
+    case CommandId::ViewZoomOut:
+    case CommandId::ViewZoomReset: {
+        ui::BrowserModel& m = workspace->active_model();
+        if (command.id == CommandId::ViewZoomReset) {
+            m.set_zoom_percent(view::kDefaultZoomPercent);
+        } else {
+            m.step_zoom(command.id == CommandId::ViewZoomIn ? 1 : -1);
+        }
+        persist_view_change(m);
+        return;
+    }
+    case CommandId::GroupByNone:
+    case CommandId::GroupByDate:
+    case CommandId::GroupByType:
+    case CommandId::GroupBySize:
+    case CommandId::GroupCycle: {
+        ui::BrowserModel& m = workspace->active_model();
+        const view::GroupBy next = command.id == CommandId::GroupByNone   ? view::GroupBy::None
+                                   : command.id == CommandId::GroupByDate ? view::GroupBy::Date
+                                   : command.id == CommandId::GroupByType ? view::GroupBy::Type
+                                   : command.id == CommandId::GroupBySize
+                                       ? view::GroupBy::Size
+                                       : view::next_group_by(m.group_by());
+        m.set_group_by(next);
+        persist_view_change(m);
+        return;
+    }
     case CommandId::FocusAddressBar:
         focus_sidebar(false);
         view.open_address_bar(*workspace, home, now_ms());
@@ -2399,7 +2695,22 @@ bool App::Impl::is_file_command(CommandId id) noexcept {
     case CommandId::ToggleOperationsPanel:
     case CommandId::OpenTrash:
     case CommandId::RestoreFromTrash:
-    case CommandId::EmptyTrash: return true;
+    case CommandId::EmptyTrash:
+    case CommandId::OpenPalette:
+    case CommandId::OpenSettings:
+    case CommandId::EditKeymap:
+    case CommandId::ResetKeymap:
+    case CommandId::ExportKeymap:
+    case CommandId::ShowContextMenu:
+    case CommandId::OpenWith:
+    case CommandId::BatchRename:
+    case CommandId::ToggleAnimations:
+    case CommandId::ToggleAlternatingRows:
+    case CommandId::CycleDensity:
+    case CommandId::FontSizeIncrease:
+    case CommandId::FontSizeDecrease:
+    case CommandId::FontSizeReset:
+    case CommandId::OpenAppearanceSettings: return true;
     default: return false;
     }
 }
@@ -2525,8 +2836,17 @@ void App::Impl::file_command(const Command& command) {
     case CommandId::Rename:
         if (in_trash) {
             not_in_trash();
+        } else if (workspace->active_model().selected_count() > 1) {
+            open_batch_rename_overlay();
         } else {
             begin_inline_rename();
+        }
+        return;
+    case CommandId::BatchRename:
+        if (in_trash) {
+            not_in_trash();
+        } else {
+            open_batch_rename_overlay();
         }
         return;
     case CommandId::NewFolder:
@@ -2602,8 +2922,13 @@ void App::Impl::file_command(const Command& command) {
         return;
     case CommandId::OpenSettings:
     case CommandId::EditKeymap:
+    case CommandId::OpenAppearanceSettings:
         if (!file_ops->sheet_open()) {
-            if (keymap_settings.is_open()) {
+            const ui::KeymapSettingsOverlay::Page target_page =
+                command.id == CommandId::EditKeymap ? ui::KeymapSettingsOverlay::Page::Keyboard
+                                                    : ui::KeymapSettingsOverlay::Page::Appearance;
+            if (keymap_settings.is_open() &&
+                (command.id == CommandId::OpenSettings || keymap_settings.page() == target_page)) {
                 keymap_settings.close();
             } else {
                 seq_matcher.reset();
@@ -2611,9 +2936,52 @@ void App::Impl::file_command(const Command& command) {
                 palette_overlay.close();
                 context_menu.close();
                 openwith_overlay.close();
-                keymap_settings.open(registry, keymap);
+                batch_rename_overlay.close();
+                keymap_settings.open(registry, keymap, target_page);
             }
         }
+        return;
+    case CommandId::ToggleAnimations:
+        appearance_settings.animations = !appearance_settings.animations;
+        apply_appearance_settings();
+        appearance_dirty = true;
+        toast(std::string(tr("settings.appearance.animations")) + ": " +
+              std::string(tr(appearance_settings.animations ? "settings.on" : "settings.off")));
+        return;
+    case CommandId::ToggleAlternatingRows:
+        appearance_settings.alternating_rows = !appearance_settings.alternating_rows;
+        appearance_dirty = true;
+        dirty = true;
+        toast(
+            std::string(tr("settings.appearance.alternating_rows")) + ": " +
+            std::string(tr(appearance_settings.alternating_rows ? "settings.on" : "settings.off")));
+        return;
+    case CommandId::CycleDensity:
+        appearance_settings.density = appearance_settings.density == appearance::UiDensity::Compact
+                                          ? appearance::UiDensity::Comfortable
+                                          : appearance::UiDensity::Compact;
+        apply_appearance_settings();
+        appearance_dirty = true;
+        toast(std::string(tr(appearance_settings.density == appearance::UiDensity::Compact
+                                 ? "settings.appearance.compact"
+                                 : "settings.appearance.comfortable")));
+        return;
+    case CommandId::FontSizeIncrease:
+    case CommandId::FontSizeDecrease:
+    case CommandId::FontSizeReset:
+        if (command.id == CommandId::FontSizeReset) {
+            appearance_settings.font_scale_percent = appearance::kDefaultFontScalePercent;
+        } else {
+            const int delta = command.id == CommandId::FontSizeIncrease
+                                  ? appearance::kFontScaleStepPercent
+                                  : -appearance::kFontScaleStepPercent;
+            appearance_settings.font_scale_percent =
+                appearance::clamp_font_scale(appearance_settings.font_scale_percent + delta);
+        }
+        appearance_dirty = true;
+        dirty = true;
+        toast(std::string(tr("settings.appearance.font_size")) + ": " +
+              std::to_string(appearance_settings.font_scale_percent) + "%");
         return;
     case CommandId::ResetKeymap:
         if (!file_ops->sheet_open()) {
@@ -3432,6 +3800,62 @@ void App::Impl::apply_intents() {
                     static_cast<transfer::DropAction>(std::min<std::size_t>(in.index, 3)));
             }
             break;
+        case Kind::SetViewMode:
+            if (m != nullptr) {
+                m->set_view_mode(static_cast<view::ViewMode>(in.index));
+                persist_view_change(*m);
+            }
+            break;
+        case Kind::SetZoomPercent:
+            if (m != nullptr) {
+                if (in.additive && m->view_mode() == view::ViewMode::Details) {
+                    m->set_view_mode(view::ViewMode::Icons);
+                }
+                m->set_zoom_percent(static_cast<int>(in.index));
+                persist_view_change(*m);
+            }
+            break;
+        case Kind::StepZoom:
+            if (m != nullptr) {
+                m->step_zoom(in.position >= 0.0 ? 1 : -1);
+                persist_view_change(*m);
+            }
+            break;
+        case Kind::ReorderColumn:
+            if (m != nullptr) {
+                m->reorder_column(in.row, in.row_last);
+                persist_view_change(*m);
+            }
+            break;
+        case Kind::ToggleGroup:
+            if (m != nullptr) {
+                m->toggle_group_collapsed(static_cast<std::uint8_t>(in.index));
+            }
+            break;
+        case Kind::TreeToggle:
+            if (m != nullptr) {
+                m->tree_toggle(in.path);
+            }
+            break;
+        case Kind::TreeClickRow:
+            if (m != nullptr) {
+                m->set_tree_cursor(in.row);
+                const auto& tr = m->tree_rows();
+                if (in.row < tr.size()) {
+                    const ui::TreeRow& row = tr[in.row];
+                    if (row.root_row != ui::kTreeNoRootRow && row.root_row < m->row_count()) {
+                        m->click_row(row.root_row, in.mods);
+                    }
+                    if (in.additive) {
+                        if (row.expandable) {
+                            m->navigate_to(row.full_path);
+                        } else if (launcher != nullptr) {
+                            (void)platform::open_with_default(row.full_path, *launcher);
+                        }
+                    }
+                }
+            }
+            break;
         }
     }
 }
@@ -3794,11 +4218,15 @@ void App::Impl::draw_frame(double t_ms, double dt_ms) {
     if (fade >= 1.0F) {
         fade_start_ms = -1.0;
     }
-    const ui::Palette pal = fade < 1.0F
-                                ? ui::mix(ui::palette(previous_theme), ui::palette(theme), fade)
-                                : ui::palette(theme);
+    Theme resolved_base = theme;
+    const ui::Palette target_pal = resolve_palette(appearance_settings.theme_id, resolved_base);
+    const ui::Palette pal = fade < 1.0F ? ui::mix(previous_palette, target_pal, fade) : target_pal;
     const std::string_view lang = language() == Language::Turkish ? "tr" : "en";
-    const ui::Painter painter(*renderer, *text, *fonts, scale, lang);
+    const float font_scale =
+        static_cast<float>(appearance::clamp_font_scale(appearance_settings.font_scale_percent)) *
+        0.01F;
+    const ui::Painter painter(*renderer, *text, *fonts, scale, lang, font_scale,
+                              appearance_settings.corner_radius_dp);
     const auto now =
         std::chrono::time_point_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now());
     ui::ShellFrame frame{
@@ -3814,7 +4242,9 @@ void App::Impl::draw_frame(double t_ms, double dt_ms) {
         .height = static_cast<float>(h),
         .focused = focused,
         .animations = animations,
+        .alternating_rows = appearance_settings.alternating_rows,
         .density = density,
+        .spacing_scale_percent = appearance_settings.spacing_scale_percent,
         .dt_ms = dt_ms,
         .now_ms = t_ms,
         .now = now,
@@ -4031,14 +4461,39 @@ void App::Impl::draw_frame(double t_ms, double dt_ms) {
         }
     }
     if (keymap_settings.is_open()) {
-        const ui::KeymapEditorEvent ev = keymap_settings.draw(
-            painter, pal, full_viewport, pointer, keymap_file, keymap, default_keymap, registry);
+        const ui::Palette before_pal = pal;
+        const std::string before_theme = appearance_settings.theme_id;
+        const ui::KeymapEditorEvent ev =
+            keymap_settings.draw(painter, pal, full_viewport, pointer, keymap_file, keymap,
+                                 default_keymap, registry, appearance_settings, custom_themes);
         if (ev.keymap_dirty) {
             keymap_dirty = true;
             rebuild_keymap_from_file();
         }
+        if (ev.appearance_dirty) {
+            appearance_dirty = true;
+            const bool theme_changed = appearance_settings.theme_id != before_theme;
+            apply_appearance_settings();
+            if (theme_changed) {
+                previous_palette = before_pal;
+                fade_start_ms = animations ? now_ms() : -1.0;
+            }
+        }
         if (ev.enqueue_cmd) {
             queue.enqueue(*ev.enqueue_cmd);
+        }
+    }
+    if (batch_rename_overlay.is_open()) {
+        const ui::BatchRenameEvent ev =
+            batch_rename_overlay.draw(painter, pal, full_viewport, pointer);
+        if (ev.request_paste_clipboard) {
+            if (char* t = SDL_GetClipboardText(); t != nullptr) {
+                batch_rename_overlay.paste_text(t);
+                SDL_free(t);
+            }
+        }
+        if (ev.apply_request) {
+            file_ops->submit_batch_rename(*ev.apply_request);
         }
     }
     if (reset_keymap_confirm) {
@@ -4622,6 +5077,11 @@ int App::run() {
                 s.places->record_visit(v, now, now_ms());
             }
             s.dirty = true;
+        }
+        if (const layout::TabId active_tab = s.workspace->active_tab(); active_tab.valid()) {
+            if (ui::BrowserModel* m = s.workspace->model(active_tab); m != nullptr) {
+                s.sync_tab_view_settings(*m, active_tab.value);
+            }
         }
         if (s.view.poll_paths(now_ms(), s.outcomes)) {
             s.dirty = true;

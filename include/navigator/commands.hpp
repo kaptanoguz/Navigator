@@ -47,7 +47,8 @@ namespace navigator {
 //   1360-1369  trash (Phase 7)
 //   1370-1389  command palette, settings, keymap editor, context menu (Phase 8)
 //   1390-1399  Open With (Phase 8)
-//   1400+      reserved for later phases
+//   1400-1429  view modes, zoom, grouping, tree and view lock (Phase 9A)
+//   1430+      reserved for later phases
 // Every id except None is registered by register_builtin_commands() and appears in the palette.
 // `arg` meanings are listed per id; "arg: 0" means the command ignores it.
 enum class CommandId : std::uint32_t {
@@ -60,9 +61,9 @@ enum class CommandId : std::uint32_t {
                           //   (layout::SidebarState::visible; persisted in the session). Hiding
                           //   it while it has keyboard focus returns focus to the active pane.
                           //   arg: 0
-    ToggleViewLock = 6,   // "view.toggle_view_lock" Phase 4 STUB: registered, unbound, no-op.
-                          //   Reserved for the address-bar lock (folder / hierarchy / global
-                          //   view settings, docs/features.md). arg: 0 (scopes reserved)
+    ToggleViewLock = 6,   // "view.toggle_view_lock" Phase 9A: cycles the active folder's view
+                          //   settings scope (Global -> Folder -> Hierarchy -> Global;
+                          //   view_settings.hpp). arg: 0
 
     // Navigation. arg: 0 for all.
     NavigateBack = 1000,    // "nav.back"     previous history location (no-op at the start)
@@ -341,6 +342,37 @@ enum class CommandId : std::uint32_t {
                      //   paths (platform openwith::launch_with). Unbound by default; also the
                      //   "Open With" submenu of the row context menu. The handler picked is a
                      //   ui-internal intent (it carries a desktop id), not a command arg.
+
+    // View modes, zoom, grouping, tree and view lock (Phase 9A; view_settings.hpp). arg: 0.
+    ViewModeDetails = 1400, // "view.mode_details"   switch active tab to Details view (Ctrl+1)
+    ViewModeIcons = 1401,   // "view.mode_icons"     switch active tab to Icon Grid view (Ctrl+2)
+    ViewModeList = 1402,    // "view.mode_list"      switch active tab to List/Columns view (Ctrl+3)
+    ViewModeTree = 1403,    // "view.mode_tree"      switch active tab to Tree view (Ctrl+4)
+    ViewCycleMode = 1404,   // "view.cycle_mode"     cycle Details -> Icons -> List -> Tree
+    ViewZoomIn = 1405,      // "view.zoom_in"        step zoom in (Details -> Icons -> larger)
+    ViewZoomOut = 1406,     // "view.zoom_out"       step zoom out (smaller -> Details)
+    ViewZoomReset = 1407,   // "view.zoom_reset"     reset zoom to 100%
+    GroupByNone = 1410,     // "view.group_none"     disable grouping
+    GroupByDate = 1411,     // "view.group_date"     group items by modification date
+    GroupByType = 1412,     // "view.group_type"     group items by file type category
+    GroupBySize = 1413,     // "view.group_size"     group items by file size bucket
+    GroupCycle = 1414,      // "view.group_cycle"    cycle None -> Date -> Type -> Size
+    ViewLockFolder = 1415,  // "view.lock_folder"    lock view settings to this folder only
+    ViewLockHierarchy = 1416, // "view.lock_hierarchy" lock view settings to this folder + subtree
+    ViewLockGlobal = 1417,    // "view.lock_global"    use global view settings (clear folder lock)
+    TreeExpand = 1420,        // "view.tree_expand"    expand cursor folder in Tree view
+    TreeCollapse = 1421,      // "view.tree_collapse"  collapse cursor folder (or move to parent)
+    TreeCollapseAll = 1422,   // "view.tree_collapse_all" collapse all expanded folders in Tree view
+
+    // Batch rename, appearance, themes, typography, animations (Phase 9B). arg: 0.
+    BatchRename = 1425,      // "file.batch_rename"           interactive batch rename (Shift+F2)
+    ToggleAnimations = 1430, // "view.toggle_animations"      toggle UI animations live
+    ToggleAlternatingRows = 1431,  // "view.toggle_alternating_rows" toggle zebra striping
+    CycleDensity = 1432,           // "view.cycle_density"          Compact <-> Comfortable
+    FontSizeIncrease = 1433,       // "view.font_size_increase"     step UI font scale up
+    FontSizeDecrease = 1434,       // "view.font_size_decrease"     step UI font scale down
+    FontSizeReset = 1435,          // "view.font_size_reset"        reset UI font scale to 100%
+    OpenAppearanceSettings = 1436, // "settings.appearance"        open Settings on Appearance page
 };
 
 // Bit flags for the `arg` of CopyPath. Unknown bits are ignored (reserved).

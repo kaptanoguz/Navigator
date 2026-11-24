@@ -239,6 +239,8 @@ public:
     // Drag and drop / "other pane": copy, move or link `sources` into `folder`.
     void transfer(std::vector<Path> sources, const Path& folder, transfer::DropAction action);
     void new_folder(const FileTarget& target);
+    // Phase 9B: submit a validated OpKind::BatchRename request from BatchRenameOverlay.
+    void submit_batch_rename(ops::OpRequest request);
     void undo();
     void redo();
     void cancel(std::uint64_t op); // 0: the most recently started unfinished operation
