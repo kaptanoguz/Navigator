@@ -37,7 +37,7 @@ public:
 std::string read_all(const Path& path) {
     std::ifstream in(path, std::ios::binary);
     REQUIRE(in.good());
-    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return {(std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()};
 }
 
 Options make_options(const TempDir& tmp, std::set<std::string> programs = {"gedit", "code", "vim",

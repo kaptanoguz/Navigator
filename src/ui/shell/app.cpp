@@ -2818,8 +2818,8 @@ void App::Impl::open_palette_overlay() {
         }
     }
     const std::vector<Alias> aliases = effective_aliases(keymap_file, registry, nullptr);
-    palette_overlay.open(registry, keymap, aliases, palette_history, ctx, std::move(undo_lbl),
-                         std::move(redo_lbl), std::move(ops_opts), std::move(bm_opts));
+    palette_overlay.open(registry, keymap, aliases, palette_history, ctx, undo_lbl, redo_lbl,
+                         std::move(ops_opts), std::move(bm_opts));
 }
 
 void App::Impl::open_context_menu_at(menu::MenuKind kind, float x, float y,

@@ -217,6 +217,7 @@ MimeApps parse_mimeapps(std::string_view text, bool defaults_only) {
 // Paths of the mimeapps.list files, highest precedence first.
 std::vector<Path> mimeapps_paths(const Options& options) {
     std::vector<std::string> desktops;
+    desktops.reserve(options.current_desktops.size());
     for (const std::string& desktop : options.current_desktops) {
         desktops.push_back(ascii_lower(desktop));
     }
@@ -689,10 +690,11 @@ Result<void> make_dirs_0700(const Path& dir) {
             break;
         }
     }
-    for (auto it = missing.rbegin(); it != missing.rend(); ++it) {
-        if (::mkdir(it->c_str(), 0700) != 0 && errno != EEXIST) {
+    std::reverse(missing.begin(), missing.end());
+    for (const Path& p : missing) {
+        if (::mkdir(p.c_str(), 0700) != 0 && errno != EEXIST) {
             return Unexpected<Error>(
-                platform_internal::errno_error(errno, "mkdir", *it, ErrorCode::IoError));
+                platform_internal::errno_error(errno, "mkdir", p, ErrorCode::IoError));
         }
     }
     return ok();

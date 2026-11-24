@@ -330,8 +330,10 @@ const std::string* find_key(const KeyMap& keys, const std::string& key) {
 
 std::string localized_value(const KeyMap& keys, const std::string& base,
                             const std::vector<std::string>& candidates) {
+    std::string key;
     for (const std::string& candidate : candidates) {
-        if (const std::string* value = find_key(keys, base + "[" + candidate + "]")) {
+        key.assign(base).append("[").append(candidate).append("]");
+        if (const std::string* value = find_key(keys, key)) {
             return unescape_string(*value);
         }
     }
@@ -520,9 +522,8 @@ Options system_options() {
         }
         options.data_dirs =
             absolute_entries(env_or_empty("XDG_DATA_DIRS"), "/usr/local/share:/usr/share");
-        std::string_view desktops = env_or_empty("XDG_CURRENT_DESKTOP");
-        const std::string desktops_text(desktops);
-        desktops = desktops_text;
+        const std::string desktops_text = env_or_empty("XDG_CURRENT_DESKTOP");
+        std::string_view desktops(desktops_text);
         while (!desktops.empty()) {
             const std::size_t colon = desktops.find(':');
             const std::string_view entry = desktops.substr(0, colon);
@@ -543,6 +544,7 @@ Options system_options() {
         }
     } catch (const std::bad_alloc&) {
         // Defaults stay: an empty Options finds nothing, which is a safe degradation.
+        options = Options{};
     }
     return options;
 }

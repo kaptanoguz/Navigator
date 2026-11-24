@@ -52,8 +52,8 @@ public:
     // `aliases`, and optional live undo/redo labels.
     void open(const CommandRegistry& registry, const Keymap& keymap, Span<const Alias> aliases,
               const palette::History& history, const CommandContext& context,
-              std::string undo_label, std::string redo_label, std::vector<PickerOption> running_ops,
-              std::vector<PickerOption> bookmarks);
+              const std::string& undo_label, const std::string& redo_label,
+              std::vector<PickerOption> running_ops, std::vector<PickerOption> bookmarks);
 
     void close() noexcept;
 

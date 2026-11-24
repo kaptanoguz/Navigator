@@ -43,8 +43,8 @@ bool contains_folded(std::string_view haystack, std::string_view needle) {
 
 void PaletteOverlay::open(const CommandRegistry& registry, const Keymap& keymap,
                           Span<const Alias> aliases, const palette::History& history,
-                          const CommandContext& context, std::string undo_label,
-                          std::string redo_label, std::vector<PickerOption> running_ops,
+                          const CommandContext& context, const std::string& undo_label,
+                          const std::string& redo_label, std::vector<PickerOption> running_ops,
                           std::vector<PickerOption> bookmarks) {
     open_ = true;
     mode_ = Mode::Commands;

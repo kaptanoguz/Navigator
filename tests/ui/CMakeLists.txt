@@ -51,6 +51,11 @@ if(TARGET navigator)
     add_test(NAME ui.smoke_file_operations
         COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/ops_smoke.sh $<TARGET_FILE:navigator>)
     set_tests_properties(ui.smoke_file_operations PROPERTIES TIMEOUT 120 LABELS "smoke;app")
+    # Phase 8 acceptance: command palette, rebind Ctrl+E persistence across restart, searchable
+    # context menu, and Ctrl+K Ctrl+S sequence (temporary HOME and --config-dir).
+    add_test(NAME ui.smoke_phase8_palette_keymap_menu
+        COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/phase8_smoke.sh $<TARGET_FILE:navigator>)
+    set_tests_properties(ui.smoke_phase8_palette_keymap_menu PROPERTIES TIMEOUT 60 LABELS "smoke;app")
     set_tests_properties(ui.smoke_session_restores_three_panes PROPERTIES
         TIMEOUT 60 LABELS "smoke;app")
     # Phase 4 acceptance: GoTo jumps to ~/Downloads and / (temporary HOME and --config-dir).

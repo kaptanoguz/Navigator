@@ -176,6 +176,8 @@ DocTables read_doc() {
             REQUIRE(cells.size() >= 4);
             if (cells[3] == "`Extend`") {
                 row.arg = CursorArg::Extend;
+            } else if (cells[3] == "`KeepSelection`") {
+                row.arg = CursorArg::KeepSelection;
             } else {
                 REQUIRE(cells[3] == "0");
             }
@@ -330,12 +332,16 @@ void check_cursor_command(Scene& s, const Command& c) {
             selected.insert(i);
         }
     }
+    const bool keep_selection = !extend && (c.arg & CursorArg::KeepSelection) != 0U;
     std::set<std::size_t> expect;
     if (extend) {
         for (std::size_t i = std::min<std::size_t>(10, want); i <= std::max<std::size_t>(10, want);
              ++i) {
             expect.insert(i);
         }
+        CHECK(m.anchor() == 10);
+    } else if (keep_selection) {
+        expect.insert(10);
         CHECK(m.anchor() == 10);
     } else {
         expect.insert(want);
@@ -1528,6 +1534,20 @@ std::map<std::string, Check> effect_checks() {
     add_phase5_checks(checks);
     add_phase6_checks(checks);
     add_phase7_checks(checks);
+    // Phase 8 checks: list.toggle_cursor_selected (workspace/model), and shell-level overlays.
+    checks["list.toggle_cursor_selected"] = [](Scene& s, const Command& c) {
+        s.m().click_row(0, Modifiers::None);
+        CHECK(s.m().is_selected(0));
+        REQUIRE(s.exec(c));
+        CHECK_FALSE(s.m().is_selected(0));
+        REQUIRE(s.exec(c));
+        CHECK(s.m().is_selected(0));
+    };
+    const Check shell_only = [](Scene& s, const Command& c) { CHECK_FALSE(s.exec(c)); };
+    checks["palette.open"] = shell_only;
+    checks["settings.open"] = shell_only;
+    checks["menu.show_context"] = shell_only;
+    checks["ops.toggle_panel"] = shell_only;
     checks["pane.close"] = [](Scene& s, const Command& c) {
         REQUIRE(s.exec(c)); // the only pane: no-op
         s.settle();
@@ -1558,8 +1578,8 @@ std::map<std::string, Check> effect_checks() {
 
 TEST_CASE("docs/keymap.md and load_default_keymap agree row for row", "[keymap][e2e]") {
     const DocTables doc = read_doc();
-    // Phase 0, Phase 2, Phase 3, Phase 4, Phase 5, Phase 6 and Phase 7 tables.
-    CHECK(doc.per_phase.size() == 7);
+    // Phase 0, Phase 2, Phase 3, Phase 4, Phase 5, Phase 6, Phase 7 and Phase 8 tables.
+    CHECK(doc.per_phase.size() == 8);
     CHECK(doc.per_phase.at(0) == 3);
     CHECK(doc.per_phase.at(2) == 25);
     CHECK(doc.per_phase.at(3) == 21);
@@ -1567,7 +1587,8 @@ TEST_CASE("docs/keymap.md and load_default_keymap agree row for row", "[keymap][
     CHECK(doc.per_phase.at(5) == 4);
     CHECK(doc.per_phase.at(6) == 2);
     CHECK(doc.per_phase.at(7) == 12);
-    REQUIRE(doc.bound.size() == 72); // 3 + 25 + 21 + 5 + 4 + 2 + 12
+    CHECK(doc.per_phase.at(8) == 8);
+    REQUIRE(doc.bound.size() == 80); // 72 through Phase 7 + 8 Phase 8 chords
     Keymap keymap;
     REQUIRE(load_default_keymap(keymap));
     const Span<const KeyBinding> bindings = keymap.bindings();
@@ -1601,6 +1622,8 @@ TEST_CASE("docs/keymap.md and load_default_keymap agree row for row", "[keymap][
     for (const DocRow& row : doc.unbound) {
         unbound_names.insert(row.command);
     }
+    // Phase 8 moved ops.toggle_panel from the historical Phase 7 unbound row to Ctrl+J.
+    unbound_names.erase("ops.toggle_panel");
     CHECK(unbound_names == std::set<std::string>{"tab.close_left",
                                                  "layout.delete",
                                                  "window.new",
@@ -1625,12 +1648,18 @@ TEST_CASE("docs/keymap.md and load_default_keymap agree row for row", "[keymap][
                                                  "file.open_terminal_here",
                                                  "ops.cancel",
                                                  "ops.toggle_pause",
-                                                 "ops.toggle_panel",
                                                  "trash.open",
                                                  "trash.restore",
-                                                 "trash.empty"});
-    REQUIRE(doc.unbound.size() == 28);
+                                                 "trash.empty",
+                                                 "keymap.edit",
+                                                 "keymap.reset_defaults",
+                                                 "keymap.export",
+                                                 "open_with.show"});
+    REQUIRE(doc.unbound.size() == 32);
     for (const DocRow& row : doc.unbound) {
+        if (row.command == "ops.toggle_panel") {
+            continue; // bound by Phase 8 table
+        }
         INFO("keymap.md line " << row.line << ": " << row.command);
         CHECK(registry.find(row.command) != nullptr);
         CHECK(keymap.chords_for(row.command).empty());
@@ -1666,6 +1695,7 @@ TEST_CASE("Every default chord resolves to its command and has its effect on the
     for (const DocRow& row : doc.unbound) {
         unbound.insert(row.command);
     }
+    unbound.erase("ops.toggle_panel"); // bound in Phase 8 table
     for (const CommandInfo& info : registry.all()) {
         const std::string name(info.name);
         INFO(name);
@@ -1678,16 +1708,16 @@ TEST_CASE("Every default chord resolves to its command and has its effect on the
     // including Phase 4 and Phase 5 chords with an extra or a missing modifier (Ctrl+E is
     // search.flatten since Phase 5).
     for (const char* text :
-         {"Ctrl+N", "Ctrl+Shift+P", "Ctrl+P", "Ctrl+Alt+Left", "Alt+Shift+Left",
+         {"Ctrl+N", "Ctrl+P", "Ctrl+Alt+Left", "Alt+Shift+Left",
           // Phase 7 near misses: window-manager keys, a risky "delete" key,
           // modifier variants of the new file chords.
           "Alt+F7", "Alt+F8", "F8", "Ctrl+Delete", "Alt+Delete", "Ctrl+Shift+Y", "Ctrl+Shift+X",
           "Ctrl+Shift+V", "Ctrl+Alt+Z", "Ctrl+F7", "Ctrl+Shift+F7", "Shift+F2", "Ctrl+F2",
           "Ctrl+Shift+Delete", "Ctrl+Alt+N", "Ctrl+Shift+F3", "Ctrl+F6", "Ctrl+Alt+T",
           "Shift+Enter", "Ctrl+Shift+B", "Ctrl+Alt+L", "Ctrl+Shift+G", "Alt+D", "Ctrl+Alt+C",
-          "Ctrl+Alt+E", "Alt+E", "Ctrl+Alt+F", "Alt+F", "Ctrl+Alt+Shift+E", "Shift+F", "Ctrl+Space",
-          "Ctrl+Comma", "Shift+Space", "Alt+Space", "Ctrl+Shift+Space", "Alt+Enter",
-          "Shift+KeypadEnter", "Ctrl+Alt+KeypadEnter"}) {
+          "Ctrl+Alt+E", "Alt+E", "Ctrl+Alt+F", "Alt+F", "Ctrl+Alt+Shift+E", "Shift+F",
+          "Shift+Space", "Alt+Space", "Ctrl+Shift+Space", "Alt+Enter", "Shift+KeypadEnter",
+          "Ctrl+Alt+KeypadEnter"}) {
         INFO(text);
         CHECK_FALSE(resolve_command(keymap, registry, chord_of(text)));
     }

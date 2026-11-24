@@ -547,7 +547,7 @@ Result<KeymapFile> keymap_from_json(std::string_view text, LoadReport* report) {
                                         "invalid \"arg\"");
                         continue;
                     }
-                    const std::string& name = name_it->get_ref<const std::string&>();
+                    const auto& name = name_it->get_ref<const std::string&>();
                     const bool dup =
                         std::any_of(file.aliases.begin(), file.aliases.end(), [&](const Alias& a) {
                             return alias_names_equal(a.name, name);

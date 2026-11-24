@@ -232,7 +232,7 @@ bool is_recordable(const Entry& entry) noexcept {
     if (entry.danger == Danger::Destructive) {
         return false;
     }
-    return !(is_runtime_id_kind(entry.arg_kind) && entry.command.arg != 0);
+    return !is_runtime_id_kind(entry.arg_kind) || entry.command.arg == 0;
 }
 
 void History::record(std::string_view key) {
@@ -369,26 +369,26 @@ SearchResult rank(std::string_view query, Span<const Entry> entries, const Histo
                     consider(best, static_cast<std::int32_t>(value), MatchedVia::Alias, a);
                 }
             }
-            if (!best) {
-                continue;
-            }
-            Candidate c;
-            c.hit.entry = i;
-            c.hit.score = best->score;
-            c.hit.via = best->via;
-            c.hit.alias = best->alias;
-            if (is_recordable(entry)) {
-                c.hit.score += history_boost(history, history_key(entry));
-            }
-            c.title_cps = code_points(entry.title);
-            if (best->via == MatchedVia::Title) {
-                // Highlights are for Entry::title; a generic-title win highlights only if the
-                // query also matches the displayed title.
-                if (auto m = fuzzy.match(entry.title)) {
-                    c.hit.highlights = std::move(m->highlights);
+            if (best.has_value()) {
+                const Scored chosen = best.value_or(Scored{});
+                Candidate c;
+                c.hit.entry = i;
+                c.hit.score = chosen.score;
+                c.hit.via = chosen.via;
+                c.hit.alias = chosen.alias;
+                if (is_recordable(entry)) {
+                    c.hit.score += history_boost(history, history_key(entry));
                 }
+                c.title_cps = code_points(entry.title);
+                if (chosen.via == MatchedVia::Title) {
+                    // Highlights are for Entry::title; a generic-title win highlights only if the
+                    // query also matches the displayed title.
+                    if (auto m = fuzzy.match(entry.title)) {
+                        c.hit.highlights = std::move(m->highlights);
+                    }
+                }
+                candidates.push_back(std::move(c));
             }
-            candidates.push_back(std::move(c));
         }
 
         std::vector<std::size_t> order(candidates.size());

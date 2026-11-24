@@ -129,7 +129,9 @@ TEST_CASE("SequenceMatcher handles match, cancel, abort and timeout", "[commands
     CHECK(r2.consumed);
     CHECK_FALSE(r2.expired);
     REQUIRE(r2.binding.has_value());
-    CHECK(r2.binding->command == "keymap.edit");
+    if (r2.binding.has_value()) {
+        CHECK(r2.binding->command == "keymap.edit");
+    }
     CHECK_FALSE(matcher.pending());
 
     // Escape cancels pending sequence.
