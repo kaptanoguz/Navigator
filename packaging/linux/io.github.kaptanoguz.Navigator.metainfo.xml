@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.kaptanoguz.Navigator</id>
+  <name>Navigator</name>
+  <summary>Fast keyboard-driven file manager for Linux</summary>
+  <summary xml:lang="tr">Linux için hızlı, klavye odaklı dosya yöneticisi</summary>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>
+      Navigator is a fast, keyboard-first file manager for Linux built with C++20/23 and SDL3.
+      It features split panes, tabs, virtualized Details/Icons/List/Tree/Miller Columns views,
+      instant name filtering, cancellable content search, batch rename, XDG Trash, archive
+      browsing, GVfs mounts, Git status badges, and a C ABI plugin system.
+    </p>
+  </description>
+  <launchable type="desktop-id">navigator.desktop</launchable>
+  <url type="homepage">https://github.com/kaptanoguz/Navigator</url>
+  <provides>
+    <binary>navigator</binary>
+  </provides>
+  <releases>
+    <release version="0.1.0" date="2026-11-24">
+      <description>
+        <p>Initial 0.1.0 release with .deb packaging, full keyboard-driven browser, preview inspector, file operations, and Linux extras.</p>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1"/>
+</component>
