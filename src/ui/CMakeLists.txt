@@ -79,6 +79,7 @@ endif()
 
 add_library(navigator_ui STATIC
     browser/browser_chrome.cpp
+    browser/browser_modes_view.cpp
     browser/browser_search_view.cpp
     browser/browser_view.cpp
     input/sdl_input.cpp

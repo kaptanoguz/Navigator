@@ -98,6 +98,7 @@
 #include <navigator/palette.hpp>
 #include <navigator/path_input.hpp>
 #include <navigator/places.hpp>
+#include <navigator/view_settings.hpp>
 #include <navigator/platform.hpp>
 #include <navigator/preview.hpp>
 #include <navigator/preview_service.hpp>
@@ -379,6 +380,12 @@ struct App::Impl {
     bool keymap_dirty = false;
     bool history_dirty = false;
     bool pins_dirty = false;
+    // Phase 9A: hierarchical per-folder view settings (Global / Hierarchy / Folder).
+    view::ViewSettingsStore view_settings;
+    bool view_settings_dirty = false;
+    std::unordered_map<std::uint32_t, std::uint64_t> tab_view_serials;
+    void sync_tab_view_settings(ui::BrowserModel& m, std::uint32_t tab_val);
+    void persist_view_change(ui::BrowserModel& m);
     ui::PaletteOverlay palette_overlay;
     ui::ContextMenuOverlay context_menu;
     ui::KeymapSettingsOverlay keymap_settings;
@@ -599,6 +606,9 @@ Result<void> App::Impl::init(const AppConfig& config) {
         }
         if (auto mp = menu::load_pins(menu::pins_file(config_root)); mp) {
             menu_pins = std::move(*mp);
+        }
+        if (auto vs = view::load_view_settings(view::view_settings_file(config_root)); vs) {
+            view_settings = std::move(*vs);
         }
     }
     rebuild_keymap_from_file();
@@ -1000,13 +1010,38 @@ void App::Impl::flush_phase8_files() {
         pins_dirty = false;
         (void)menu::save_pins(menu::pins_file(config_root), menu_pins);
     }
+    if (view_settings_dirty) {
+        view_settings_dirty = false;
+        (void)view::save_view_settings(view::view_settings_file(config_root), view_settings);
+    }
+}
+
+void App::Impl::sync_tab_view_settings(ui::BrowserModel& m, std::uint32_t tab_val) {
+    if (!m.loaded() || m.current_dir().empty()) {
+        return;
+    }
+    const std::uint64_t loc_s = m.location_serial();
+    auto it = tab_view_serials.find(tab_val);
+    if (it != tab_view_serials.end() && it->second == loc_s) {
+        return;
+    }
+    tab_view_serials[tab_val] = loc_s;
+    const view::ResolvedViewSettings resolved = view_settings.resolve(m.current_dir());
+    m.apply_view_settings(resolved.settings, resolved.scope, resolved.rule_path);
+}
+
+void App::Impl::persist_view_change(ui::BrowserModel& m) {
+    if (!m.current_dir().empty()) {
+        view_settings.apply_change(m.current_dir(), m.view_settings());
+        view_settings_dirty = true;
+    }
 }
 
 void App::Impl::persist_tick(double t_ms) {
     if (places) {
         places->tick(t_ms);
     }
-    if (keymap_dirty || history_dirty || pins_dirty) {
+    if (keymap_dirty || history_dirty || pins_dirty || view_settings_dirty) {
         flush_phase8_files();
     }
     if (workspace->persist_serial() != seen_persist) {
@@ -2274,7 +2309,85 @@ void App::Impl::execute(const Command& command) {
         }
         return;
     }
-    case CommandId::ToggleViewLock: return; // stub (docs/keymap.md)
+    case CommandId::ToggleViewLock: {
+        ui::BrowserModel& m = workspace->active_model();
+        if (!m.current_dir().empty()) {
+            const view::ViewScope next =
+                view_settings.cycle_lock(m.current_dir(), m.view_settings());
+            const view::ResolvedViewSettings res = view_settings.resolve(m.current_dir());
+            m.set_view_scope(res.scope, res.rule_path);
+            view_settings_dirty = true;
+            const char* key = next == view::ViewScope::Folder      ? "view.lock.folder"
+                              : next == view::ViewScope::Hierarchy ? "view.lock.hierarchy"
+                                                                   : "view.lock.global";
+            toast(std::string(tr(key)));
+        }
+        return;
+    }
+    case CommandId::ViewLockFolder:
+    case CommandId::ViewLockHierarchy:
+    case CommandId::ViewLockGlobal: {
+        ui::BrowserModel& m = workspace->active_model();
+        if (!m.current_dir().empty()) {
+            const view::ViewScope scope =
+                command.id == CommandId::ViewLockFolder      ? view::ViewScope::Folder
+                : command.id == CommandId::ViewLockHierarchy ? view::ViewScope::Hierarchy
+                                                             : view::ViewScope::Global;
+            view_settings.set_lock(m.current_dir(), scope, m.view_settings());
+            const view::ResolvedViewSettings res = view_settings.resolve(m.current_dir());
+            m.apply_view_settings(res.settings, res.scope, res.rule_path);
+            view_settings_dirty = true;
+            const char* key = scope == view::ViewScope::Folder      ? "view.lock.folder"
+                              : scope == view::ViewScope::Hierarchy ? "view.lock.hierarchy"
+                                                                    : "view.lock.global";
+            toast(std::string(tr(key)));
+        }
+        return;
+    }
+    case CommandId::ViewModeDetails:
+    case CommandId::ViewModeIcons:
+    case CommandId::ViewModeList:
+    case CommandId::ViewModeTree:
+    case CommandId::ViewCycleMode: {
+        ui::BrowserModel& m = workspace->active_model();
+        const view::ViewMode next =
+            command.id == CommandId::ViewModeDetails ? view::ViewMode::Details
+            : command.id == CommandId::ViewModeIcons ? view::ViewMode::Icons
+            : command.id == CommandId::ViewModeList  ? view::ViewMode::List
+            : command.id == CommandId::ViewModeTree  ? view::ViewMode::Tree
+                                                     : view::next_view_mode(m.view_mode());
+        m.set_view_mode(next);
+        persist_view_change(m);
+        return;
+    }
+    case CommandId::ViewZoomIn:
+    case CommandId::ViewZoomOut:
+    case CommandId::ViewZoomReset: {
+        ui::BrowserModel& m = workspace->active_model();
+        if (command.id == CommandId::ViewZoomReset) {
+            m.set_zoom_percent(view::kDefaultZoomPercent);
+        } else {
+            m.step_zoom(command.id == CommandId::ViewZoomIn ? 1 : -1);
+        }
+        persist_view_change(m);
+        return;
+    }
+    case CommandId::GroupByNone:
+    case CommandId::GroupByDate:
+    case CommandId::GroupByType:
+    case CommandId::GroupBySize:
+    case CommandId::GroupCycle: {
+        ui::BrowserModel& m = workspace->active_model();
+        const view::GroupBy next =
+            command.id == CommandId::GroupByNone   ? view::GroupBy::None
+            : command.id == CommandId::GroupByDate ? view::GroupBy::Date
+            : command.id == CommandId::GroupByType ? view::GroupBy::Type
+            : command.id == CommandId::GroupBySize ? view::GroupBy::Size
+                                                   : view::next_group_by(m.group_by());
+        m.set_group_by(next);
+        persist_view_change(m);
+        return;
+    }
     case CommandId::FocusAddressBar:
         focus_sidebar(false);
         view.open_address_bar(*workspace, home, now_ms());
@@ -3430,6 +3543,62 @@ void App::Impl::apply_intents() {
                 file_ops->transfer(
                     std::move(pd.items), pd.folder,
                     static_cast<transfer::DropAction>(std::min<std::size_t>(in.index, 3)));
+            }
+            break;
+        case Kind::SetViewMode:
+            if (m != nullptr) {
+                m->set_view_mode(static_cast<view::ViewMode>(in.index));
+                persist_view_change(*m);
+            }
+            break;
+        case Kind::SetZoomPercent:
+            if (m != nullptr) {
+                if (in.additive && m->view_mode() == view::ViewMode::Details) {
+                    m->set_view_mode(view::ViewMode::Icons);
+                }
+                m->set_zoom_percent(static_cast<int>(in.index));
+                persist_view_change(*m);
+            }
+            break;
+        case Kind::StepZoom:
+            if (m != nullptr) {
+                m->step_zoom(in.position >= 0.0 ? 1 : -1);
+                persist_view_change(*m);
+            }
+            break;
+        case Kind::ReorderColumn:
+            if (m != nullptr) {
+                m->reorder_column(in.row, in.row_last);
+                persist_view_change(*m);
+            }
+            break;
+        case Kind::ToggleGroup:
+            if (m != nullptr) {
+                m->toggle_group_collapsed(static_cast<std::uint8_t>(in.index));
+            }
+            break;
+        case Kind::TreeToggle:
+            if (m != nullptr) {
+                m->tree_toggle(in.path);
+            }
+            break;
+        case Kind::TreeClickRow:
+            if (m != nullptr) {
+                m->set_tree_cursor(in.row);
+                const auto& tr = m->tree_rows();
+                if (in.row < tr.size()) {
+                    const ui::TreeRow& row = tr[in.row];
+                    if (row.root_row != ui::kTreeNoRootRow && row.root_row < m->row_count()) {
+                        m->click_row(row.root_row, in.mods);
+                    }
+                    if (in.additive) {
+                        if (row.expandable) {
+                            m->navigate_to(row.full_path);
+                        } else if (launcher != nullptr) {
+                            (void)platform::open_with_default(row.full_path, *launcher);
+                        }
+                    }
+                }
             }
             break;
         }
@@ -4622,6 +4791,11 @@ int App::run() {
                 s.places->record_visit(v, now, now_ms());
             }
             s.dirty = true;
+        }
+        if (const layout::TabId active_tab = s.workspace->active_tab(); active_tab.valid()) {
+            if (ui::BrowserModel* m = s.workspace->model(active_tab); m != nullptr) {
+                s.sync_tab_view_settings(*m, active_tab.value);
+            }
         }
         if (s.view.poll_paths(now_ms(), s.outcomes)) {
             s.dirty = true;

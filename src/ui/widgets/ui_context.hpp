@@ -87,6 +87,14 @@ struct Intent {
         TrashClickRow,    // row, mods (Trash view)
         TrashClearSelect, // click on empty space of the Trash view
         DropChoose,       // index = transfer::DropAction chosen in the drop menu (Alt drops)
+        // Phase 9A (views, zoom, grouping, columns, tree).
+        SetViewMode,    // tab, index = view::ViewMode
+        SetZoomPercent, // tab, index = zoom percent [50..400], additive = switch to Icons if Details
+        StepZoom,       // tab, position = delta steps (+1 / -1)
+        ReorderColumn,  // tab, row = from index, row_last = to index
+        ToggleGroup,    // tab, index = bucket id
+        TreeToggle,     // tab, path = folder path
+        TreeClickRow,   // tab, row = tree row index, mods, additive = activate/double-click
     };
     Kind kind = Kind::ClickRow;
     // The tab whose model a list intent applies to (layout::TabId value); set by the view.
@@ -147,6 +155,13 @@ enum class WidgetId : std::uint16_t {
     // Phase 7.
     OpsWidget, // + index: chip, panel buttons, notice buttons, sheet buttons
     TrashRows, // a press on a Trash view row
+    // Phase 9A.
+    ViewLock,    // address-bar view settings lock button
+    ViewModeBtn, // + index: footer view-mode switcher
+    ZoomSlider,  // footer zoom % slider
+    HeaderDrag,  // column header drag-to-reorder
+    GroupHeader, // + index: collapsible group header
+    TreeChevron, // + index: tree disclosure chevron
 };
 
 } // namespace navigator::ui
