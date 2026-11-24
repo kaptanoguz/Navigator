@@ -1,68 +1,81 @@
-# Navigator
+<p align="center">
+  <img src="packaging/linux/navigator.svg" alt="Navigator Logo" width="84" height="84">
+</p>
 
-**Navigator** is an independent, fast, keyboard-first file manager for Linux written in C++20/23 with SDL3, FreeType, and HarfBuzz.
+<h1 align="center">Navigator</h1>
 
-> Navigator is an independent Linux project inspired by File Pilot’s documented UX. It contains no third-party proprietary assets, branding, or binaries.
+<p align="center">
+  A fast, clean, keyboard-first file manager for Linux.
+</p>
 
-## Features
+<p align="center">
+  <img src="docs/images/navigator-dark.png" alt="Navigator Dark Theme" width="820">
+</p>
 
-- **Workspace & Views**: Split panes, independent tabs per pane, saved layouts, session restore, virtualized **Details**, **Icons**, **List**, **Tree**, and **Miller Columns** views (`Ctrl+1`–`Ctrl+5`), live zoom axis (`Ctrl+=`/`Ctrl+-`/`Ctrl+wheel`), grouping, and hierarchical per-folder View Lock.
-- **Fast Search & Filter**: Instant type-to-filter, fuzzy/substring matching, recursive flattened view (`Ctrl+E`), persistent per-volume name index, and cancellable content search (`Ctrl+Shift+G`).
-- **Inspector & Previews**: Docked image/video/text/folder Inspector (`Space`), EXIF metadata, Freedesktop thumbnail cache interop, and bubblewrap-sandboxed external thumbnailers.
-- **File Operations & Trash**: Off-thread copy/move/delete/rename with conflict resolution, XDG Trash (`~/.local/share/Trash`), multi-step Undo/Redo, and interactive Batch Rename (`Shift+F2`) with cyclic swap staging.
-- **Customization**: Command Palette (`Ctrl+Shift+P`), searchable context menu, remappable keymap (`keymap.json`), built-in Dark/Light & custom JSON themes, font/spacing scaling, and EN/TR translations.
-- **Linux Extras**: Optional GVfs/MTP/SMB/SFTP mounts (`gio-2.0`), cached Git status badges, Open Terminal Here (`F4`), virtual archive browsing/extraction (`libarchive`), single-instance IPC (`--new-tab`, `--select`), and C11/C++ C ABI plugins (`include/navigator/plugin.h`).
+---
 
-## Installing (`.deb` for Ubuntu 24.04 / Linux Mint 22+)
+## Highlights
 
-Download `navigator_0.1.0_amd64.deb` and `SHA256SUMS.txt` from the [Releases](https://github.com/kaptanoguz/Navigator/releases) page:
+- **Split Panes & Tabs** — Drag-to-split panes, independent tabs per pane, saved layouts, and automatic session restore.
+- **5 View Modes** — Switch effortlessly between **Details**, **Icons**, **List**, **Tree**, and **Miller Columns** (`Ctrl+1`–`Ctrl+5`), with live zoom (`Ctrl+=` / `Ctrl+-` / `Ctrl+wheel`).
+- **Instant Filtering & Search** — Start typing anywhere to filter files, flatten subfolders (`Ctrl+E`), or search inside file contents (`Ctrl+Shift+G`).
+- **Built-in Preview Inspector** — Press `Space` to inspect images, videos, text files, EXIF metadata, and folder summaries.
+- **Safe File Operations** — Background copy/move with conflict handling, XDG Trash support, multi-step Undo/Redo (`Ctrl+Z`), and interactive **Batch Rename** (`Shift+F2`).
+- **Customizable** — Command Palette (`Ctrl+Shift+P`), remappable shortcuts, Dark & Light themes, custom JSON color schemes, and English / Turkish UI.
+- **Linux Extras** — Browse inside `.zip` / `.tar` / `.7z` archives, open terminal here (`F4`), view Git status badges, and access network/device mounts (MTP, SMB, SFTP).
+
+<details>
+<summary>Preview Light Theme</summary>
+<p align="center">
+  <img src="docs/images/navigator-light.png" alt="Navigator Light Theme" width="820">
+</p>
+</details>
+
+---
+
+## Installation (Ubuntu 24.04 / Linux Mint 22+)
+
+Download the latest `.deb` package from [Releases](https://github.com/kaptanoguz/Navigator/releases) and install it:
 
 ```bash
-sha256sum -c SHA256SUMS.txt
 sudo apt install ./navigator_0.1.0_amd64.deb
 ```
 
-Or build the `.deb` locally:
+### Set as Default File Manager (Optional)
 
-```bash
-./packaging/deb/build-deb.sh
-sudo apt install ./dist/navigator_0.1.0_amd64.deb
-```
-
-## Setting Navigator as Default File Manager
-
-To open folders (`inode/directory`) in Navigator by default on GNOME / Cinnamon / XDG desktops:
+To open folders with Navigator by default on GNOME or Cinnamon:
 
 ```bash
 xdg-mime default navigator.desktop inode/directory
 ```
 
-Or run the included interactive helper:
+*(You can revert anytime with `xdg-mime default nemo.desktop inode/directory` or `org.gnome.Nautilus.desktop`.)*
 
-```bash
-/usr/share/doc/navigator/set-default-file-manager.sh
-```
+---
 
-To verify or revert (e.g., back to `nemo.desktop` or `org.gnome.Nautilus.desktop`):
+## Essential Shortcuts
 
-```bash
-xdg-mime query default inode/directory
-xdg-mime default nemo.desktop inode/directory
-```
+| Shortcut | Action |
+|---|---|
+| `Ctrl+Shift+P` | Open Command Palette |
+| `Ctrl+1` – `Ctrl+5` | Switch view (Details, Icons, List, Tree, Columns) |
+| `Space` | Toggle Preview Inspector |
+| `Ctrl+F` / `Ctrl+E` | Filter folder / Flatten subfolders |
+| `Ctrl+Shift+G` | Search inside files |
+| `F3` / `Ctrl+T` | Split pane / New tab |
+| `F4` | Open terminal here |
+| `Shift+F2` | Batch Rename |
+| `Ctrl+,` | Open Settings (Keymap & Appearance) |
+
+---
 
 ## Building from Source
 
-See [docs/building.md](docs/building.md) for full dependency lists and presets:
-
 ```bash
-cmake --preset dev
-cmake --build --preset dev
-ctest --preset dev
+cmake --preset release
+cmake --build --preset release
 ```
 
-## Documentation
+See [docs/building.md](docs/building.md) for dependencies, and [docs/manual.md](docs/manual.md) for the full user guide.
 
-- [User Manual](docs/manual.md)
-- [Keymap Reference](docs/keymap.md)
-- [Architecture](docs/architecture.md)
-- [Changelog](CHANGELOG.md)
+> Navigator is an independent open-source Linux file manager inspired by File Pilot’s documented UX. It contains no third-party proprietary assets, branding, or binaries.
