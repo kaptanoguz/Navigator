@@ -166,7 +166,7 @@ std::string unquote(const std::string& cell) {
 struct KeymapDoc {
     std::vector<DocRow> rows;
     std::vector<std::string> unbound;
-    std::size_t phase_rows[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}; // chord rows per phase (1 unused)
+    std::size_t phase_rows[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; // chord rows per phase (1 unused)
 };
 
 KeymapDoc read_keymap_doc() {
@@ -195,6 +195,8 @@ KeymapDoc read_keymap_doc() {
                 section = 7;
             } else if (line.starts_with("## Phase 8 defaults")) {
                 section = 8;
+            } else if (line.starts_with("## Phase 9 defaults")) {
+                section = 9;
             } else {
                 in_table = false;
             }
@@ -477,8 +479,9 @@ TEST_CASE("load_default_keymap binds exactly the docs/keymap.md tables, in order
     CHECK(parsed.phase_rows[6] == 2);  // Phase 6 chords
     CHECK(parsed.phase_rows[7] == 12); // Phase 7 chords
     CHECK(parsed.phase_rows[8] == 8);  // Phase 8 chords
-    REQUIRE(doc.size() == 3 + 25 + 21 + 5 + 4 + 2 + 12 + 8);
-    CHECK(doc.size() == 80); // 72 through Phase 7 + 8 Phase 8 chords
+    CHECK(parsed.phase_rows[9] == 10); // Phase 9A chords
+    REQUIRE(doc.size() == 3 + 25 + 21 + 5 + 4 + 2 + 12 + 8 + 10);
+    CHECK(doc.size() == 90); // 80 through Phase 8 + 10 Phase 9A chords
 
     Keymap keymap;
     REQUIRE(navigator::load_default_keymap(keymap));
@@ -543,7 +546,19 @@ TEST_CASE("every default binding resolves to a registered built-in", "[keymap][d
                                       CommandId::EditKeymap,
                                       CommandId::ResetKeymap,
                                       CommandId::ExportKeymap,
-                                      CommandId::OpenWith};
+                                      CommandId::OpenWith,
+                                      CommandId::ViewCycleMode,
+                                      CommandId::GroupByNone,
+                                      CommandId::GroupByDate,
+                                      CommandId::GroupByType,
+                                      CommandId::GroupBySize,
+                                      CommandId::GroupCycle,
+                                      CommandId::ViewLockFolder,
+                                      CommandId::ViewLockHierarchy,
+                                      CommandId::ViewLockGlobal,
+                                      CommandId::TreeExpand,
+                                      CommandId::TreeCollapse,
+                                      CommandId::TreeCollapseAll};
     for (const CommandInfo& info : registry.all()) {
         INFO("command " << info.name);
         CHECK(bound.contains(info.id) == !unbound.contains(info.id));
@@ -595,7 +610,19 @@ TEST_CASE("docs/keymap.md (unbound) rows are exactly the unbound built-ins", "[k
                                               "keymap.edit",
                                               "keymap.reset_defaults",
                                               "keymap.export",
-                                              "open_with.show"});
+                                              "open_with.show",
+                                              "view.cycle_mode",
+                                              "view.group_none",
+                                              "view.group_date",
+                                              "view.group_type",
+                                              "view.group_size",
+                                              "view.group_cycle",
+                                              "view.lock_folder",
+                                              "view.lock_hierarchy",
+                                              "view.lock_global",
+                                              "view.tree_expand",
+                                              "view.tree_collapse",
+                                              "view.tree_collapse_all"});
     std::set<std::string> actual;
     for (const CommandInfo& info : registry.all()) {
         if (keymap.chords_for(info.name).empty()) {

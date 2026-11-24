@@ -120,6 +120,17 @@ constexpr std::array kDefaults{
     DefaultBinding{{Key::Up, kCtrl}, "list.cursor_up", kKeepSelection},
     DefaultBinding{{Key::Down, kCtrl}, "list.cursor_down", kKeepSelection},
     DefaultBinding{{Key::J, kCtrl}, "ops.toggle_panel", 0},
+    // Phase 9A
+    DefaultBinding{{Key::Digit1, kCtrl}, "view.mode_details", 0},
+    DefaultBinding{{Key::Digit2, kCtrl}, "view.mode_icons", 0},
+    DefaultBinding{{Key::Digit3, kCtrl}, "view.mode_list", 0},
+    DefaultBinding{{Key::Digit4, kCtrl}, "view.mode_tree", 0},
+    DefaultBinding{{Key::Equals, kCtrl}, "view.zoom_in", 0},
+    DefaultBinding{{Key::KeypadPlus, kCtrl}, "view.zoom_in", 0},
+    DefaultBinding{{Key::Minus, kCtrl}, "view.zoom_out", 0},
+    DefaultBinding{{Key::KeypadMinus, kCtrl}, "view.zoom_out", 0},
+    DefaultBinding{{Key::Digit0, kCtrl}, "view.zoom_reset", 0},
+    DefaultBinding{{Key::Keypad0, kCtrl}, "view.zoom_reset", 0},
 };
 
 struct DefaultSequence {

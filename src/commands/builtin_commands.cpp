@@ -228,6 +228,45 @@ constexpr std::array kBuiltins{
     entry(CommandId::OpenWith, "open_with.show", CommandCategory::OpenWith)
         .needs(ContextFlags::HasCursorRow)
         .hidden_when(ContextFlags::TrashView),
+    // Phase 9A: view modes, zoom, grouping, view lock and tree.
+    entry(CommandId::ViewModeDetails, "view.mode_details", CommandCategory::View)
+        .hidden_when(ContextFlags::TrashView),
+    entry(CommandId::ViewModeIcons, "view.mode_icons", CommandCategory::View)
+        .hidden_when(ContextFlags::TrashView),
+    entry(CommandId::ViewModeList, "view.mode_list", CommandCategory::View)
+        .hidden_when(ContextFlags::TrashView),
+    entry(CommandId::ViewModeTree, "view.mode_tree", CommandCategory::View)
+        .hidden_when(ContextFlags::TrashView),
+    entry(CommandId::ViewCycleMode, "view.cycle_mode", CommandCategory::View)
+        .hidden_when(ContextFlags::TrashView),
+    entry(CommandId::ViewZoomIn, "view.zoom_in", CommandCategory::View)
+        .hidden_when(ContextFlags::TrashView),
+    entry(CommandId::ViewZoomOut, "view.zoom_out", CommandCategory::View)
+        .hidden_when(ContextFlags::TrashView),
+    entry(CommandId::ViewZoomReset, "view.zoom_reset", CommandCategory::View)
+        .hidden_when(ContextFlags::TrashView),
+    entry(CommandId::GroupByNone, "view.group_none", CommandCategory::View)
+        .hidden_when(ContextFlags::TrashView),
+    entry(CommandId::GroupByDate, "view.group_date", CommandCategory::View)
+        .hidden_when(ContextFlags::TrashView),
+    entry(CommandId::GroupByType, "view.group_type", CommandCategory::View)
+        .hidden_when(ContextFlags::TrashView),
+    entry(CommandId::GroupBySize, "view.group_size", CommandCategory::View)
+        .hidden_when(ContextFlags::TrashView),
+    entry(CommandId::GroupCycle, "view.group_cycle", CommandCategory::View)
+        .hidden_when(ContextFlags::TrashView),
+    entry(CommandId::ViewLockFolder, "view.lock_folder", CommandCategory::View)
+        .hidden_when(ContextFlags::TrashView),
+    entry(CommandId::ViewLockHierarchy, "view.lock_hierarchy", CommandCategory::View)
+        .hidden_when(ContextFlags::TrashView),
+    entry(CommandId::ViewLockGlobal, "view.lock_global", CommandCategory::View)
+        .hidden_when(ContextFlags::TrashView),
+    entry(CommandId::TreeExpand, "view.tree_expand", CommandCategory::View)
+        .hidden_when(ContextFlags::TrashView),
+    entry(CommandId::TreeCollapse, "view.tree_collapse", CommandCategory::View)
+        .hidden_when(ContextFlags::TrashView),
+    entry(CommandId::TreeCollapseAll, "view.tree_collapse_all", CommandCategory::View)
+        .hidden_when(ContextFlags::TrashView),
 };
 
 } // namespace
@@ -385,6 +424,25 @@ std::string_view to_string(CommandId id) noexcept {
     case CommandId::ExportKeymap: return "keymap.export";
     case CommandId::ShowContextMenu: return "menu.show_context";
     case CommandId::OpenWith: return "open_with.show";
+    case CommandId::ViewModeDetails: return "view.mode_details";
+    case CommandId::ViewModeIcons: return "view.mode_icons";
+    case CommandId::ViewModeList: return "view.mode_list";
+    case CommandId::ViewModeTree: return "view.mode_tree";
+    case CommandId::ViewCycleMode: return "view.cycle_mode";
+    case CommandId::ViewZoomIn: return "view.zoom_in";
+    case CommandId::ViewZoomOut: return "view.zoom_out";
+    case CommandId::ViewZoomReset: return "view.zoom_reset";
+    case CommandId::GroupByNone: return "view.group_none";
+    case CommandId::GroupByDate: return "view.group_date";
+    case CommandId::GroupByType: return "view.group_type";
+    case CommandId::GroupBySize: return "view.group_size";
+    case CommandId::GroupCycle: return "view.group_cycle";
+    case CommandId::ViewLockFolder: return "view.lock_folder";
+    case CommandId::ViewLockHierarchy: return "view.lock_hierarchy";
+    case CommandId::ViewLockGlobal: return "view.lock_global";
+    case CommandId::TreeExpand: return "view.tree_expand";
+    case CommandId::TreeCollapse: return "view.tree_collapse";
+    case CommandId::TreeCollapseAll: return "view.tree_collapse_all";
     }
     return "unknown";
 }

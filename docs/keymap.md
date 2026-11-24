@@ -709,32 +709,32 @@ Palette and menu items run the same `Command` a binding would, at frame end, so 
 and rule above still applies. The palette captures its context (selection, focused sidebar row,
 Trash view, running operations, undo state) before it takes focus.
 
-## Phase 9 defaults
+## Phase 9 defaults (view modes, zoom, grouping, view lock, tree)
 
-| Chord | Command | Arg | Behaviour |
-|-------|---------|-----|-----------|
-| `Ctrl+1` | `view.mode_details` | — | Switch active tab to Details view |
-| `Ctrl+2` | `view.mode_icons` | — | Switch active tab to Icon Grid view |
-| `Ctrl+3` | `view.mode_list` | — | Switch active tab to List/Columns view |
-| `Ctrl+4` | `view.mode_tree` | — | Switch active tab to Tree view |
-| `Ctrl+=` | `view.zoom_in` | — | Zoom in (Details -> Icons -> larger tiles) |
-| `Ctrl+KeypadPlus` | `view.zoom_in` | — | Same (keypad) |
-| `Ctrl+-` | `view.zoom_out` | — | Zoom out (smaller tiles -> Details) |
-| `Ctrl+KeypadMinus` | `view.zoom_out` | — | Same (keypad) |
-| `Ctrl+0` | `view.zoom_reset` | — | Reset zoom to 100% |
-| `Ctrl+Keypad0` | `view.zoom_reset` | — | Same (keypad) |
-| *(unbound)* | `view.cycle_mode` | — | Cycle Details -> Icons -> List -> Tree |
-| *(unbound)* | `view.group_none` | — | Disable grouping |
-| *(unbound)* | `view.group_date` | — | Group items by modification date |
-| *(unbound)* | `view.group_type` | — | Group items by file type category |
-| *(unbound)* | `view.group_size` | — | Group items by file size bucket |
-| *(unbound)* | `view.group_cycle` | — | Cycle grouping (None -> Date -> Type -> Size) |
-| *(unbound)* | `view.lock_folder` | — | Lock view settings to this folder |
-| *(unbound)* | `view.lock_hierarchy` | — | Lock view settings to this folder and subfolders |
-| *(unbound)* | `view.lock_global` | — | Use global view settings (clear folder lock) |
-| *(unbound)* | `view.tree_expand` | — | Expand cursor folder in Tree view |
-| *(unbound)* | `view.tree_collapse` | — | Collapse cursor folder (or move to parent) in Tree view |
-| *(unbound)* | `view.tree_collapse_all` | — | Collapse all expanded folders in Tree view |
+| Chord | Command name | CommandId | arg | Notes |
+|-------|--------------|-----------|-----|-------|
+| `Ctrl+1` | `view.mode_details` | `ViewModeDetails` (1400) | 0 | Switch active tab to Details view |
+| `Ctrl+2` | `view.mode_icons` | `ViewModeIcons` (1401) | 0 | Switch active tab to Icon Grid view |
+| `Ctrl+3` | `view.mode_list` | `ViewModeList` (1402) | 0 | Switch active tab to List/Columns view |
+| `Ctrl+4` | `view.mode_tree` | `ViewModeTree` (1403) | 0 | Switch active tab to Tree view |
+| `Ctrl+Equals` | `view.zoom_in` | `ViewZoomIn` (1405) | 0 | Zoom in (Details -> Icons -> larger tiles) |
+| `Ctrl+KeypadPlus` | `view.zoom_in` | `ViewZoomIn` (1405) | 0 | Same (keypad) |
+| `Ctrl+Minus` | `view.zoom_out` | `ViewZoomOut` (1406) | 0 | Zoom out (smaller tiles -> Details) |
+| `Ctrl+KeypadMinus` | `view.zoom_out` | `ViewZoomOut` (1406) | 0 | Same (keypad) |
+| `Ctrl+0` | `view.zoom_reset` | `ViewZoomReset` (1407) | 0 | Reset zoom to 100% |
+| `Ctrl+Keypad0` | `view.zoom_reset` | `ViewZoomReset` (1407) | 0 | Same (keypad) |
+| (unbound) | `view.cycle_mode` | `ViewCycleMode` (1404) | 0 | Cycle Details -> Icons -> List -> Tree |
+| (unbound) | `view.group_none` | `GroupByNone` (1410) | 0 | Disable grouping |
+| (unbound) | `view.group_date` | `GroupByDate` (1411) | 0 | Group items by modification date |
+| (unbound) | `view.group_type` | `GroupByType` (1412) | 0 | Group items by file type category |
+| (unbound) | `view.group_size` | `GroupBySize` (1413) | 0 | Group items by file size bucket |
+| (unbound) | `view.group_cycle` | `GroupCycle` (1414) | 0 | Cycle grouping (None -> Date -> Type -> Size) |
+| (unbound) | `view.lock_folder` | `ViewLockFolder` (1415) | 0 | Lock view settings to this folder |
+| (unbound) | `view.lock_hierarchy` | `ViewLockHierarchy` (1416) | 0 | Lock view settings to this folder and subfolders |
+| (unbound) | `view.lock_global` | `ViewLockGlobal` (1417) | 0 | Use global view settings (clear folder lock) |
+| (unbound) | `view.tree_expand` | `TreeExpand` (1420) | 0 | Expand cursor folder in Tree view |
+| (unbound) | `view.tree_collapse` | `TreeCollapse` (1421) | 0 | Collapse cursor folder (or move to parent) in Tree view |
+| (unbound) | `view.tree_collapse_all` | `TreeCollapseAll` (1422) | 0 | Collapse all expanded folders in Tree view |
 
 ## Later phases
 
