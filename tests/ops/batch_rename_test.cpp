@@ -206,9 +206,13 @@ TEST_CASE("Batch rename executes 200 files, handles swaps, and Undo/Redo restore
     REQUIRE(res.has_value());
     REQUIRE(res->done == 200);
     REQUIRE(res->failed == 0);
-    REQUIRE(res->record.has_value());
-    CHECK(res->record.value().kind == OpKind::BatchRename);
-    CHECK(make_label(res->record.value()).key == "undo.label.batch_rename");
+    const auto& rec_opt = res->record;
+    REQUIRE(rec_opt.has_value());
+    if (!rec_opt.has_value()) {
+        return;
+    }
+    CHECK(rec_opt->kind == OpKind::BatchRename);
+    CHECK(make_label(*rec_opt).key == "undo.label.batch_rename");
 
     CHECK(std::filesystem::exists((fx / "belge_001_öğe.txt").native()));
     CHECK(std::filesystem::exists((fx / "belge_200_öğe.txt").native()));
@@ -216,7 +220,7 @@ TEST_CASE("Batch rename executes 200 files, handles swaps, and Undo/Redo restore
 
     // Undo restores all 200 original names in one operation.
     UndoStack stack;
-    stack.record_done(res->record.value(), OpOrigin::User);
+    stack.record_done(*rec_opt, OpOrigin::User);
     auto undo_rec = stack.take_undo();
     REQUIRE(undo_rec != nullptr);
 
@@ -228,14 +232,18 @@ TEST_CASE("Batch rename executes 200 files, handles swaps, and Undo/Redo restore
     REQUIRE(undo_res.has_value());
     REQUIRE(undo_res->done == 200);
     REQUIRE(undo_res->failed == 0);
-    REQUIRE(undo_res->record.has_value());
+    const auto& undo_rec_opt = undo_res->record;
+    REQUIRE(undo_rec_opt.has_value());
+    if (!undo_rec_opt.has_value()) {
+        return;
+    }
 
     CHECK(std::filesystem::exists((fx / "file_0.txt").native()));
     CHECK(std::filesystem::exists((fx / "file_199.txt").native()));
     CHECK_FALSE(std::filesystem::exists((fx / "belge_001_öğe.txt").native()));
 
     // Redo reapplies all 200 renames.
-    stack.record_done(undo_res->record.value(), OpOrigin::Undo);
+    stack.record_done(*undo_rec_opt, OpOrigin::Undo);
     auto redo_rec = stack.take_redo();
     REQUIRE(redo_rec != nullptr);
 
@@ -274,10 +282,14 @@ TEST_CASE("Batch rename cyclic swap (a->b, b->c, c->a) succeeds and undoes clean
     CHECK(read_file_str(fx / "a.txt") == "CCC");
 
     // Undo the cyclic swap!
+    const auto& swap_rec_opt = res->record;
+    if (!swap_rec_opt.has_value()) {
+        return;
+    }
     OpRequest undo_req;
     undo_req.kind = OpKind::Undo;
     undo_req.origin = OpOrigin::Undo;
-    undo_req.record = std::make_shared<UndoRecord>(res->record.value());
+    undo_req.record = std::make_shared<UndoRecord>(*swap_rec_opt);
     auto undo_res = run(env, undo_req);
     REQUIRE(undo_res.has_value());
     REQUIRE(undo_res->done == 3);
