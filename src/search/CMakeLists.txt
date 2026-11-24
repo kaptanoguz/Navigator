@@ -4,6 +4,7 @@
 # injected WatcherFactory, never through src/platform.
 
 add_library(navigator_search STATIC
+    content_search.cpp
     index.cpp
     index_tree.cpp
     match.cpp
