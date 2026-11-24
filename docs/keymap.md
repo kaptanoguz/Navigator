@@ -723,6 +723,7 @@ Trash view, running operations, undo state) before it takes focus.
 | `Ctrl+KeypadMinus` | `view.zoom_out` | `ViewZoomOut` (1406) | 0 | Same (keypad) |
 | `Ctrl+0` | `view.zoom_reset` | `ViewZoomReset` (1407) | 0 | Reset zoom to 100% |
 | `Ctrl+Keypad0` | `view.zoom_reset` | `ViewZoomReset` (1407) | 0 | Same (keypad) |
+| `Shift+F2` | `file.batch_rename` | `BatchRename` (1350) | 0 | Open interactive Batch Rename for selection (or cursor item) |
 | (unbound) | `view.cycle_mode` | `ViewCycleMode` (1404) | 0 | Cycle Details -> Icons -> List -> Tree |
 | (unbound) | `view.group_none` | `GroupByNone` (1410) | 0 | Disable grouping |
 | (unbound) | `view.group_date` | `GroupByDate` (1411) | 0 | Group items by modification date |
@@ -735,6 +736,13 @@ Trash view, running operations, undo state) before it takes focus.
 | (unbound) | `view.tree_expand` | `TreeExpand` (1420) | 0 | Expand cursor folder in Tree view |
 | (unbound) | `view.tree_collapse` | `TreeCollapse` (1421) | 0 | Collapse cursor folder (or move to parent) in Tree view |
 | (unbound) | `view.tree_collapse_all` | `TreeCollapseAll` (1422) | 0 | Collapse all expanded folders in Tree view |
+| (unbound) | `view.toggle_animations` | `ToggleAnimations` (1430) | 0 | Toggle UI animations (crossfade, smooth scroll, fades) |
+| (unbound) | `view.toggle_alternating_rows` | `ToggleAlternatingRows` (1431) | 0 | Toggle alternating row zebra striping |
+| (unbound) | `view.cycle_density` | `CycleDensity` (1432) | 0 | Cycle list density (Compact / Comfortable) |
+| (unbound) | `view.font_size_increase` | `FontSizeIncrease` (1433) | 0 | Increase UI font scale |
+| (unbound) | `view.font_size_decrease` | `FontSizeDecrease` (1434) | 0 | Decrease UI font scale |
+| (unbound) | `view.font_size_reset` | `FontSizeReset` (1435) | 0 | Reset UI font scale to 100% |
+| (unbound) | `settings.appearance` | `OpenAppearanceSettings` (1436) | 0 | Open Settings on the Appearance page |
 
 ## Later phases
 
