@@ -870,10 +870,11 @@ void BrowserView::draw_rows(const BrowserFrame& f, const Layout& l) {
                 const ShapedText gt = p.shape(type::caption, gtxt);
                 const float bw = gt.width() + p.px(8.0F);
                 const float bh = std::round(p.px(15.0F));
-                const Color bcol = gs == git::GitFileState::Conflict    ? pal.danger
-                                   : gs == git::GitFileState::Deleted   ? pal.danger
-                                   : gs == git::GitFileState::Modified  ? pal.accent
-                                   : gs == git::GitFileState::Added     ? Color{0.25F, 0.72F, 0.42F, 1.0F}
+                const Color bcol = gs == git::GitFileState::Conflict   ? pal.danger
+                                   : gs == git::GitFileState::Deleted  ? pal.danger
+                                   : gs == git::GitFileState::Modified ? pal.accent
+                                   : gs == git::GitFileState::Added
+                                       ? Color{0.25F, 0.72F, 0.42F, 1.0F}
                                    : gs == git::GitFileState::Untracked ? pal.text_secondary
                                                                         : pal.text_muted;
                 r.fill_rounded_rect(snap(RectF{badge_x, std::round(mid - (0.5F * bh)), bw, bh}),

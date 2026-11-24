@@ -53,7 +53,8 @@ GitFileState classify_xy(char x, char y) noexcept {
 }
 
 std::string parse_branch_header(std::string_view entry) {
-    // Format: "## main...origin/main [ahead 1]" or "## No commits yet on main" or "## HEAD (no branch)"
+    // Format: "## main...origin/main [ahead 1]" or "## No commits yet on main" or "## HEAD (no
+    // branch)"
     if (entry.size() < 3 || entry.substr(0, 3) != "## ") {
         return {};
     }
@@ -209,8 +210,8 @@ struct GitStatusService::Impl {
 
             if (runner) {
                 platform::ProcessRequest req;
-                req.argv = {"git",     "-C", root.native(),       "status",
-                            "--porcelain=v1", "-z", "-b", "--ignored=matching"};
+                req.argv = {"git", "-C", root.native(),       "status", "--porcelain=v1",
+                            "-z",  "-b", "--ignored=matching"};
                 req.timeout = std::chrono::milliseconds{3000};
                 req.max_capture_bytes = std::size_t{2} * 1024U * 1024U;
 
@@ -324,8 +325,8 @@ std::optional<std::string> GitStatusService::branch_for(const Path& dir) const {
     }
     const std::string p = dir.lexically_normal().native();
     for (const auto& [root_str, snap] : impl_->cache) {
-        if (p == root_str || (p.size() > root_str.size() && p.starts_with(root_str) &&
-                              p[root_str.size()] == '/')) {
+        if (p == root_str ||
+            (p.size() > root_str.size() && p.starts_with(root_str) && p[root_str.size()] == '/')) {
             if (!snap.branch.empty()) {
                 return snap.branch;
             }

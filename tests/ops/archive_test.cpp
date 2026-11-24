@@ -29,8 +29,7 @@ void write_ustar_archive(const Path& tar_path,
         std::snprintf(hdr.data() + 100, 8, "%07o", 0644U);
         std::snprintf(hdr.data() + 108, 8, "%07o", 0U);
         std::snprintf(hdr.data() + 116, 8, "%07o", 0U);
-        std::snprintf(hdr.data() + 124, 12, "%011lo",
-                      static_cast<unsigned long>(content.size()));
+        std::snprintf(hdr.data() + 124, 12, "%011lo", static_cast<unsigned long>(content.size()));
         std::snprintf(hdr.data() + 136, 12, "%011lo", 1700000000UL);
         std::memset(hdr.data() + 148, ' ', 8);
         hdr[156] = '0'; // regular file

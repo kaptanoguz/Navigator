@@ -316,11 +316,11 @@ public:
 // ---------------------------------------------------------------------------------------------
 
 struct GvfsMount {
-    std::string id;          // stable mount identifier (typically root URI)
-    std::string name;        // user-visible label (e.g. "Pixel 8", "nas on server")
-    std::string uri;         // root URI (e.g. "mtp://...", "smb://host/share/", "sftp://...")
-    std::string scheme;      // lowercase URI scheme ("mtp", "smb", "sftp", ...)
-    Path local_path;         // FUSE mount path under /run/user/<uid>/gvfs/... if available, else empty
+    std::string id;     // stable mount identifier (typically root URI)
+    std::string name;   // user-visible label (e.g. "Pixel 8", "nas on server")
+    std::string uri;    // root URI (e.g. "mtp://...", "smb://host/share/", "sftp://...")
+    std::string scheme; // lowercase URI scheme ("mtp", "smb", "sftp", ...)
+    Path local_path;    // FUSE mount path under /run/user/<uid>/gvfs/... if available, else empty
     bool can_unmount = true;
 
     friend bool operator==(const GvfsMount&, const GvfsMount&) = default;

@@ -18,8 +18,8 @@ namespace {
     const view::ViewMode col_mode = view::ViewMode::Columns;
     (void)col_mode;
     const CommandId cmds[] = {
-        CommandId::OpenTerminalHere, CommandId::ViewModeColumns, CommandId::ContentSearch,
-        CommandId::ArchiveExtractHere, CommandId::ReloadPlugins, CommandId::UnmountVolume,
+        CommandId::OpenTerminalHere,   CommandId::ViewModeColumns, CommandId::ContentSearch,
+        CommandId::ArchiveExtractHere, CommandId::ReloadPlugins,   CommandId::UnmountVolume,
     };
     (void)cmds;
 

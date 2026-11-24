@@ -243,7 +243,7 @@ Result<void> open_terminal(const Path& dir, IAppLauncher& launcher) {
         }
         candidates.emplace_back("x-terminal-emulator");
         constexpr const char* kFallbacks[] = {
-            "gnome-terminal", "kgx",   "konsole",   "xfce4-terminal", "mate-terminal", "kitty",
+            "gnome-terminal", "kgx",     "konsole", "xfce4-terminal", "mate-terminal", "kitty",
             "alacritty",      "wezterm", "foot",    "tilix",          "xterm",
         };
         for (const char* name : kFallbacks) {

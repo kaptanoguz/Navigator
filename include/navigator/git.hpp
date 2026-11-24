@@ -36,24 +36,15 @@ enum class GitFileState : std::uint8_t {
 // Short single-character badge label for UI display ("M", "A", "?", "D", "R", "C", "!", "").
 [[nodiscard]] constexpr std::string_view git_state_badge(GitFileState state) noexcept {
     switch (state) {
-    case GitFileState::Modified:
-        return "M";
-    case GitFileState::Added:
-        return "A";
-    case GitFileState::Untracked:
-        return "?";
-    case GitFileState::Deleted:
-        return "D";
-    case GitFileState::Renamed:
-        return "R";
-    case GitFileState::Copied:
-        return "C";
-    case GitFileState::Conflict:
-        return "!";
-    case GitFileState::Ignored:
-        return "I";
-    case GitFileState::None:
-        return {};
+    case GitFileState::Modified: return "M";
+    case GitFileState::Added: return "A";
+    case GitFileState::Untracked: return "?";
+    case GitFileState::Deleted: return "D";
+    case GitFileState::Renamed: return "R";
+    case GitFileState::Copied: return "C";
+    case GitFileState::Conflict: return "!";
+    case GitFileState::Ignored: return "I";
+    case GitFileState::None: return {};
     }
     return {};
 }

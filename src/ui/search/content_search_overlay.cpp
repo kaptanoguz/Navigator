@@ -185,13 +185,12 @@ std::optional<Path> ContentSearchOverlay::draw(const Painter& p, const Palette& 
     y += field_h + p.px(8.0F);
 
     // Status line.
-    const std::string status_s =
-        session_.active()
-            ? std::string(tr("content_search.searching")) + " (" +
-                  std::to_string(stats_.files_scanned) + " files, " +
-                  std::to_string(matches_.size()) + " matches)"
-            : std::to_string(matches_.size()) + " matches (" +
-                  std::to_string(stats_.files_scanned) + " files)";
+    const std::string status_s = session_.active()
+                                     ? std::string(tr("content_search.searching")) + " (" +
+                                           std::to_string(stats_.files_scanned) + " files, " +
+                                           std::to_string(matches_.size()) + " matches)"
+                                     : std::to_string(matches_.size()) + " matches (" +
+                                           std::to_string(stats_.files_scanned) + " files)";
     const ShapedText stat_t = p.shape(type::caption, status_s);
     p.draw(stat_t, box.x + pad, y + stat_t.cap_height(), pal.text_muted);
     y += std::round(p.px(20.0F));
@@ -200,8 +199,7 @@ std::optional<Path> ContentSearchOverlay::draw(const Painter& p, const Palette& 
     const RectF list_rect{box.x + pad, y, box.w - (2.0F * pad),
                           std::max(0.0F, box.bottom() - pad - y)};
     const float row_h = std::round(p.px(36.0F));
-    const auto visible =
-        static_cast<std::size_t>(std::max(1.0F, std::floor(list_rect.h / row_h)));
+    const auto visible = static_cast<std::size_t>(std::max(1.0F, std::floor(list_rect.h / row_h)));
     if (cursor_ < scroll_row_) {
         scroll_row_ = cursor_;
     } else if (cursor_ >= scroll_row_ + visible) {
@@ -210,8 +208,8 @@ std::optional<Path> ContentSearchOverlay::draw(const Painter& p, const Palette& 
     if (contains(list_rect, ptr.x, ptr.y) && ptr.wheel_y != 0.0F && matches_.size() > visible) {
         const int delta = ptr.wheel_y > 0.0F ? -3 : 3;
         const auto max_s = matches_.size() - visible;
-        const int next = std::clamp(static_cast<int>(scroll_row_) + delta, 0,
-                                    static_cast<int>(max_s));
+        const int next =
+            std::clamp(static_cast<int>(scroll_row_) + delta, 0, static_cast<int>(max_s));
         scroll_row_ = static_cast<std::size_t>(next);
     }
 

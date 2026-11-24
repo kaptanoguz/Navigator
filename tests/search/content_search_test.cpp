@@ -83,8 +83,8 @@ TEST_CASE("search::content_search respects case sensitivity and cancellation",
     opts.case_sensitive = true;
 
     std::vector<ContentMatch> hits;
-    auto scanned = navigator::search::search_file_content(tmp.path() / "f0.txt", "f0.txt", opts,
-                                                          hits);
+    auto scanned =
+        navigator::search::search_file_content(tmp.path() / "f0.txt", "f0.txt", opts, hits);
     REQUIRE(scanned.has_value());
     CHECK(*scanned == true);
     REQUIRE(hits.size() == 1);

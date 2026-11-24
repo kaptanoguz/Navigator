@@ -166,7 +166,8 @@ std::string unquote(const std::string& cell) {
 struct KeymapDoc {
     std::vector<DocRow> rows;
     std::vector<std::string> unbound;
-    std::size_t phase_rows[11] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; // chord rows per phase (1 unused)
+    std::size_t phase_rows[11] = {0, 0, 0, 0, 0, 0,
+                                  0, 0, 0, 0, 0}; // chord rows per phase (1 unused)
 };
 
 KeymapDoc read_keymap_doc() {

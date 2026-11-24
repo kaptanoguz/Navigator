@@ -17,14 +17,14 @@
 namespace {
 
 using navigator::ErrorCode;
-using navigator::Path;
-using navigator::Result;
 using navigator::fail;
 using navigator::ok;
+using navigator::Path;
+using navigator::Result;
 using navigator::platform::IAppLauncher;
-using navigator::platform::IProcessRunner;
 using navigator::platform::IpcAction;
 using navigator::platform::IpcMessage;
+using navigator::platform::IProcessRunner;
 using navigator::platform::LaunchRequest;
 using navigator::platform::ProcessRequest;
 using navigator::platform::ProcessResult;
@@ -169,7 +169,8 @@ TEST_CASE("git::parse_porcelain_v1_z parses branch, statuses, renames and dir pr
     CHECK(snap.file_states.at("src/renamed.cpp") == navigator::git::GitFileState::Renamed);
     CHECK(snap.file_states.at("build/out.o") == navigator::git::GitFileState::Ignored);
 
-    // Directory propagation: src/app -> Modified, src -> Renamed (higher severity than Modified/Added)
+    // Directory propagation: src/app -> Modified, src -> Renamed (higher severity than
+    // Modified/Added)
     CHECK(snap.dir_states.at("src/app") == navigator::git::GitFileState::Modified);
     CHECK(snap.dir_states.at("src") == navigator::git::GitFileState::Renamed);
     CHECK_FALSE(snap.dir_states.contains("build")); // Ignored does not propagate to parent dir

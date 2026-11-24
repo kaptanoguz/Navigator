@@ -334,18 +334,12 @@ float BrowserView::draw_view_footer_controls(const BrowserFrame& f, const Layout
     // 2. View mode buttons (Details, Icons, List, Tree, Columns) left of slider.
     x -= std::round(p.px(10.0F));
     constexpr std::array<view::ViewMode, 5> kModes{
-        view::ViewMode::Columns,
-        view::ViewMode::Tree,
-        view::ViewMode::List,
-        view::ViewMode::Icons,
-        view::ViewMode::Details,
+        view::ViewMode::Columns, view::ViewMode::Tree,    view::ViewMode::List,
+        view::ViewMode::Icons,   view::ViewMode::Details,
     };
     constexpr std::array<const char*, 5> kKeys{
-        "view.mode.columns",
-        "view.mode.tree",
-        "view.mode.list",
-        "view.mode.icons",
-        "view.mode.details",
+        "view.mode.columns", "view.mode.tree",    "view.mode.list",
+        "view.mode.icons",   "view.mode.details",
     };
     for (std::size_t i = 0; i < kModes.size(); ++i) {
         x -= btn_sz;
@@ -902,9 +896,8 @@ void BrowserView::draw_columns_view(const BrowserFrame& f, const Layout& l) {
         if (label.empty()) {
             label = chain[idx].native();
         }
-        const ShapedText t =
-            fitter_.fit(p, type::row, display_name(label), std::max(ar.w - p.px(16.0F), p.px(20.0F)),
-                        Elide::End);
+        const ShapedText t = fitter_.fit(p, type::row, display_name(label),
+                                         std::max(ar.w - p.px(16.0F), p.px(20.0F)), Elide::End);
         p.draw(t, ar.x + p.px(8.0F), std::round(ar.center_y() + (0.5F * t.cap_height())),
                is_cur ? pal.text_primary : pal.text_secondary);
         ay += l.row_h;
@@ -954,9 +947,9 @@ void BrowserView::draw_columns_view(const BrowserFrame& f, const Layout& l) {
         const bool dir = fs::is_directory_like(e);
         const float tx = ix + icon_sz + p.px(8.0F);
         const float right_reserve = dir ? p.px(22.0F) : p.px(10.0F);
-        const ShapedText nt = fitter_.fit(
-            p, type::row, display_name(e.name),
-            std::max(rr.right() - tx - right_reserve, p.px(24.0F)), Elide::End);
+        const ShapedText nt =
+            fitter_.fit(p, type::row, display_name(e.name),
+                        std::max(rr.right() - tx - right_reserve, p.px(24.0F)), Elide::End);
         p.draw(nt, tx, std::round(mid + (0.5F * nt.cap_height())), pal.text_primary);
         if (dir) {
             draw_chevron(r, rr.right() - p.px(10.0F), mid, p.px(8.0F), Direction::Right, hair,

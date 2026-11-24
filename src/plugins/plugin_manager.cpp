@@ -29,9 +29,7 @@ bool has_field(std::uint32_t struct_size, std::size_t field_end) noexcept {
     return static_cast<std::size_t>(struct_size) >= field_end;
 }
 
-std::string safe_cstr(const char* s) {
-    return s != nullptr ? std::string(s) : std::string{};
-}
+std::string safe_cstr(const char* s) { return s != nullptr ? std::string(s) : std::string{}; }
 
 } // namespace
 
@@ -101,9 +99,8 @@ Result<LoadedPluginInfo> PluginManager::load_file(const Path& so_path) {
         void* handle = ::dlopen(so_path.c_str(), RTLD_NOW | RTLD_LOCAL);
         if (handle == nullptr) {
             const char* err = ::dlerror();
-            return fail(ErrorCode::PlatformError,
-                        std::string("plugins: dlopen failed: ") +
-                            (err != nullptr ? err : "unknown error"));
+            return fail(ErrorCode::PlatformError, std::string("plugins: dlopen failed: ") +
+                                                      (err != nullptr ? err : "unknown error"));
         }
 
         // Clear any previous dlerror, then resolve entry symbol.
@@ -124,14 +121,15 @@ Result<LoadedPluginInfo> PluginManager::load_file(const Path& so_path) {
         }
         if (info->abi_version != NAVIGATOR_PLUGIN_ABI_VERSION) {
             ::dlclose(handle);
-            return fail(ErrorCode::Unsupported,
-                        "plugins: ABI version mismatch (expected " +
-                            std::to_string(NAVIGATOR_PLUGIN_ABI_VERSION) + ", got " +
-                            std::to_string(info->abi_version) + ")");
+            return fail(ErrorCode::Unsupported, "plugins: ABI version mismatch (expected " +
+                                                    std::to_string(NAVIGATOR_PLUGIN_ABI_VERSION) +
+                                                    ", got " + std::to_string(info->abi_version) +
+                                                    ")");
         }
         if (info->struct_size < kMinInfoStructSize) {
             ::dlclose(handle);
-            return fail(ErrorCode::Unsupported, "plugins: NavigatorPluginInfo struct_size too small");
+            return fail(ErrorCode::Unsupported,
+                        "plugins: NavigatorPluginInfo struct_size too small");
         }
         if (info->id == nullptr || info->id[0] == '\0' || info->name == nullptr ||
             info->name[0] == '\0') {
@@ -308,9 +306,9 @@ Result<void> PluginManager::invoke_command(std::string_view command_id, const Pa
                 for (const Path& p : selected_paths) {
                     ptrs.push_back(p.c_str());
                 }
-                const int rc = cmd.callback(
-                    current_dir.c_str(), ptrs.empty() ? nullptr : ptrs.data(),
-                    static_cast<std::uint32_t>(ptrs.size()), cmd.user_data);
+                const int rc =
+                    cmd.callback(current_dir.c_str(), ptrs.empty() ? nullptr : ptrs.data(),
+                                 static_cast<std::uint32_t>(ptrs.size()), cmd.user_data);
                 if (rc != 0) {
                     return fail(ErrorCode::PlatformError,
                                 "plugins: command '" + std::string(command_id) +

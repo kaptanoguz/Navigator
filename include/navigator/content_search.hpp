@@ -36,11 +36,11 @@ struct ContentSearchOptions {
 
 struct ContentMatch {
     Path file_path;
-    std::string rel_path;         // relative to root
+    std::string rel_path;          // relative to root
     std::uint32_t line_number = 0; // 1-based
     std::uint32_t column = 0;      // 0-based byte offset in line_snippet
     std::uint32_t match_length = 0;
-    std::string line_snippet;     // trimmed line text around match
+    std::string line_snippet; // trimmed line text around match
 };
 
 struct ContentSearchStats {

@@ -123,20 +123,18 @@ public:
             constexpr const char* kAttrs =
                 "standard::name,standard::display-name,standard::type,standard::size,"
                 "standard::is-hidden,time::modified,access::can-read";
-            GFileEnumerator* enumerator =
-                g_file_enumerate_children(dir, kAttrs, G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS,
-                                          nullptr, &err);
+            GFileEnumerator* enumerator = g_file_enumerate_children(
+                dir, kAttrs, G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, nullptr, &err);
             g_object_unref(dir);
             if (enumerator == nullptr) {
                 const std::string msg = err != nullptr && err->message != nullptr
                                             ? std::string(err->message)
                                             : std::string("gvfs: enumerate failed");
-                const ErrorCode code = (err != nullptr && err->code == G_IO_ERROR_NOT_FOUND)
-                                           ? ErrorCode::NotFound
-                                           : (err != nullptr &&
-                                              err->code == G_IO_ERROR_PERMISSION_DENIED)
-                                                 ? ErrorCode::PermissionDenied
-                                                 : ErrorCode::IoError;
+                const ErrorCode code =
+                    (err != nullptr && err->code == G_IO_ERROR_NOT_FOUND) ? ErrorCode::NotFound
+                    : (err != nullptr && err->code == G_IO_ERROR_PERMISSION_DENIED)
+                        ? ErrorCode::PermissionDenied
+                        : ErrorCode::IoError;
                 if (err != nullptr) {
                     g_error_free(err);
                 }
@@ -182,8 +180,8 @@ public:
                 if (mtime_sec > 0) {
                     entry.mtime = Timestamp{std::chrono::seconds{mtime_sec}};
                 }
-                entry.hidden = g_file_info_get_is_hidden(info) != 0 ||
-                               fs::is_hidden_name(entry.name);
+                entry.hidden =
+                    g_file_info_get_is_hidden(info) != 0 || fs::is_hidden_name(entry.name);
                 entry.readable =
                     !g_file_info_has_attribute(info, G_FILE_ATTRIBUTE_ACCESS_CAN_READ) ||
                     g_file_info_get_attribute_boolean(info, G_FILE_ATTRIBUTE_ACCESS_CAN_READ) != 0;

@@ -133,8 +133,8 @@ bool libarchive_available() noexcept {
 bool is_archive_name(std::string_view name) noexcept {
     const std::string lower = lowercase_ascii(name);
     constexpr std::array<std::string_view, 14> kSuffixes = {
-        ".tar.gz",  ".tar.bz2", ".tar.xz", ".tar.zst", ".zip", ".tar", ".tgz",
-        ".tbz2",    ".txz",     ".7z",     ".cbz",     ".jar", ".apk", ".rar",
+        ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".zip", ".tar", ".tgz",
+        ".tbz2",   ".txz",     ".7z",     ".cbz",     ".jar", ".apk", ".rar",
     };
     for (std::string_view sfx : kSuffixes) {
         if (lower.size() > sfx.size() && lower.ends_with(sfx)) {
@@ -163,9 +163,8 @@ Path make_archive_path(const Path& archive_file, std::string_view inner_path) {
     return Path(std::move(out));
 }
 
-Result<std::vector<fs::DirEntry>> list_archive_directory(const Path& archive_file,
-                                                         std::string_view inner_dir,
-                                                         std::stop_token stop) {
+Result<std::vector<fs::DirEntry>>
+list_archive_directory(const Path& archive_file, std::string_view inner_dir, std::stop_token stop) {
 #if defined(NAVIGATOR_HAVE_LIBARCHIVE) && NAVIGATOR_HAVE_LIBARCHIVE
     try {
         if (stop.stop_requested()) {

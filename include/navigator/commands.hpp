@@ -376,11 +376,13 @@ enum class CommandId : std::uint32_t {
     OpenAppearanceSettings = 1436, // "settings.appearance"        open Settings on Appearance page
 
     // Phase 10: Miller columns, content search, archives, plugins, GVfs unmount. arg: 0.
-    ViewModeColumns = 1440,    // "view.mode_columns"     switch active tab to Miller Columns (Ctrl+5)
-    ContentSearch = 1441,      // "search.content"        open/focus content search overlay (Ctrl+Shift+G)
-    ArchiveExtractHere = 1442, // "archive.extract_here"  extract selected archive(s) into current dir
-    ReloadPlugins = 1443,      // "plugins.reload"        reload C ABI plugins from plugin_dir
-    UnmountVolume = 1444,      // "volume.unmount"        unmount selected GVfs mount in sidebar
+    ViewModeColumns = 1440, // "view.mode_columns"     switch active tab to Miller Columns (Ctrl+5)
+    ContentSearch =
+        1441, // "search.content"        open/focus content search overlay (Ctrl+Shift+G)
+    ArchiveExtractHere =
+        1442,             // "archive.extract_here"  extract selected archive(s) into current dir
+    ReloadPlugins = 1443, // "plugins.reload"        reload C ABI plugins from plugin_dir
+    UnmountVolume = 1444, // "volume.unmount"        unmount selected GVfs mount in sidebar
 };
 
 // Bit flags for the `arg` of CopyPath. Unknown bits are ignored (reserved).

@@ -27,8 +27,8 @@ namespace navigator::archive {
 inline constexpr std::string_view kArchiveSeparator = "::";
 
 struct ArchivePathRef {
-    Path archive_file;       // host filesystem path to the archive file
-    std::string inner_path;  // normalized relative path inside archive (no leading/trailing '/')
+    Path archive_file;      // host filesystem path to the archive file
+    std::string inner_path; // normalized relative path inside archive (no leading/trailing '/')
 };
 
 // True when Navigator was built with libarchive support.
@@ -49,9 +49,9 @@ struct ArchivePathRef {
 // Synthesizes implicit directory entries when an archive only stores file paths (e.g. "a/b.txt").
 // Errors: Unsupported (no libarchive), NotFound (archive missing or inner_dir not found),
 //         IoError (corrupt or unreadable archive), Cancelled.
-[[nodiscard]] Result<std::vector<fs::DirEntry>>
-list_archive_directory(const Path& archive_file, std::string_view inner_dir,
-                       std::stop_token stop = {});
+[[nodiscard]] Result<std::vector<fs::DirEntry>> list_archive_directory(const Path& archive_file,
+                                                                       std::string_view inner_dir,
+                                                                       std::stop_token stop = {});
 
 // Extracts a single file entry (`inner_path`) from `archive_file` to `dest_file` (creating parent
 // directories if needed). Rejects path traversal ("..") and symlinks escaping dest.

@@ -280,10 +280,10 @@ void ContentSearchSession::start(ContentSearchOptions options) {
         impl_->stats.done = false;
     }
     impl_->running.store(true, std::memory_order_release);
-    impl_->worker = std::jthread([impl = impl_.get(), opts = std::move(options)](
-                                     std::stop_token stop) mutable {
-        impl->run(std::move(opts), std::move(stop));
-    });
+    impl_->worker =
+        std::jthread([impl = impl_.get(), opts = std::move(options)](std::stop_token stop) mutable {
+            impl->run(std::move(opts), std::move(stop));
+        });
 }
 
 void ContentSearchSession::cancel() noexcept {

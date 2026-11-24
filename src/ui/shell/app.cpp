@@ -94,7 +94,6 @@
 #include <navigator/archive.hpp>
 #include <navigator/batch_rename.hpp>
 #include <navigator/git.hpp>
-#include <navigator/plugins.hpp>
 #include <navigator/i18n.hpp>
 #include <navigator/keymap_file.hpp>
 #include <navigator/layout.hpp>
@@ -104,6 +103,7 @@
 #include <navigator/path_input.hpp>
 #include <navigator/places.hpp>
 #include <navigator/platform.hpp>
+#include <navigator/plugins.hpp>
 #include <navigator/preview.hpp>
 #include <navigator/preview_service.hpp>
 #include <navigator/transfer.hpp>
@@ -2382,8 +2382,8 @@ void App::Impl::apply_outcomes() {
                 const Path tmp_dir =
                     std::filesystem::temp_directory_path() / "navigator-archive-open";
                 const Path dest = tmp_dir / Path(arch->inner_path).filename();
-                if (auto ex = archive::extract_entry_to_file(arch->archive_file, arch->inner_path,
-                                                             dest);
+                if (auto ex =
+                        archive::extract_entry_to_file(arch->archive_file, arch->inner_path, dest);
                     ex) {
                     open_target = dest;
                 } else {
@@ -2981,8 +2981,8 @@ void App::Impl::file_command(const Command& command) {
     case CommandId::ToggleOperationsPanel: file_ops->toggle_panel(); return;
     case CommandId::OpenTerminalHere: {
         const Path dir = workspace->active_model().current_dir();
-        const Result<void> res = launcher ? platform::open_terminal(dir, *launcher)
-                                          : platform::open_terminal(dir);
+        const Result<void> res =
+            launcher ? platform::open_terminal(dir, *launcher) : platform::open_terminal(dir);
         if (!res) {
             toast(std::string(tr("notice.terminal_failed")), true);
         }
@@ -4594,9 +4594,8 @@ void App::Impl::draw_frame(double t_ms, double dt_ms) {
         }
     }
     if (content_search_overlay.open()) {
-        if (const auto picked = content_search_overlay.draw(painter, pal, pointer,
-                                                            static_cast<float>(w),
-                                                            static_cast<float>(h));
+        if (const auto picked = content_search_overlay.draw(
+                painter, pal, pointer, static_cast<float>(w), static_cast<float>(h));
             picked) {
             leave_trash_view();
             workspace->navigate_active(picked->parent_path(), picked->filename().native());
