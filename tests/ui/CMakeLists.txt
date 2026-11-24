@@ -14,6 +14,7 @@ add_executable(navigator_ui_tests
     inspector_logic_test.cpp
     inspector_math_test.cpp
     lru_cache_test.cpp
+    menu_model_test.cpp
     path_entry_test.cpp
     sdl_clipboard_test.cpp
     sdl_input_test.cpp
