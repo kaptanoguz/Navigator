@@ -68,7 +68,7 @@ int main(int argc, char** argv) {
                     return {};
                 }
                 if (navigator::platform::is_gvfs_uri(raw)) {
-                    return navigator::Path(raw);
+                    return {raw};
                 }
                 std::error_code ec;
                 navigator::Path p(raw);
