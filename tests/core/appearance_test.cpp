@@ -14,23 +14,23 @@ using namespace navigator::appearance;
 TEST_CASE("Hex color parsing and formatting", "[core][appearance]") {
     const auto c6 = parse_hex_color("#8EA6FF");
     REQUIRE(c6.has_value());
-    CHECK(c6->r == 0x8E);
-    CHECK(c6->g == 0xA6);
-    CHECK(c6->b == 0xFF);
-    CHECK(c6->a == 0xFF);
-    CHECK(format_hex_color(*c6) == "#8EA6FF");
+    CHECK(c6.value().r == 0x8E);
+    CHECK(c6.value().g == 0xA6);
+    CHECK(c6.value().b == 0xFF);
+    CHECK(c6.value().a == 0xFF);
+    CHECK(format_hex_color(c6.value()) == "#8EA6FF");
 
     const auto c3 = parse_hex_color("#abc");
     REQUIRE(c3.has_value());
-    CHECK(c3->r == 0xAA);
-    CHECK(c3->g == 0xBB);
-    CHECK(c3->b == 0xCC);
-    CHECK(c3->a == 0xFF);
+    CHECK(c3.value().r == 0xAA);
+    CHECK(c3.value().g == 0xBB);
+    CHECK(c3.value().b == 0xCC);
+    CHECK(c3.value().a == 0xFF);
 
     const auto c8 = parse_hex_color("#10203080");
     REQUIRE(c8.has_value());
-    CHECK(c8->a == 0x80);
-    CHECK(format_hex_color(*c8) == "#10203080");
+    CHECK(c8.value().a == 0x80);
+    CHECK(format_hex_color(c8.value()) == "#10203080");
 
     CHECK_FALSE(parse_hex_color("8EA6FF").has_value());
     CHECK_FALSE(parse_hex_color("#12345").has_value());

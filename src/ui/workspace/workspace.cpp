@@ -542,7 +542,7 @@ bool Workspace::execute(const Command& command) {
     case CommandId::ToggleTheme: return false;
     case CommandId::TreeExpand:
     case CommandId::TreeCollapse:
-    case CommandId::TreeCollapseAll: return active_model().execute(command);
+    case CommandId::TreeCollapseAll:
     case CommandId::ToggleHidden:
     case CommandId::NavigateBack:
     case CommandId::NavigateForward:
