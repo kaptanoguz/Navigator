@@ -157,3 +157,59 @@ if(TARGET navigator)
         LABELS "integration;app;preview"
     )
 endif()
+
+# Phase 7: the engine against the REAL platform trash (ops_trash_e2e_test.cpp), atomicity, cancel
+# storms, hostile trees, protected paths, 100k files and overlapping queue operations
+# (ops_fault_test.cpp). Fixtures only: ops_support.hpp aborts the process on any path outside a
+# mkdtemp fixture (and on any path inside a symlink-trap sentinel tree). The only private header
+# used is src/ops/sys.hpp, for the I/O fault hook seam that tests/ops uses too.
+if(TARGET navigator_ops)
+    add_executable(navigator_ops_integration_tests
+        ops_trash_e2e_test.cpp
+        ops_fault_test.cpp
+    )
+    target_include_directories(navigator_ops_integration_tests PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/ops)
+    target_link_libraries(navigator_ops_integration_tests
+        PRIVATE
+            navigator::ops
+            navigator::platform
+            navigator::core
+            navigator::options
+            Catch2::Catch2WithMain
+    )
+    catch_discover_tests(navigator_ops_integration_tests
+        TEST_PREFIX "integration.ops."
+        DISCOVERY_MODE PRE_TEST
+        PROPERTIES TIMEOUT 900 LABELS "integration;ops"
+    )
+endif()
+
+# Phase 7 headless app, adversarial: two-pane copy / move / undo, Trash view restore, conflict
+# sheet decisions, permanent delete refused without the confirmation, no trash without
+# --trash-dir, quit while operations run, focus scoping of the file chords. Temporary HOME / XDG
+# dirs and fixture trash only (tests/integration/ops_app_smoke.sh).
+if(TARGET navigator)
+    add_test(NAME integration.app_ops_adversarial
+        COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/ops_app_smoke.sh $<TARGET_FILE:navigator>
+    )
+    set_tests_properties(integration.app_ops_adversarial PROPERTIES
+        TIMEOUT 600
+        SKIP_RETURN_CODE 77
+        LABELS "integration;app;ops"
+    )
+endif()
+
+# Phase 7: INCOMING drops at protocol level: our own Xlib XDND source (xdnd_sender.c) against the
+# real window under a private Xvfb (tests/integration/dnd_incoming_smoke.sh).
+find_package(X11 QUIET)
+if(TARGET navigator AND X11_FOUND AND X11_INCLUDE_DIR)
+    add_executable(navigator_xdnd_sender xdnd_sender.c)
+    target_include_directories(navigator_xdnd_sender PRIVATE ${X11_INCLUDE_DIR})
+    target_link_libraries(navigator_xdnd_sender PRIVATE ${X11_X11_LIB})
+    add_test(NAME integration.app_dnd_incoming_xdnd
+        COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/dnd_incoming_smoke.sh $<TARGET_FILE:navigator>
+                $<TARGET_FILE:navigator_xdnd_sender>)
+    set_tests_properties(integration.app_dnd_incoming_xdnd PROPERTIES
+        TIMEOUT 120 SKIP_RETURN_CODE 77 LABELS "integration;app;dnd")
+endif()
