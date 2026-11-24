@@ -366,7 +366,7 @@ public:
 
     // Applies resolved hierarchical settings (mode, zoom, group_by, columns, sort, show_hidden)
     // and records the governing lock scope. Re-lists if sort or show_hidden changed.
-    void apply_view_settings(const view::ViewSettings& s, view::ViewScope scope, Path rule_path);
+    void apply_view_settings(const view::ViewSettings& raw, view::ViewScope scope, Path rule_path);
     void set_view_mode(view::ViewMode mode);
     void set_zoom_percent(int percent);
     void step_zoom(int delta_steps);

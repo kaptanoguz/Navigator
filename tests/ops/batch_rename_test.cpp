@@ -207,8 +207,8 @@ TEST_CASE("Batch rename executes 200 files, handles swaps, and Undo/Redo restore
     REQUIRE(res->done == 200);
     REQUIRE(res->failed == 0);
     REQUIRE(res->record.has_value());
-    CHECK(res->record->kind == OpKind::BatchRename);
-    CHECK(make_label(*res->record).key == "undo.label.batch_rename");
+    CHECK(res->record.value().kind == OpKind::BatchRename);
+    CHECK(make_label(res->record.value()).key == "undo.label.batch_rename");
 
     CHECK(std::filesystem::exists((fx / "belge_001_öğe.txt").native()));
     CHECK(std::filesystem::exists((fx / "belge_200_öğe.txt").native()));
@@ -216,7 +216,7 @@ TEST_CASE("Batch rename executes 200 files, handles swaps, and Undo/Redo restore
 
     // Undo restores all 200 original names in one operation.
     UndoStack stack;
-    stack.record_done(*res->record, OpOrigin::User);
+    stack.record_done(res->record.value(), OpOrigin::User);
     auto undo_rec = stack.take_undo();
     REQUIRE(undo_rec != nullptr);
 
@@ -235,7 +235,7 @@ TEST_CASE("Batch rename executes 200 files, handles swaps, and Undo/Redo restore
     CHECK_FALSE(std::filesystem::exists((fx / "belge_001_öğe.txt").native()));
 
     // Redo reapplies all 200 renames.
-    stack.record_done(*undo_res->record, OpOrigin::Undo);
+    stack.record_done(undo_res->record.value(), OpOrigin::Undo);
     auto redo_rec = stack.take_redo();
     REQUIRE(redo_rec != nullptr);
 
@@ -277,7 +277,7 @@ TEST_CASE("Batch rename cyclic swap (a->b, b->c, c->a) succeeds and undoes clean
     OpRequest undo_req;
     undo_req.kind = OpKind::Undo;
     undo_req.origin = OpOrigin::Undo;
-    undo_req.record = std::make_shared<UndoRecord>(*res->record);
+    undo_req.record = std::make_shared<UndoRecord>(res->record.value());
     auto undo_res = run(env, undo_req);
     REQUIRE(undo_res.has_value());
     REQUIRE(undo_res->done == 3);
