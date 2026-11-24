@@ -6,7 +6,10 @@
 add_library(navigator_platform STATIC
     desktop.cpp
     errno_util.cpp
+    git_status.cpp
+    gvfs.cpp
     inotify_watcher.cpp
+    ipc.cpp
     launcher.cpp
     mime.cpp
     mountinfo.cpp
@@ -24,9 +27,18 @@ add_library(navigator_platform STATIC
 )
 add_library(navigator::platform ALIAS navigator_platform)
 
+find_package(Threads REQUIRED)
 target_link_libraries(navigator_platform
     PUBLIC
         navigator::headers
+        Threads::Threads
     PRIVATE
         navigator::options
 )
+
+if(NAVIGATOR_HAVE_GVFS)
+    target_link_libraries(navigator_platform PRIVATE Navigator::GIO)
+    target_compile_definitions(navigator_platform PRIVATE NAVIGATOR_HAVE_GVFS=1)
+else()
+    target_compile_definitions(navigator_platform PRIVATE NAVIGATOR_HAVE_GVFS=0)
+endif()
