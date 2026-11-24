@@ -186,6 +186,33 @@ struct FileOpsOptions {
     double notice_ms = 8000.0;
 };
 
+// While the inline rename / new-folder editor is open, no file command may fire or restart it
+// (BUG-P7-1: F2 re-ran file.rename and discarded the typed text; Ctrl+Shift+N, F7 and Shift+F7
+// would create or copy things mid-edit). Only the operations panel commands stay available.
+[[nodiscard]] constexpr bool file_command_blocked_while_editing(CommandId id) noexcept {
+    switch (id) {
+    case CommandId::CancelOperation:
+    case CommandId::TogglePauseOperation:
+    case CommandId::ToggleOperationsPanel: return false;
+    case CommandId::Copy:
+    case CommandId::Cut:
+    case CommandId::Paste:
+    case CommandId::Undo:
+    case CommandId::Redo:
+    case CommandId::MoveToTrash:
+    case CommandId::DeletePermanently:
+    case CommandId::Rename:
+    case CommandId::NewFolder:
+    case CommandId::CopyToOtherPane:
+    case CommandId::MoveToOtherPane:
+    case CommandId::OpenTerminalHere:
+    case CommandId::OpenTrash:
+    case CommandId::RestoreFromTrash:
+    case CommandId::EmptyTrash: return true;
+    default: return false;
+    }
+}
+
 class FileOps {
 public:
     explicit FileOps(FileOpsOptions options);

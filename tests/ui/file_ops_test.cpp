@@ -782,3 +782,34 @@ TEST_CASE("Progress shows rate and ETA only when the engine provides them", "[op
     q.ops->cancel(p.id.value);
     q.settle();
 }
+
+TEST_CASE("No file command fires while the inline editor is open (BUG-P7-1)",
+          "[ops][rename][fields]") {
+    for (const CommandId id :
+         {CommandId::Rename, CommandId::NewFolder, CommandId::CopyToOtherPane,
+          CommandId::MoveToOtherPane, CommandId::Copy, CommandId::Cut, CommandId::Paste,
+          CommandId::Undo, CommandId::Redo, CommandId::MoveToTrash, CommandId::DeletePermanently,
+          CommandId::OpenTrash, CommandId::RestoreFromTrash, CommandId::EmptyTrash}) {
+        INFO(static_cast<int>(id));
+        CHECK(file_command_blocked_while_editing(id));
+    }
+    CHECK_FALSE(file_command_blocked_while_editing(CommandId::ToggleOperationsPanel));
+    CHECK_FALSE(file_command_blocked_while_editing(CommandId::CancelOperation));
+    CHECK_FALSE(file_command_blocked_while_editing(CommandId::Activate));
+}
+
+TEST_CASE("F2 does not restart the editor and typed text survives", "[ops][rename]") {
+    OpsRig r;
+    r.t.file("A/gamma.txt", "x");
+    const auto taken = [&](std::string_view n) {
+        return OpsRig::exists(r.p("A") / std::string(n));
+    };
+    r.ops->begin_rename(layout::TabId{1}, r.p("A"), "gamma.txt", false);
+    r.ops->inline_edit()->edit.insert("zzz");
+    // The App drops the blocked command; the editor and its text are untouched.
+    REQUIRE(file_command_blocked_while_editing(CommandId::Rename));
+    CHECK(r.ops->inline_edit()->edit.text() == "zzz.txt");
+    CHECK(r.ops->inline_commit(taken));
+    REQUIRE(r.settle());
+    CHECK(OpsRig::exists(r.p("A/zzz.txt")));
+}

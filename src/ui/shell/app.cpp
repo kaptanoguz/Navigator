@@ -1929,8 +1929,8 @@ void App::Impl::execute(const Command& command) {
             file_ops->inline_cancel(); // Escape: nothing is renamed
             return;
         }
-        if (is_cursor_command(command.id)) {
-            return;
+        if (is_cursor_command(command.id) || ui::file_command_blocked_while_editing(command.id)) {
+            return; // F2, Ctrl+Shift+N, F7 ... never restart or interrupt the editor
         }
     }
     if (file_ops->sheet_open() && command.id != CommandId::Quit &&
