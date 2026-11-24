@@ -10,6 +10,8 @@ add_library(navigator_platform STATIC
     launcher.cpp
     mime.cpp
     mountinfo.cpp
+    openwith_assoc.cpp
+    openwith_desktop.cpp
     process_runner.cpp
     transfer.cpp
     trash.cpp
