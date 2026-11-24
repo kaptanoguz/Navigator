@@ -511,10 +511,30 @@ bool Workspace::execute(const Command& command) {
     case CommandId::ExportKeymap:
     case CommandId::ShowContextMenu:
     case CommandId::OpenWith:
+    // Phase 9A: view/zoom/group/lock handled at shell level (App updates ViewSettingsStore).
+    case CommandId::ViewModeDetails:
+    case CommandId::ViewModeIcons:
+    case CommandId::ViewModeList:
+    case CommandId::ViewModeTree:
+    case CommandId::ViewCycleMode:
+    case CommandId::ViewZoomIn:
+    case CommandId::ViewZoomOut:
+    case CommandId::ViewZoomReset:
+    case CommandId::GroupByNone:
+    case CommandId::GroupByDate:
+    case CommandId::GroupByType:
+    case CommandId::GroupBySize:
+    case CommandId::GroupCycle:
+    case CommandId::ViewLockFolder:
+    case CommandId::ViewLockHierarchy:
+    case CommandId::ViewLockGlobal:
     case CommandId::None:
     case CommandId::Quit:
     case CommandId::ToggleFpsOverlay:
     case CommandId::ToggleTheme: return false;
+    case CommandId::TreeExpand:
+    case CommandId::TreeCollapse:
+    case CommandId::TreeCollapseAll: return active_model().execute(command);
     case CommandId::ToggleHidden:
     case CommandId::NavigateBack:
     case CommandId::NavigateForward:

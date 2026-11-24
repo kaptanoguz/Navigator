@@ -18,6 +18,8 @@ add_library(navigator_ui_browser STATIC
     browser/browser_model_search.cpp
     browser/format.cpp
     browser/listing_worker.cpp
+    browser/tree_model.cpp
+    browser/view_rows.cpp
     browser/watch_worker.cpp
     dnd/file_drag.cpp
     i18n/i18n.cpp
