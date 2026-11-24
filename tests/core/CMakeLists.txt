@@ -14,6 +14,7 @@ add_executable(navigator_core_tests
     places_json_test.cpp
     places_test.cpp
     sort_test.cpp
+    view_settings_test.cpp
     walk_test.cpp
 )
 target_link_libraries(navigator_core_tests

@@ -23,6 +23,8 @@ add_library(navigator_core STATIC
     places.cpp
     places_json.cpp
     sort.cpp
+    view_settings.cpp
+    view_settings_json.cpp
     walk.cpp
 )
 add_library(navigator::core ALIAS navigator_core)
