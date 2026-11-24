@@ -95,7 +95,7 @@ struct ArchiveReader {
 };
 
 Result<void> copy_archive_data_to_stream(struct ::archive* ar, std::ofstream& out,
-                                         std::stop_token stop) {
+                                         const std::stop_token& stop) {
     std::array<char, 65536> buf{};
     while (true) {
         if (stop.stop_requested()) {
@@ -160,11 +160,12 @@ Path make_archive_path(const Path& archive_file, std::string_view inner_path) {
     std::string out = archive_file.native();
     out.append(kArchiveSeparator);
     out.append(norm);
-    return Path(std::move(out));
+    return {std::move(out)};
 }
 
-Result<std::vector<fs::DirEntry>>
-list_archive_directory(const Path& archive_file, std::string_view inner_dir, std::stop_token stop) {
+Result<std::vector<fs::DirEntry>> list_archive_directory(const Path& archive_file,
+                                                         std::string_view inner_dir,
+                                                         const std::stop_token& stop) {
 #if defined(NAVIGATOR_HAVE_LIBARCHIVE) && NAVIGATOR_HAVE_LIBARCHIVE
     try {
         if (stop.stop_requested()) {
@@ -285,7 +286,7 @@ list_archive_directory(const Path& archive_file, std::string_view inner_dir, std
 }
 
 Result<void> extract_entry_to_file(const Path& archive_file, std::string_view inner_path,
-                                   const Path& dest_file, std::stop_token stop) {
+                                   const Path& dest_file, const std::stop_token& stop) {
 #if defined(NAVIGATOR_HAVE_LIBARCHIVE) && NAVIGATOR_HAVE_LIBARCHIVE
     try {
         const std::string target = normalize_inner(inner_path);
@@ -337,7 +338,8 @@ Result<void> extract_entry_to_file(const Path& archive_file, std::string_view in
 
 Result<std::vector<Path>> extract_entries_to_dir(const Path& archive_file,
                                                  const std::vector<std::string>& inner_paths,
-                                                 const Path& dest_dir, std::stop_token stop) {
+                                                 const Path& dest_dir,
+                                                 const std::stop_token& stop) {
 #if defined(NAVIGATOR_HAVE_LIBARCHIVE) && NAVIGATOR_HAVE_LIBARCHIVE
     try {
         if (dest_dir.empty()) {

@@ -72,8 +72,10 @@ TEST_CASE("archive path helpers parse and format virtual archive paths", "[ops][
 
     const auto parsed = navigator::archive::parse_archive_path(p.native());
     REQUIRE(parsed.has_value());
-    CHECK(parsed->archive_file == Path("/tmp/a.zip"));
-    CHECK(parsed->inner_path == "sub/dir");
+    if (parsed.has_value()) {
+        CHECK(parsed->archive_file == Path("/tmp/a.zip"));
+        CHECK(parsed->inner_path == "sub/dir");
+    }
     CHECK_FALSE(navigator::archive::parse_archive_path("/tmp/plain/dir").has_value());
 }
 

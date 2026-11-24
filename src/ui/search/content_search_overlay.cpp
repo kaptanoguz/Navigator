@@ -71,7 +71,7 @@ std::optional<Path> ContentSearchOverlay::on_key(Key key, Modifiers mods) {
     }
     if (key == Key::Enter || key == Key::KeypadEnter) {
         if (cursor_ < matches_.size()) {
-            const Path picked = matches_[cursor_].file_path;
+            Path picked = matches_[cursor_].file_path;
             close();
             return picked;
         }

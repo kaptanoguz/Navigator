@@ -95,7 +95,7 @@ bool is_binary_prefix(std::ifstream& in) {
 
 Result<bool> search_file_content(const Path& file_path, std::string_view rel_path,
                                  const ContentSearchOptions& options,
-                                 std::vector<ContentMatch>& out, std::stop_token stop) {
+                                 std::vector<ContentMatch>& out, const std::stop_token& stop) {
     try {
         if (stop.stop_requested()) {
             return fail(ErrorCode::Cancelled, "content_search: cancelled");
@@ -171,7 +171,7 @@ struct ContentSearchSession::Impl {
         running.store(false, std::memory_order_release);
     }
 
-    void run(ContentSearchOptions opts, std::stop_token stop) {
+    void run(const ContentSearchOptions& opts, const std::stop_token& stop) {
         std::error_code ec;
         std::vector<Path> stack;
         stack.push_back(opts.root);
@@ -280,10 +280,8 @@ void ContentSearchSession::start(ContentSearchOptions options) {
         impl_->stats.done = false;
     }
     impl_->running.store(true, std::memory_order_release);
-    impl_->worker =
-        std::jthread([impl = impl_.get(), opts = std::move(options)](std::stop_token stop) mutable {
-            impl->run(std::move(opts), std::move(stop));
-        });
+    impl_->worker = std::jthread([impl = impl_.get(), opts = std::move(options)](
+                                     const std::stop_token& stop) { impl->run(opts, stop); });
 }
 
 void ContentSearchSession::cancel() noexcept {

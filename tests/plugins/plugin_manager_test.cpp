@@ -35,19 +35,25 @@ TEST_CASE("PluginManager loads sample C ABI plugin and dispatches all capabiliti
     // Overlay badge fires on .navsample files and not on other files.
     auto ov = pm.query_overlay(navigator::Path("/tmp/demo.navsample"));
     REQUIRE(ov.has_value());
-    CHECK(ov->badge_text == "S");
-    CHECK(ov->color_rgba == 0x4EC9B0FFu);
+    if (ov.has_value()) {
+        CHECK(ov->badge_text == "S");
+        CHECK(ov->color_rgba == 0x4EC9B0FFu);
+    }
     CHECK_FALSE(pm.query_overlay(navigator::Path("/tmp/plain.txt")).has_value());
 
     // Custom column
     auto col_val = pm.query_column("sample.name_len", navigator::Path("/tmp/hello.txt"));
     REQUIRE(col_val.has_value());
-    CHECK(*col_val == "9 chars");
+    if (col_val.has_value()) {
+        CHECK(*col_val == "9 chars");
+    }
 
     // Text preview
     auto prev = pm.query_preview(navigator::Path("/tmp/demo.navsample"));
     REQUIRE(prev.has_value());
-    CHECK(prev->find("demo.navsample") != std::string::npos);
+    if (prev.has_value()) {
+        CHECK(prev->find("demo.navsample") != std::string::npos);
+    }
 
     pm.unload_all();
     CHECK(pm.plugins().empty());

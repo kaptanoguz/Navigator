@@ -63,7 +63,7 @@ struct ContentSearchPoll {
 [[nodiscard]] Result<bool> search_file_content(const Path& file_path, std::string_view rel_path,
                                                const ContentSearchOptions& options,
                                                std::vector<ContentMatch>& out,
-                                               std::stop_token stop = {});
+                                               const std::stop_token& stop = {});
 
 // Off-thread streaming content search session owned by the UI.
 class ContentSearchSession {

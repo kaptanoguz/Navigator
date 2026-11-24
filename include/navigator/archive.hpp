@@ -49,16 +49,16 @@ struct ArchivePathRef {
 // Synthesizes implicit directory entries when an archive only stores file paths (e.g. "a/b.txt").
 // Errors: Unsupported (no libarchive), NotFound (archive missing or inner_dir not found),
 //         IoError (corrupt or unreadable archive), Cancelled.
-[[nodiscard]] Result<std::vector<fs::DirEntry>> list_archive_directory(const Path& archive_file,
-                                                                       std::string_view inner_dir,
-                                                                       std::stop_token stop = {});
+[[nodiscard]] Result<std::vector<fs::DirEntry>>
+list_archive_directory(const Path& archive_file, std::string_view inner_dir,
+                       const std::stop_token& stop = {});
 
 // Extracts a single file entry (`inner_path`) from `archive_file` to `dest_file` (creating parent
 // directories if needed). Rejects path traversal ("..") and symlinks escaping dest.
 // Errors: Unsupported, NotFound, InvalidArgument, IoError, Cancelled.
 [[nodiscard]] Result<void> extract_entry_to_file(const Path& archive_file,
                                                  std::string_view inner_path, const Path& dest_file,
-                                                 std::stop_token stop = {});
+                                                 const std::stop_token& stop = {});
 
 // Extracts `inner_paths` (or the entire archive when `inner_paths` is empty) from `archive_file`
 // into `dest_dir`, returning the list of created host paths. Guards against Zip Slip (".." or
@@ -66,6 +66,6 @@ struct ArchivePathRef {
 // Errors: Unsupported, NotFound, InvalidArgument, IoError, Cancelled.
 [[nodiscard]] Result<std::vector<Path>>
 extract_entries_to_dir(const Path& archive_file, const std::vector<std::string>& inner_paths,
-                       const Path& dest_dir, std::stop_token stop = {});
+                       const Path& dest_dir, const std::stop_token& stop = {});
 
 } // namespace navigator::archive

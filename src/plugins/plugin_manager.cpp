@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -65,13 +66,13 @@ struct PluginManager::Impl {
     ~Impl() { unload_all(); }
 
     void unload_all() noexcept {
-        for (auto it = loaded.rbegin(); it != loaded.rend(); ++it) {
-            if (it->shutdown_fn != nullptr) {
-                it->shutdown_fn(it->shutdown_user_data);
+        for (auto& rec : std::ranges::reverse_view(loaded)) {
+            if (rec.shutdown_fn != nullptr) {
+                rec.shutdown_fn(rec.shutdown_user_data);
             }
-            if (it->handle != nullptr) {
-                ::dlclose(it->handle);
-                it->handle = nullptr;
+            if (rec.handle != nullptr) {
+                ::dlclose(rec.handle);
+                rec.handle = nullptr;
             }
         }
         loaded.clear();

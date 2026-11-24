@@ -187,7 +187,7 @@ struct GitStatusService::Impl {
                 runner = std::shared_ptr<platform::IProcessRunner>(std::move(*created));
             }
         }
-        worker = std::jthread([this](std::stop_token stop) { run_worker(std::move(stop)); });
+        worker = std::jthread([this](const std::stop_token& stop) { run_worker(stop); });
     }
 
     ~Impl() {
@@ -195,7 +195,7 @@ struct GitStatusService::Impl {
         cv.notify_all();
     }
 
-    void run_worker(std::stop_token stop) {
+    void run_worker(const std::stop_token& stop) {
         while (!stop.stop_requested()) {
             Path root;
             {
