@@ -25,7 +25,9 @@
 #include <vector>
 
 #include <navigator/commands.hpp>
+#include <navigator/git.hpp>
 #include <navigator/index.hpp>
+#include <navigator/plugins.hpp>
 #include <navigator/search.hpp>
 #include <navigator/types.hpp>
 #include <navigator/ui.hpp>
@@ -107,6 +109,9 @@ struct BrowserFrame {
     bool drag_enabled = true;
     // Phase 7: px kept free at the right end of the status bar (the progress chip).
     float status_reserve = 0.0F;
+    // Phase 10: optional Git status badges and C ABI plugin overlays/previews (null when off).
+    const git::GitStatusService* git_status = nullptr;
+    const plugins::PluginManager* plugins = nullptr;
 };
 
 // Performance overlay (F12) at the bottom-right of the window.
@@ -224,6 +229,7 @@ private:
     void draw_icons_view(const BrowserFrame& f, const Layout& l);
     void draw_list_view(const BrowserFrame& f, const Layout& l);
     void draw_tree_view(const BrowserFrame& f, const Layout& l);
+    void draw_columns_view(const BrowserFrame& f, const Layout& l);
     [[nodiscard]] float compute_mode_content_dp(const BrowserFrame& f, const Layout& l) const;
     [[nodiscard]] std::size_t col_index_of(const BrowserFrame& f,
                                            view::ColumnId col) const noexcept;

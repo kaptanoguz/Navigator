@@ -516,6 +516,11 @@ bool Workspace::execute(const Command& command) {
     case CommandId::ViewModeIcons:
     case CommandId::ViewModeList:
     case CommandId::ViewModeTree:
+    case CommandId::ViewModeColumns:
+    case CommandId::ContentSearch:
+    case CommandId::ArchiveExtractHere:
+    case CommandId::ReloadPlugins:
+    case CommandId::UnmountVolume:
     case CommandId::ViewCycleMode:
     case CommandId::ViewZoomIn:
     case CommandId::ViewZoomOut:

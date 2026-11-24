@@ -95,6 +95,14 @@ void draw_mode_glyph(Renderer& r, float cx, float cy, float s, view::ViewMode mo
         r.fill_rect(RectF{x0 + indent, std::round(y0 + (s * 0.72F)), s - indent, bar}, ink);
         break;
     }
+    case view::ViewMode::Columns: {
+        const float col_w = std::max(1.5F, std::round(s * 0.25F));
+        const float gap = std::round((s - (3.0F * col_w)) * 0.5F);
+        for (int c = 0; c < 3; ++c) {
+            r.fill_rect(RectF{x0 + (static_cast<float>(c) * (col_w + gap)), y0, col_w, s}, ink);
+        }
+        break;
+    }
     }
 }
 
@@ -207,6 +215,8 @@ float BrowserView::compute_mode_content_dp(const BrowserFrame& f, const Layout& 
         return l.body.h / scale; // List scrolls horizontally, never vertically
     case view::ViewMode::Tree:
         return (2.0F * pad_dp) + (static_cast<float>(m.tree_rows().size()) * row_dp);
+    case view::ViewMode::Columns:
+        return (2.0F * pad_dp) + (static_cast<float>(m.row_count()) * row_dp);
     }
     return 0.0F;
 }
@@ -321,15 +331,17 @@ float BrowserView::draw_view_footer_controls(const BrowserFrame& f, const Layout
                         active_ == WidgetId::ZoomSlider || s_inside ? pal.accent
                                                                     : pal.text_secondary);
 
-    // 2. View mode buttons (Details, Icons, List, Tree) left of slider.
+    // 2. View mode buttons (Details, Icons, List, Tree, Columns) left of slider.
     x -= std::round(p.px(10.0F));
-    constexpr std::array<view::ViewMode, 4> kModes{
+    constexpr std::array<view::ViewMode, 5> kModes{
+        view::ViewMode::Columns,
         view::ViewMode::Tree,
         view::ViewMode::List,
         view::ViewMode::Icons,
         view::ViewMode::Details,
     };
-    constexpr std::array<const char*, 4> kKeys{
+    constexpr std::array<const char*, 5> kKeys{
+        "view.mode.columns",
         "view.mode.tree",
         "view.mode.list",
         "view.mode.icons",
@@ -822,6 +834,173 @@ void BrowserView::draw_tree_view(const BrowserFrame& f, const Layout& l) {
                                                   : format_date(tr_row.entry.mtime, f.now);
             const ShapedText dt = p.shape(type::row, dt_s);
             p.draw(dt, l.date_x, std::round(mid + (0.5F * dt.cap_height())), pal.text_muted);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Phase 10: Miller Columns view (v1)
+// ---------------------------------------------------------------------------------------------
+
+void BrowserView::draw_columns_view(const BrowserFrame& f, const Layout& l) {
+    const Painter& p = f.painter;
+    Renderer& r = p.renderer();
+    const Palette& pal = f.palette;
+    const PointerInput& ptr = f.pointer;
+    const BrowserModel& m = f.model;
+
+    const float hair = std::max(1.0F, std::round(p.px(1.0F)));
+    const float rad = std::round(p.px(5.0F));
+    const float pad = std::round(p.px(6.0F));
+    const float icon_sz = std::round(p.px(metrics::icon_size));
+
+    const float col0_w = std::round(std::clamp(l.body.w * 0.22F, p.px(130.0F), p.px(220.0F)));
+    const float col2_w = std::round(std::clamp(l.body.w * 0.30F, p.px(160.0F), p.px(320.0F)));
+    const float col1_w = std::max(p.px(160.0F), l.body.w - col0_w - col2_w);
+
+    const RectF col0{l.body.x, l.body.y, col0_w, l.body.h};
+    const RectF col1{col0.right(), l.body.y, col1_w, l.body.h};
+    const RectF col2{col1.right(), l.body.y, std::max(0.0F, l.body.right() - col1.right()),
+                     l.body.h};
+
+    // Vertical column dividers.
+    r.fill_rect(RectF{col1.x, l.body.y, hair, l.body.h}, pal.border);
+    r.fill_rect(RectF{col2.x, l.body.y, hair, l.body.h}, pal.border);
+
+    // Column 0: ancestor hierarchy chain (clickable to jump up).
+    std::vector<Path> chain;
+    Path walk = m.current_dir();
+    while (!walk.empty()) {
+        chain.push_back(walk);
+        const Path parent = walk.parent_path();
+        if (parent == walk) {
+            break;
+        }
+        walk = parent;
+    }
+    std::ranges::reverse(chain);
+    float ay = col0.y + pad;
+    for (std::size_t idx = 0; idx < chain.size(); ++idx) {
+        if (ay + l.row_h > col0.bottom()) {
+            break;
+        }
+        const RectF ar = snap(RectF{col0.x + pad, ay, col0.w - (2.0F * pad), l.row_h});
+        const bool is_cur = (idx + 1 == chain.size());
+        const bool inside = contains(ar, ptr.x, ptr.y);
+        if (inside && ptr.pressed && active_ == WidgetId::None && !is_cur) {
+            Intent intent;
+            intent.kind = Intent::Kind::NavigateTo;
+            intent.path = chain[idx];
+            f.intents.push_back(std::move(intent));
+        }
+        if (is_cur) {
+            r.fill_rounded_rect(ar, rad, pal.selection.with_alpha(0.6F));
+        } else if (inside) {
+            r.fill_rounded_rect(ar, rad, pal.row_hover);
+        }
+        std::string label = chain[idx].filename().native();
+        if (label.empty()) {
+            label = chain[idx].native();
+        }
+        const ShapedText t =
+            fitter_.fit(p, type::row, display_name(label), std::max(ar.w - p.px(16.0F), p.px(20.0F)),
+                        Elide::End);
+        p.draw(t, ar.x + p.px(8.0F), std::round(ar.center_y() + (0.5F * t.cap_height())),
+               is_cur ? pal.text_primary : pal.text_secondary);
+        ay += l.row_h;
+    }
+
+    // Column 1: active folder virtualized rows.
+    const std::size_t n = m.row_count();
+    const float sp = scroll_px(f);
+    const float top = sp - l.pad;
+    const std::size_t first = top <= 0.0F ? 0 : static_cast<std::size_t>(top / l.row_h);
+    const std::size_t last =
+        n == 0 ? 0 : std::min(n - 1, static_cast<std::size_t>((top + col1.h) / l.row_h));
+
+    for (std::size_t i = first; i < n && i <= last; ++i) {
+        const fs::DirEntry& e = m.row_entry(i);
+        const float y = col1.y + l.pad + (static_cast<float>(i) * l.row_h) - sp;
+        const RectF rr = snap(RectF{col1.x + pad, y, col1.w - (2.0F * pad) - p.px(10.0F), l.row_h});
+        if (rr.bottom() < col1.y || rr.y > col1.bottom()) {
+            continue;
+        }
+        const bool sel = m.is_selected(i);
+        const bool cur = (m.cursor() == i);
+        const bool inside = contains(rr, ptr.x, ptr.y);
+        if (inside && ptr.pressed && active_ == WidgetId::None) {
+            Intent in;
+            in.kind = Intent::Kind::ClickRow;
+            in.row = i;
+            in.mods = ptr.mods;
+            f.intents.push_back(in);
+            if (ptr.clicks >= 2) {
+                f.queue.enqueue(CommandId::Activate);
+            }
+        }
+        if (sel) {
+            r.fill_rounded_rect(rr, rad, f.focused ? pal.selection : pal.selection_inactive);
+        } else if (inside) {
+            r.fill_rounded_rect(rr, rad, pal.row_hover);
+        }
+        if (cur && f.focused) {
+            r.stroke_rounded_rect(rr, rad, hair, pal.focus_ring.with_alpha(0.75F));
+        }
+
+        const float mid = rr.center_y();
+        const float ix = rr.x + p.px(6.0F);
+        draw_entry_glyph(r, pal, e, ix, std::round(mid - (0.5F * icon_sz)), icon_sz, 1.0F,
+                         p.scale());
+        const bool dir = fs::is_directory_like(e);
+        const float tx = ix + icon_sz + p.px(8.0F);
+        const float right_reserve = dir ? p.px(22.0F) : p.px(10.0F);
+        const ShapedText nt = fitter_.fit(
+            p, type::row, display_name(e.name),
+            std::max(rr.right() - tx - right_reserve, p.px(24.0F)), Elide::End);
+        p.draw(nt, tx, std::round(mid + (0.5F * nt.cap_height())), pal.text_primary);
+        if (dir) {
+            draw_chevron(r, rr.right() - p.px(10.0F), mid, p.px(8.0F), Direction::Right, hair,
+                         pal.text_muted);
+        }
+    }
+
+    // Column 2: preview / metadata card for cursor entry.
+    if (col2.w > p.px(40.0F) && m.cursor() != kNoRow && m.cursor() < n) {
+        const fs::DirEntry& cur_e = m.row_entry(m.cursor());
+        const Path cur_path = m.row_path(m.cursor());
+        float py = col2.y + p.px(12.0F);
+        const float px_left = col2.x + p.px(12.0F);
+        const float avail_w = std::max(col2.w - p.px(24.0F), p.px(24.0F));
+
+        const ShapedText title =
+            fitter_.fit(p, type::section, display_name(cur_e.name), avail_w, Elide::Middle);
+        p.draw(title, px_left, py + title.cap_height(), pal.text_primary);
+        py += title.cap_height() + p.px(14.0F);
+
+        if (!fs::is_directory_like(cur_e)) {
+            const ShapedText sz = p.shape(type::caption, format_size(cur_e.size));
+            p.draw(sz, px_left, py + sz.cap_height(), pal.text_secondary);
+            py += sz.cap_height() + p.px(10.0F);
+        }
+        if (cur_e.mtime != Timestamp{}) {
+            const ShapedText dt = p.shape(type::caption, format_date(cur_e.mtime, f.now));
+            p.draw(dt, px_left, py + dt.cap_height(), pal.text_muted);
+            py += dt.cap_height() + p.px(12.0F);
+        }
+        if (f.git_status != nullptr) {
+            const git::GitFileState gs = f.git_status->status_for(cur_path);
+            const std::string_view badge = git::git_state_badge(gs);
+            if (!badge.empty()) {
+                const ShapedText gt = p.shape(type::caption, "Git: " + std::string(badge));
+                p.draw(gt, px_left, py + gt.cap_height(), pal.accent);
+                py += gt.cap_height() + p.px(12.0F);
+            }
+        }
+        if (f.plugins != nullptr) {
+            if (const auto prev = f.plugins->query_preview(cur_path); prev && !prev->empty()) {
+                const ShapedText pt = fitter_.fit(p, type::caption, *prev, avail_w, Elide::End);
+                p.draw(pt, px_left, py + pt.cap_height(), pal.text_secondary);
+            }
         }
     }
 }

@@ -1,12 +1,14 @@
 // src/app/main.cpp — navigator entry point: parse arguments, pick the UI language, run the App.
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include <navigator/i18n.hpp>
+#include <navigator/platform.hpp>
 #include <navigator/ui.hpp>
 
 #include "bench_fixture.hpp"
@@ -48,6 +50,53 @@ int main(int argc, char** argv) {
     navigator::set_language(options->language.value_or(
         navigator::app::detect_language(env_or_empty("LANGUAGE"), env_or_empty("LC_ALL"),
                                         env_or_empty("LC_MESSAGES"), env_or_empty("LANG"))));
+
+    // Phase 10: Single-instance IPC forwarding. If another Navigator instance is already
+    // listening on the socket, forward --new-tab / --select / PATH and exit cleanly.
+    const bool try_ipc = options->config.enable_ipc && !options->new_instance &&
+                         (options->config.max_frames == 0 || !options->ipc_socket.empty());
+    if (try_ipc) {
+        std::optional<navigator::Path> sock_path;
+        if (!options->ipc_socket.empty()) {
+            sock_path = navigator::Path(options->ipc_socket);
+        } else if (auto def = navigator::platform::default_ipc_socket_path(); def) {
+            sock_path = std::move(*def);
+        }
+        if (sock_path) {
+            auto abs_path = [](const std::string& raw) -> navigator::Path {
+                if (raw.empty()) {
+                    return {};
+                }
+                if (navigator::platform::is_gvfs_uri(raw)) {
+                    return navigator::Path(raw);
+                }
+                std::error_code ec;
+                navigator::Path p(raw);
+                if (!p.is_absolute()) {
+                    p = std::filesystem::current_path(ec) / p;
+                }
+                return p.lexically_normal();
+            };
+
+            navigator::platform::IpcMessage msg;
+            if (!options->select_path.empty()) {
+                msg.action = navigator::platform::IpcAction::SelectPath;
+                msg.path = abs_path(options->select_path);
+            } else if (options->new_tab) {
+                msg.action = navigator::platform::IpcAction::NewTab;
+                msg.path = abs_path(options->start_path);
+            } else if (!options->start_path.empty()) {
+                msg.action = navigator::platform::IpcAction::OpenPath;
+                msg.path = abs_path(options->start_path);
+            } else {
+                msg.action = navigator::platform::IpcAction::FocusWindow;
+            }
+            if (auto sent = navigator::platform::send_to_running_instance(*sock_path, msg);
+                sent && *sent) {
+                return 0;
+            }
+        }
+    }
 
     // Development-only switches reach the UI through its documented debug environment
     // (src/ui/shell/app.cpp). --no-animations is AppConfig::animations.
@@ -104,6 +153,9 @@ int main(int argc, char** argv) {
     config.cache_dir = options->cache_dir;
     config.thumbnail_dir = options->thumbnail_dir;
     config.trash_dir = options->trash_dir;
+    config.ipc_socket_path = options->ipc_socket;
+    config.plugin_dir = options->plugin_dir;
+    config.select_path = options->select_path;
     int code = 1;
     {
         auto app = navigator::App::create(config);

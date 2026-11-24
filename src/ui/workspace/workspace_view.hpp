@@ -116,6 +116,9 @@ struct ShellFrame {
     std::function<void(float)> draw_ops_overlay;
     std::function<bool(float, float)> ops_hit;
     bool ops_modal = false;
+    // Phase 10: optional Git status badges and C ABI plugin overlays/previews.
+    const git::GitStatusService* git_status = nullptr;
+    const plugins::PluginManager* plugins = nullptr;
 };
 
 enum class PointerCursor : std::uint8_t { Default, ResizeHorizontal, ResizeVertical };

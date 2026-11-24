@@ -91,7 +91,10 @@
 #include <unistd.h>
 
 #include <navigator/appearance.hpp>
+#include <navigator/archive.hpp>
 #include <navigator/batch_rename.hpp>
+#include <navigator/git.hpp>
+#include <navigator/plugins.hpp>
 #include <navigator/i18n.hpp>
 #include <navigator/keymap_file.hpp>
 #include <navigator/layout.hpp>
@@ -137,6 +140,7 @@
 #include "render/backend_name.hpp"
 #include "render/renderer.hpp"
 #include "render/sdl_handles.hpp"
+#include "search/content_search_overlay.hpp"
 #include "search/filter_rules.hpp"
 #include "search/flatten_walk.hpp"
 #include "search/index_service.hpp"
@@ -403,6 +407,15 @@ struct App::Impl {
     ui::ContextMenuOverlay context_menu;
     ui::KeymapSettingsOverlay keymap_settings;
     ui::OpenWithOverlay openwith_overlay;
+    // Phase 10: single-instance IPC, GVfs, Git status, C ABI plugins, Content Search overlay.
+    std::unique_ptr<platform::ISingleInstanceServer> ipc_server;
+    std::unique_ptr<platform::IGvfsBackend> gvfs_backend;
+    std::unique_ptr<git::GitStatusService> git_service;
+    plugins::PluginManager plugin_manager;
+    Path plugin_dir;
+    ui::ContentSearchOverlay content_search_overlay;
+    std::vector<platform::GvfsMount> gvfs_mounts;
+    Path last_git_dir;
     std::vector<Path> openwith_targets;
     std::vector<openwith::Handler> openwith_handlers;
     bool reset_keymap_confirm = false;
@@ -646,6 +659,41 @@ Result<void> App::Impl::init(const AppConfig& config) {
         previous_palette = resolve_palette(appearance_settings.theme_id, theme);
     }
     rebuild_keymap_from_file();
+
+    // Phase 10: Single-instance IPC server, Git status service, GVfs backend, C ABI plugins.
+    if (config.enable_ipc && (config.max_frames == 0 || !config.ipc_socket_path.empty())) {
+        std::optional<Path> sock;
+        if (!config.ipc_socket_path.empty()) {
+            sock = Path(config.ipc_socket_path);
+        } else if (auto def = platform::default_ipc_socket_path(); def) {
+            sock = std::move(*def);
+        }
+        if (sock) {
+            if (auto srv = platform::create_single_instance_server(*sock); srv) {
+                ipc_server = std::move(*srv);
+            }
+        }
+    }
+    if (config.enable_git) {
+        git_service = std::make_unique<git::GitStatusService>();
+    }
+    if (config.enable_gvfs) {
+        if (auto gvfs = platform::create_gvfs_backend(); gvfs) {
+            gvfs_backend = std::move(*gvfs);
+            if (auto mounts = gvfs_backend->list_mounts(); mounts) {
+                gvfs_mounts = std::move(*mounts);
+            }
+        }
+    }
+    plugin_dir = !config.plugin_dir.empty() ? Path(config.plugin_dir) : (config_root / "plugins");
+    if (config.enable_plugins && !plugin_dir.empty()) {
+        std::vector<std::string> plugin_errs;
+        (void)plugin_manager.load_directory(plugin_dir, &plugin_errs);
+        for (const std::string& e : plugin_errs) {
+            SDL_Log("Navigator: plugin load skipped: %s", e.c_str());
+        }
+    }
+
     std::optional<layout::Session> restored;
     if (restore) {
         Result<layout::Session> loaded = layout::load_session(layout::session_file(config_root));
@@ -1261,7 +1309,12 @@ void App::Impl::handle_event(const SDL_Event& event) {
     case SDL_EVENT_KEY_UP: pointer.mods = ui::translate_modifiers(event.key.mod); break;
     case SDL_EVENT_TEXT_INPUT:
         if (event.text.text != nullptr) {
-            handle_text(event.text.text);
+            if (content_search_overlay.open()) {
+                content_search_overlay.on_text(event.text.text);
+                dirty = true;
+            } else {
+                handle_text(event.text.text);
+            }
         }
         break;
     case SDL_EVENT_MOUSE_MOTION:
@@ -1506,6 +1559,15 @@ void App::Impl::handle_key(const KeyChord& chord, bool repeat) {
             if (ev.enqueue_cmd) {
                 queue.enqueue(*ev.enqueue_cmd);
             }
+        }
+        return;
+    }
+    // Phase 10: Content Search overlay captures keyboard while open.
+    if (content_search_overlay.open()) {
+        dirty = true;
+        if (const auto picked = content_search_overlay.on_key(chord.key, chord.mods); picked) {
+            leave_trash_view();
+            workspace->navigate_active(picked->parent_path(), picked->filename().native());
         }
         return;
     }
@@ -2308,8 +2370,29 @@ void App::Impl::apply_outcomes() {
             }
             break;
         case ui::PathOutcome::Kind::OpenFile: {
+            if (archive::libarchive_available() &&
+                archive::is_archive_name(o.path.filename().native()) &&
+                !archive::parse_archive_path(o.path.native()).has_value()) {
+                leave_trash_view();
+                workspace->navigate_active(archive::make_archive_path(o.path, ""));
+                break;
+            }
+            Path open_target = o.path;
+            if (const auto arch = archive::parse_archive_path(o.path.native()); arch) {
+                const Path tmp_dir =
+                    std::filesystem::temp_directory_path() / "navigator-archive-open";
+                const Path dest = tmp_dir / Path(arch->inner_path).filename();
+                if (auto ex = archive::extract_entry_to_file(arch->archive_file, arch->inner_path,
+                                                             dest);
+                    ex) {
+                    open_target = dest;
+                } else {
+                    toast(std::string(tr("notice.archive_failed")), true);
+                    break;
+                }
+            }
             const Result<void> opened =
-                launcher ? platform::open_with_default(o.path, *launcher)
+                launcher ? platform::open_with_default(open_target, *launcher)
                          : Result<void>(fail(ErrorCode::Unsupported, "no launcher"));
             if (!opened) {
                 toast(ui::substitute(tr("notice.open_file_failed"), "name",
@@ -2531,14 +2614,16 @@ void App::Impl::execute(const Command& command) {
     case CommandId::ViewModeIcons:
     case CommandId::ViewModeList:
     case CommandId::ViewModeTree:
+    case CommandId::ViewModeColumns:
     case CommandId::ViewCycleMode: {
         ui::BrowserModel& m = workspace->active_model();
         const view::ViewMode next =
-            command.id == CommandId::ViewModeDetails ? view::ViewMode::Details
-            : command.id == CommandId::ViewModeIcons ? view::ViewMode::Icons
-            : command.id == CommandId::ViewModeList  ? view::ViewMode::List
-            : command.id == CommandId::ViewModeTree  ? view::ViewMode::Tree
-                                                     : view::next_view_mode(m.view_mode());
+            command.id == CommandId::ViewModeDetails   ? view::ViewMode::Details
+            : command.id == CommandId::ViewModeIcons   ? view::ViewMode::Icons
+            : command.id == CommandId::ViewModeList    ? view::ViewMode::List
+            : command.id == CommandId::ViewModeTree    ? view::ViewMode::Tree
+            : command.id == CommandId::ViewModeColumns ? view::ViewMode::Columns
+                                                       : view::next_view_mode(m.view_mode());
         m.set_view_mode(next);
         persist_view_change(m);
         return;
@@ -2894,7 +2979,59 @@ void App::Impl::file_command(const Command& command) {
     case CommandId::CancelOperation: file_ops->cancel(command.arg); return;
     case CommandId::TogglePauseOperation: file_ops->toggle_pause(command.arg); return;
     case CommandId::ToggleOperationsPanel: file_ops->toggle_panel(); return;
-    case CommandId::OpenTerminalHere: return; // reserved until Phase 10
+    case CommandId::OpenTerminalHere: {
+        const Path dir = workspace->active_model().current_dir();
+        const Result<void> res = launcher ? platform::open_terminal(dir, *launcher)
+                                          : platform::open_terminal(dir);
+        if (!res) {
+            toast(std::string(tr("notice.terminal_failed")), true);
+        }
+        return;
+    }
+    case CommandId::ContentSearch: {
+        if (content_search_overlay.open()) {
+            content_search_overlay.close();
+        } else {
+            content_search_overlay.open(workspace->active_model().current_dir());
+        }
+        return;
+    }
+    case CommandId::ArchiveExtractHere: {
+        ui::BrowserModel& m = workspace->active_model();
+        if (m.cursor() == ui::kNoRow || m.cursor() >= m.row_count()) {
+            return;
+        }
+        const Path target = m.row_path(m.cursor());
+        if (!archive::is_archive_name(target.filename().native())) {
+            return;
+        }
+        const Path dest = m.current_dir() / target.stem();
+        if (auto res = archive::extract_entries_to_dir(target, {}, dest); res) {
+            toast(std::string(tr("notice.archive_extracted")));
+            m.refresh();
+        } else {
+            toast(std::string(tr("notice.archive_failed")), true);
+        }
+        return;
+    }
+    case CommandId::ReloadPlugins: {
+        plugin_manager.unload_all();
+        const std::size_t n = plugin_manager.load_directory(plugin_dir);
+        toast(std::string(tr("notice.plugins_reloaded")) + " (" + std::to_string(n) + ")");
+        return;
+    }
+    case CommandId::UnmountVolume: {
+        if (gvfs_backend && !gvfs_mounts.empty()) {
+            const std::string uri = gvfs_mounts.front().uri;
+            if (auto r = gvfs_backend->unmount(uri); r) {
+                toast(std::string(tr("notice.unmounted")));
+                if (auto mounts = gvfs_backend->list_mounts(); mounts) {
+                    gvfs_mounts = std::move(*mounts);
+                }
+            }
+        }
+        return;
+    }
     case CommandId::OpenTrash: enter_trash_view(); return;
     case CommandId::RestoreFromTrash:
         if (in_trash) {
@@ -4284,6 +4421,8 @@ void App::Impl::draw_frame(double t_ms, double dt_ms) {
         .draw_ops_overlay = {},
         .ops_hit = {},
         .ops_modal = ops_view.modal(),
+        .git_status = git_service.get(),
+        .plugins = &plugin_manager,
     };
     slots.clear(); // the views register this frame's drop slots while drawing
     // Phase 4: the sidebar takes the left of the window; the panes get the rest.
@@ -4452,6 +4591,15 @@ void App::Impl::draw_frame(double t_ms, double dt_ms) {
         if (const auto act =
                 palette_overlay.draw(painter, pal, full_viewport, pointer, palette_history)) {
             apply_palette_action(*act);
+        }
+    }
+    if (content_search_overlay.open()) {
+        if (const auto picked = content_search_overlay.draw(painter, pal, pointer,
+                                                            static_cast<float>(w),
+                                                            static_cast<float>(h));
+            picked) {
+            leave_trash_view();
+            workspace->navigate_active(picked->parent_path(), picked->filename().native());
         }
     }
     if (openwith_overlay.is_open()) {
@@ -5086,6 +5234,37 @@ int App::run() {
         if (s.view.poll_paths(now_ms(), s.outcomes)) {
             s.dirty = true;
         }
+        // Phase 10: poll single-instance IPC, Git status worker, and Content Search overlay.
+        if (s.ipc_server) {
+            for (const platform::IpcMessage& msg : s.ipc_server->poll()) {
+                SDL_RaiseWindow(s.window.get());
+                s.dirty = true;
+                if (msg.action == platform::IpcAction::SelectPath && !msg.path.empty()) {
+                    s.leave_trash_view();
+                    (void)s.workspace->open_tab(msg.path.parent_path(), false);
+                    s.workspace->navigate_active(msg.path.parent_path(),
+                                                 msg.path.filename().native());
+                } else if ((msg.action == platform::IpcAction::NewTab ||
+                            msg.action == platform::IpcAction::OpenPath) &&
+                           !msg.path.empty()) {
+                    s.leave_trash_view();
+                    (void)s.workspace->open_tab(msg.path, false);
+                }
+            }
+        }
+        if (s.git_service) {
+            const Path cur_dir = s.workspace->active_model().current_dir();
+            if (!cur_dir.empty() && cur_dir != s.last_git_dir) {
+                s.last_git_dir = cur_dir;
+                s.git_service->request_directory(cur_dir);
+            }
+            if (s.git_service->poll()) {
+                s.dirty = true;
+            }
+        }
+        if (s.content_search_overlay.poll()) {
+            s.dirty = true;
+        }
         while (SDL_PollEvent(&event)) {
             s.handle_event(event);
         }
@@ -5168,7 +5347,8 @@ int App::run() {
         const bool want_text =
             s.focused || s.view.wants_text_input() || s.sidebar.renaming() ||
             s.palette_overlay.wants_text_input() || s.context_menu.wants_text_input() ||
-            s.openwith_overlay.wants_text_input() || s.keymap_settings.wants_text_input();
+            s.openwith_overlay.wants_text_input() || s.keymap_settings.wants_text_input() ||
+            s.content_search_overlay.open();
         if (want_text != s.text_input_on) {
             s.text_input_on = want_text;
             if (s.text_input_on) {

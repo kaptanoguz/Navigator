@@ -383,6 +383,8 @@ void BrowserView::draw(const BrowserFrame& f) {
         draw_list_view(f, l);
     } else if (mode == view::ViewMode::Tree) {
         draw_tree_view(f, l);
+    } else if (mode == view::ViewMode::Columns) {
+        draw_columns_view(f, l);
     } else if (grouped_details) {
         draw_grouped_details(f, l);
     } else {
@@ -858,6 +860,46 @@ void BrowserView::draw_rows(const BrowserFrame& f, const Layout& l) {
         const float baseline = std::round(mid + (0.5F * name_text.cap_height()));
         const Color name_ink =
             (e.hidden || is_cut) && !m.is_selected(i) ? pal.text_secondary : pal.text_primary;
+        // Phase 10: Git status badge & C ABI plugin overlay badge after the filename.
+        float badge_x = l.text_x + name_text.width() + std::round(p.px(6.0F));
+        const Path row_full_path = m.row_path(i);
+        if (f.git_status != nullptr && badge_x + p.px(18.0F) <= l.name_r) {
+            const git::GitFileState gs = f.git_status->status_for(row_full_path);
+            const std::string_view gtxt = git::git_state_badge(gs);
+            if (!gtxt.empty()) {
+                const ShapedText gt = p.shape(type::caption, gtxt);
+                const float bw = gt.width() + p.px(8.0F);
+                const float bh = std::round(p.px(15.0F));
+                const Color bcol = gs == git::GitFileState::Conflict    ? pal.danger
+                                   : gs == git::GitFileState::Deleted   ? pal.danger
+                                   : gs == git::GitFileState::Modified  ? pal.accent
+                                   : gs == git::GitFileState::Added     ? Color{0.25F, 0.72F, 0.42F, 1.0F}
+                                   : gs == git::GitFileState::Untracked ? pal.text_secondary
+                                                                        : pal.text_muted;
+                r.fill_rounded_rect(snap(RectF{badge_x, std::round(mid - (0.5F * bh)), bw, bh}),
+                                    p.px(3.0F), bcol.with_alpha(0.18F));
+                p.draw(gt, badge_x + p.px(4.0F), std::round(mid + (0.5F * gt.cap_height())), bcol);
+                badge_x += bw + p.px(4.0F);
+            }
+        }
+        if (f.plugins != nullptr && badge_x + p.px(18.0F) <= l.name_r) {
+            if (const auto ov = f.plugins->query_overlay(row_full_path);
+                ov && !ov->badge_text.empty()) {
+                const ShapedText pt = p.shape(type::caption, ov->badge_text);
+                const float bw = pt.width() + p.px(8.0F);
+                const float bh = std::round(p.px(15.0F));
+                Color pcol = pal.accent;
+                if (ov->color_rgba != 0U) {
+                    pcol = Color{static_cast<float>((ov->color_rgba >> 24U) & 0xFFU) / 255.0F,
+                                 static_cast<float>((ov->color_rgba >> 16U) & 0xFFU) / 255.0F,
+                                 static_cast<float>((ov->color_rgba >> 8U) & 0xFFU) / 255.0F,
+                                 static_cast<float>(ov->color_rgba & 0xFFU) / 255.0F};
+                }
+                r.fill_rounded_rect(snap(RectF{badge_x, std::round(mid - (0.5F * bh)), bw, bh}),
+                                    p.px(3.0F), pcol.with_alpha(0.20F));
+                p.draw(pt, badge_x + p.px(4.0F), std::round(mid + (0.5F * pt.cap_height())), pcol);
+            }
+        }
         const bool editing =
             f.inline_edit != nullptr && !m.flattened() && e.name == f.inline_edit->original;
         if (editing) {
