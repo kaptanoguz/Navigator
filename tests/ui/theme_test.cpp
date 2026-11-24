@@ -229,3 +229,37 @@ TEST_CASE("Phase 5 match highlight and filter chip stay AA everywhere they are d
         CHECK(contrast_ratio(p.chip_text, over(p.surface, p.chip)) >= 4.5F);
     }
 }
+
+TEST_CASE("Phase 9B custom ThemeScheme resolution, radius tokens and spacing scale", "[theme]") {
+    navigator::appearance::ThemeScheme nord;
+    nord.id = "nord";
+    nord.name = "Nord";
+    nord.base = Theme::Dark;
+    nord.colors.background = navigator::appearance::Rgba8{0x2E, 0x34, 0x40, 0xFF};
+    nord.colors.accent = navigator::appearance::Rgba8{0x88, 0xC0, 0xD0, 0xFF};
+
+    const Palette p = palette_from_scheme(nord);
+    const Palette& base = palette(Theme::Dark);
+    CHECK_THAT(p.background.r, WithinAbs(0x2E / 255.0F, 0.002));
+    CHECK_THAT(p.accent.g, WithinAbs(0xC0 / 255.0F, 0.002));
+    // Derived accent tokens update automatically when accent is overridden.
+    CHECK_THAT(p.selection_marker.g, WithinAbs(p.accent.g, 0.001));
+    CHECK_THAT(p.match.g, WithinAbs(p.accent.g, 0.001));
+    // Omitted fields fall back to base palette.
+    CHECK_THAT(p.text_primary.r, WithinAbs(base.text_primary.r, 0.001));
+
+    // Corner radius tokens: 0 = sharp, default = 6 dp, 12 = doubled.
+    const RadiusTokens sharp = radius_tokens(0);
+    CHECK(sharp.sm == 0.0F);
+    CHECK(sharp.md == 0.0F);
+    CHECK(sharp.lg == 0.0F);
+    const RadiusTokens def = radius_tokens(6);
+    CHECK_THAT(def.sm, WithinAbs(radius::sm, 0.01));
+    CHECK_THAT(def.md, WithinAbs(radius::md, 0.01));
+    CHECK_THAT(def.lg, WithinAbs(radius::lg, 0.01));
+
+    // Density + spacing scale.
+    const DensityMetrics c100 = density_metrics(Density::Compact, 100);
+    const DensityMetrics c125 = density_metrics(Density::Compact, 125);
+    CHECK_THAT(c125.row_height, WithinAbs(c100.row_height * 1.25F, 0.01));
+}

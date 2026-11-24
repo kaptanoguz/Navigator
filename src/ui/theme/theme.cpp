@@ -151,14 +151,19 @@ Palette palette_from_scheme(const appearance::ThemeScheme& scheme) noexcept {
         return Color{static_cast<float>(c.r) * inv, static_cast<float>(c.g) * inv,
                      static_cast<float>(c.b) * inv, static_cast<float>(c.a) * inv};
     };
+    const auto apply = [&](const std::optional<appearance::Rgba8>& src, Color& dst) noexcept {
+        if (src) {
+            dst = to_color(*src);
+        }
+    };
     const appearance::ThemeColors& c = scheme.colors;
-    if (c.background) p.background = to_color(*c.background);
-    if (c.background_alt) p.background_alt = to_color(*c.background_alt);
-    if (c.surface) p.surface = to_color(*c.surface);
-    if (c.surface_raised) p.surface_raised = to_color(*c.surface_raised);
-    if (c.text_primary) p.text_primary = to_color(*c.text_primary);
-    if (c.text_secondary) p.text_secondary = to_color(*c.text_secondary);
-    if (c.text_muted) p.text_muted = to_color(*c.text_muted);
+    apply(c.background, p.background);
+    apply(c.background_alt, p.background_alt);
+    apply(c.surface, p.surface);
+    apply(c.surface_raised, p.surface_raised);
+    apply(c.text_primary, p.text_primary);
+    apply(c.text_secondary, p.text_secondary);
+    apply(c.text_muted, p.text_muted);
     if (c.accent) {
         p.accent = to_color(*c.accent);
         p.selection_marker = p.accent;
@@ -172,16 +177,16 @@ Palette palette_from_scheme(const appearance::ThemeScheme& scheme) noexcept {
             p.focus_ring = p.accent.with_alpha(0.82F);
         }
     }
-    if (c.on_accent) p.on_accent = to_color(*c.on_accent);
-    if (c.border) p.border = to_color(*c.border);
-    if (c.danger) p.danger = to_color(*c.danger);
-    if (c.warning) p.warning = to_color(*c.warning);
-    if (c.selection) p.selection = to_color(*c.selection);
-    if (c.row_alt) p.row_alt = to_color(*c.row_alt);
-    if (c.row_hover) p.row_hover = to_color(*c.row_hover);
-    if (c.focus_ring) p.focus_ring = to_color(*c.focus_ring);
-    if (c.icon_folder_back) p.icon_folder_back = to_color(*c.icon_folder_back);
-    if (c.icon_folder_front) p.icon_folder_front = to_color(*c.icon_folder_front);
+    apply(c.on_accent, p.on_accent);
+    apply(c.border, p.border);
+    apply(c.danger, p.danger);
+    apply(c.warning, p.warning);
+    apply(c.selection, p.selection);
+    apply(c.row_alt, p.row_alt);
+    apply(c.row_hover, p.row_hover);
+    apply(c.focus_ring, p.focus_ring);
+    apply(c.icon_folder_back, p.icon_folder_back);
+    apply(c.icon_folder_front, p.icon_folder_front);
     return p;
 }
 

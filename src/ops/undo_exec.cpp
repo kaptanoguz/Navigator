@@ -432,8 +432,8 @@ Result<void> run_batch_rename_undo_redo(Context& ctx, bool is_undo) {
                 continue;
             }
             std::string tmp = temp_name_for(e.from.filename().native());
-            const int rc = rename_no_overwrite(dir.get(), e.from.filename().native(), dir.get(),
-                                               tmp, false);
+            const int rc =
+                rename_no_overwrite(dir.get(), e.from.filename().native(), dir.get(), tmp, false);
             if (rc != 0) {
                 e.valid = false;
                 early_outcome[i] =
@@ -470,8 +470,7 @@ Result<void> run_batch_rename_undo_redo(Context& ctx, bool is_undo) {
                 (void)rename_no_overwrite(dir.get(), e.temp_name, dir.get(),
                                           e.from.filename().native(), false);
             }
-            ctx.finish_item(
-                outcome(e.from, ItemStatus::Failed, errno_error(rc, "rename", e.from)));
+            ctx.finish_item(outcome(e.from, ItemStatus::Failed, errno_error(rc, "rename", e.from)));
             continue;
         }
         UndoStep ns;

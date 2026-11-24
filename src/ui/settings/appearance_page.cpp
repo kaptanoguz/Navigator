@@ -110,8 +110,8 @@ bool draw_appearance_page(const Painter& p, const Palette& pal, const RectF& bod
                                   std::string(tr("settings.appearance.theme_light")),
                                   palette(Theme::Light)});
     for (const appearance::ThemeScheme& sc : custom_themes) {
-        choices.push_back(ThemeChoice{sc.id, sc.name.empty() ? sc.id : sc.name,
-                                      palette_from_scheme(sc)});
+        choices.push_back(
+            ThemeChoice{sc.id, sc.name.empty() ? sc.id : sc.name, palette_from_scheme(sc)});
     }
 
     const float chip_h = p.px(34.0F);

@@ -84,10 +84,10 @@ void navigator_phase9b_contract_check() {
     (void)list_custom_themes(Path{"/tmp/themes"});
 
     const CommandId ids[] = {
-        CommandId::BatchRename,          CommandId::ToggleAnimations,
+        CommandId::BatchRename,           CommandId::ToggleAnimations,
         CommandId::ToggleAlternatingRows, CommandId::CycleDensity,
-        CommandId::FontSizeIncrease,     CommandId::FontSizeDecrease,
-        CommandId::FontSizeReset,        CommandId::OpenAppearanceSettings,
+        CommandId::FontSizeIncrease,      CommandId::FontSizeDecrease,
+        CommandId::FontSizeReset,         CommandId::OpenAppearanceSettings,
     };
     (void)ids;
 }

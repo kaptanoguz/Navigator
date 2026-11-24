@@ -640,8 +640,9 @@ Result<void> run_batch_rename(Context& ctx) {
                                               r.sources[i].filename().native(), false);
                 }
             }
-            ctx.finish_item(failed_item(
-                r.sources[i], make_error(ErrorCode::IoError, "injected: " + r.sources[i].native())));
+            ctx.finish_item(
+                failed_item(r.sources[i],
+                            make_error(ErrorCode::IoError, "injected: " + r.sources[i].native())));
             continue;
         }
 
@@ -651,7 +652,8 @@ Result<void> run_batch_rename(Context& ctx) {
             stage[i].staged ? stage[i].temp_name : r.sources[i].filename().native();
         const Fd dir(open_dir_path(parent));
         if (!dir.valid()) {
-            ctx.finish_item(failed_item(r.sources[i], errno_error(errno, "open directory", parent)));
+            ctx.finish_item(
+                failed_item(r.sources[i], errno_error(errno, "open directory", parent)));
             continue;
         }
         const int rc = rename_no_overwrite(dir.get(), cur_name, dir.get(), r.new_names[i], false);

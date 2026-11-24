@@ -198,7 +198,7 @@ struct RadiusTokens {
     if (c == 0) {
         return RadiusTokens{0.0F, 0.0F, 0.0F, 0.0F};
     }
-    const float base = static_cast<float>(c);
+    const auto base = static_cast<float>(c);
     return RadiusTokens{base * (5.0F / 6.0F), base * (8.0F / 6.0F), base * 2.0F, radius::pill};
 }
 
@@ -250,10 +250,10 @@ struct DensityMetrics {
         return base;
     }
     const float f = static_cast<float>(clamped) * 0.01F;
-    return DensityMetrics{base.top_bar_height * f, base.tool_button * f,
+    return DensityMetrics{base.top_bar_height * f,    base.tool_button * f,
                           base.status_bar_height * f, base.panel_margin * f,
-                          base.header_height * f, base.row_height * f,
-                          base.notice_height * f, base.tab_bar_height * f};
+                          base.header_height * f,     base.row_height * f,
+                          base.notice_height * f,     base.tab_bar_height * f};
 }
 
 } // namespace navigator::ui

@@ -1,6 +1,4 @@
 // src/ops/batch_rename.cpp — Phase 9B pure batch rename planner & helpers.
-#include <navigator/batch_rename.hpp>
-
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -15,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include <navigator/batch_rename.hpp>
 #include <navigator/fs.hpp>
 
 namespace navigator::ops {
@@ -46,9 +45,8 @@ namespace {
 
 [[nodiscard]] std::string format_counter(int value, int width) {
     const bool negative = value < 0;
-    const unsigned long long mag =
-        negative ? (0ULL - static_cast<unsigned long long>(value))
-                 : static_cast<unsigned long long>(value);
+    const unsigned long long mag = negative ? (0ULL - static_cast<unsigned long long>(value))
+                                            : static_cast<unsigned long long>(value);
     std::string digits = std::to_string(mag);
     const std::size_t w = width > 0 ? static_cast<std::size_t>(std::clamp(width, 1, 12)) : 1U;
     if (digits.size() < w) {
@@ -111,9 +109,9 @@ namespace {
         } else if (key == "ext") {
             out.append(parts.extension);
         } else if (key == "counter") {
-            const long long val = static_cast<long long>(rule.counter_start) +
-                                  (static_cast<long long>(index) *
-                                   static_cast<long long>(rule.counter_step));
+            const long long val =
+                static_cast<long long>(rule.counter_start) +
+                (static_cast<long long>(index) * static_cast<long long>(rule.counter_step));
             const int width = arg.empty() ? 1 : parse_int_token(arg, 1);
             out.append(format_counter(static_cast<int>(val), width));
         } else if (key == "date") {
@@ -305,12 +303,12 @@ std::string format_batch_date(Timestamp ts, std::string_view fmt) {
     auto two = [](int v) -> std::string {
         std::array<char, 8> buf{};
         std::snprintf(buf.data(), buf.size(), "%02d", v);
-        return std::string(buf.data());
+        return {buf.data()};
     };
     auto four = [](int v) -> std::string {
         std::array<char, 12> buf{};
         std::snprintf(buf.data(), buf.size(), "%04d", v);
-        return std::string(buf.data());
+        return {buf.data()};
     };
 
     const int year = tm_buf.tm_year + 1900;

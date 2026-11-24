@@ -1023,7 +1023,8 @@ constexpr Entry kStrings[] = {
     Entry{"ops.title.batch_rename.other", "Batch renaming {count} items",
           "{count} öge toplu yeniden adlandırılıyor"},
     Entry{"ops.done.batch_rename.one", "Renamed “{name}”", "“{name}” yeniden adlandırıldı"},
-    Entry{"ops.done.batch_rename.other", "Renamed {count} items", "{count} öge yeniden adlandırıldı"},
+    Entry{"ops.done.batch_rename.other", "Renamed {count} items",
+          "{count} öge yeniden adlandırıldı"},
     Entry{"ops.partial.batch_rename", "Renamed {done} of {total} items",
           "{total} öğeden {done} tanesi yeniden adlandırıldı"},
 

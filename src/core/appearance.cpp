@@ -1,6 +1,4 @@
 // src/core/appearance.cpp — Phase 9B appearance settings and custom JSON theme schemes.
-#include <navigator/appearance.hpp>
-
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -11,6 +9,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <navigator/appearance.hpp>
 
 #include "document_files.hpp"
 #include "json_util.hpp"
@@ -109,7 +109,7 @@ std::string format_hex_color(Rgba8 c) {
                       static_cast<unsigned>(c.g), static_cast<unsigned>(c.b),
                       static_cast<unsigned>(c.a));
     }
-    return std::string(buf.data());
+    return {buf.data()};
 }
 
 std::string_view to_string(UiDensity density) noexcept {
@@ -130,9 +130,9 @@ std::optional<UiDensity> parse_density(std::string_view name) noexcept {
     return std::nullopt;
 }
 
-Result<std::string> to_json(const AppearanceSettings& raw) {
+Result<std::string> to_json(const AppearanceSettings& settings) {
     try {
-        const AppearanceSettings s = normalize(raw);
+        const AppearanceSettings s = normalize(settings);
         OutJson root = OutJson::object();
         root["version"] = AppearanceSettings::kVersion;
         root["theme"] = s.theme_id;
@@ -259,7 +259,8 @@ Result<ThemeScheme> theme_scheme_from_json(std::string_view text, std::string_vi
         if (const auto base = as_string(member(root, "base"))) {
             scheme.base = (*base == "light") ? Theme::Light : Theme::Dark;
         }
-        if (const InJson* colors = member(root, "colors"); colors != nullptr && colors->is_object()) {
+        if (const InJson* colors = member(root, "colors");
+            colors != nullptr && colors->is_object()) {
             ThemeColors& c = scheme.colors;
             read_opt_color(*colors, "background", c.background);
             read_opt_color(*colors, "background_alt", c.background_alt);

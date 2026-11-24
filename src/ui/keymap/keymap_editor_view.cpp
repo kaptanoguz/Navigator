@@ -222,11 +222,12 @@ KeymapEditorEvent KeymapSettingsOverlay::handle_key(KeyChord chord, KeymapFile& 
     return ev;
 }
 
-KeymapEditorEvent KeymapSettingsOverlay::draw(
-    const Painter& p, const Palette& pal, const RectF& viewport, const PointerInput& pointer,
-    KeymapFile& file, const Keymap& effective, const Keymap& defaults,
-    const CommandRegistry& registry, appearance::AppearanceSettings& appearance,
-    const std::vector<appearance::ThemeScheme>& custom_themes) {
+KeymapEditorEvent
+KeymapSettingsOverlay::draw(const Painter& p, const Palette& pal, const RectF& viewport,
+                            const PointerInput& pointer, KeymapFile& file, const Keymap& effective,
+                            const Keymap& defaults, const CommandRegistry& registry,
+                            appearance::AppearanceSettings& appearance,
+                            const std::vector<appearance::ThemeScheme>& custom_themes) {
     KeymapEditorEvent ev;
     if (!open_) {
         return ev;

@@ -123,10 +123,12 @@ TEST_CASE("Batch rename single-line and multi-line paste semantics", "[ops][batc
     CHECK(p1.rows[2].proposed_name == "Holiday_01.xmp");
 
     // Multi-line paste assigns line-by-line overrides.
-    const BatchPasteResult multi = interpret_batch_paste("one.jpg\r\ntwo.raw\r\nthree.xmp\r\n", items);
+    const BatchPasteResult multi =
+        interpret_batch_paste("one.jpg\r\ntwo.raw\r\nthree.xmp\r\n", items);
     CHECK_FALSE(multi.is_single_line);
     REQUIRE(multi.line_overrides.size() == 3);
-    const BatchRenamePlan p2 = build_batch_rename_plan(items, BatchRenameRule{}, multi.line_overrides);
+    const BatchRenamePlan p2 =
+        build_batch_rename_plan(items, BatchRenameRule{}, multi.line_overrides);
     REQUIRE(p2.can_apply());
     CHECK(p2.rows[0].proposed_name == "one.jpg");
     CHECK(p2.rows[1].proposed_name == "two.raw");

@@ -307,7 +307,8 @@ BatchRenameEvent BatchRenameOverlay::draw(const Painter& p, const Palette& pal,
     ren.stroke_rounded_rect(tpl_box, rad_sm, border_px,
                             focus_ == FocusField::Template ? pal.accent : pal.border);
     draw_text_field(p, pal, template_edit_, inset_rect(tpl_box, p.px(6.0F), 0.0F), "{name}",
-                    template_scroll_, TextFieldStyle{&type::row, 15.0F, focus_ == FocusField::Template});
+                    template_scroll_,
+                    TextFieldStyle{&type::row, 15.0F, focus_ == FocusField::Template});
     if (pointer.pressed && contains(tpl_box, pointer.x, pointer.y)) {
         focus_ = FocusField::Template;
     }
@@ -349,7 +350,8 @@ BatchRenameEvent BatchRenameOverlay::draw(const Painter& p, const Palette& pal,
     const float rep_lbl_x = find_box.right() + p.px(12.0F);
     const ShapedText rep_lbl = p.shape(type::caption, tr("batch_rename.replace"));
     p.draw(rep_lbl, rep_lbl_x, y + p.px(18.0F), pal.text_secondary);
-    const RectF rep_box{rep_lbl_x + label_w, y, card.right() - pad - (rep_lbl_x + label_w), field_h};
+    const RectF rep_box{rep_lbl_x + label_w, y, card.right() - pad - (rep_lbl_x + label_w),
+                        field_h};
     ren.fill_rounded_rect(rep_box, rad_sm, pal.surface_raised);
     ren.stroke_rounded_rect(rep_box, rad_sm, border_px,
                             focus_ == FocusField::Replace ? pal.accent : pal.border);
@@ -365,8 +367,8 @@ BatchRenameEvent BatchRenameOverlay::draw(const Painter& p, const Palette& pal,
     // Options row: Case transform, Trim spaces, Match case.
     float ox = card.x + pad;
     const float opt_h = p.px(24.0F);
-    const std::string case_text =
-        std::string(tr("batch_rename.case")) + ": " + std::string(tr(case_label_key(rule_.case_transform)));
+    const std::string case_text = std::string(tr("batch_rename.case")) + ": " +
+                                  std::string(tr(case_label_key(rule_.case_transform)));
     const RectF case_btn{ox, y, p.shape(type::caption, case_text).width() + p.px(18.0F), opt_h};
     draw_chip_button(p, pal, case_btn, case_text, rule_.case_transform != ops::CaseTransform::None,
                      contains(case_btn, pointer.x, pointer.y), false, false);
@@ -430,7 +432,8 @@ BatchRenameEvent BatchRenameOverlay::draw(const Painter& p, const Palette& pal,
         static_cast<std::size_t>(std::max(1.0F, std::floor(body_rect.h / row_h)));
     if (contains(body_rect, pointer.x, pointer.y) && pointer.wheel_y != 0.0F) {
         const int delta = pointer.wheel_y > 0.0F ? -3 : 3;
-        const int max_s = static_cast<int>(items_.size() > visible_rows ? items_.size() - visible_rows : 0);
+        const int max_s =
+            static_cast<int>(items_.size() > visible_rows ? items_.size() - visible_rows : 0);
         scroll_ = static_cast<std::size_t>(std::clamp(static_cast<int>(scroll_) + delta, 0, max_s));
     }
     if (items_.size() > visible_rows) {
@@ -492,8 +495,8 @@ BatchRenameEvent BatchRenameOverlay::draw(const Painter& p, const Palette& pal,
 
     // Footer bar: summary + Cancel / Apply buttons.
     const float fy = card.bottom() - footer_h + p.px(8.0F);
-    std::string summary = std::to_string(plan_.changed_count) + " " +
-                          std::string(tr("batch_rename.summary_ready"));
+    std::string summary =
+        std::to_string(plan_.changed_count) + " " + std::string(tr("batch_rename.summary_ready"));
     if (plan_.collision_count > 0) {
         summary += " · " + std::to_string(plan_.collision_count) + " " +
                    std::string(tr("batch_rename.summary_collisions"));

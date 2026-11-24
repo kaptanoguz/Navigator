@@ -55,8 +55,7 @@ public:
         return (open_ && page_ == Page::Keyboard && !capturing_) ? &search_ : nullptr;
     }
 
-    void open(const CommandRegistry& registry, const Keymap& effective,
-              Page page = Page::Keyboard);
+    void open(const CommandRegistry& registry, const Keymap& effective, Page page = Page::Keyboard);
     void close() noexcept;
 
     // Refresh displayed shortcuts after the effective Keymap changes.

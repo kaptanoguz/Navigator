@@ -632,8 +632,8 @@ Result<void> App::Impl::init(const AppConfig& config) {
             }
             apply_appearance_settings();
         } else {
-            appearance_settings.theme_id =
-                (config.theme == Theme::Light) ? std::string(appearance::kBuiltinLightId)
+            appearance_settings.theme_id = (config.theme == Theme::Light)
+                                               ? std::string(appearance::kBuiltinLightId)
                                                : std::string(appearance::kBuiltinDarkId);
             appearance_settings.animations = animations;
             previous_palette = resolve_palette(appearance_settings.theme_id, theme);
@@ -1806,7 +1806,8 @@ void App::Impl::filter_escape() {
 
 void App::Impl::handle_text(std::string_view typed) {
     if (batch_rename_overlay.is_open()) {
-        if (ui::TextEdit* f = batch_rename_overlay.active_field(); f != nullptr && f->insert(typed)) {
+        if (ui::TextEdit* f = batch_rename_overlay.active_field();
+            f != nullptr && f->insert(typed)) {
             batch_rename_overlay.field_changed();
             dirty = true;
         }
@@ -2694,7 +2695,22 @@ bool App::Impl::is_file_command(CommandId id) noexcept {
     case CommandId::ToggleOperationsPanel:
     case CommandId::OpenTrash:
     case CommandId::RestoreFromTrash:
-    case CommandId::EmptyTrash: return true;
+    case CommandId::EmptyTrash:
+    case CommandId::OpenPalette:
+    case CommandId::OpenSettings:
+    case CommandId::EditKeymap:
+    case CommandId::ResetKeymap:
+    case CommandId::ExportKeymap:
+    case CommandId::ShowContextMenu:
+    case CommandId::OpenWith:
+    case CommandId::BatchRename:
+    case CommandId::ToggleAnimations:
+    case CommandId::ToggleAlternatingRows:
+    case CommandId::CycleDensity:
+    case CommandId::FontSizeIncrease:
+    case CommandId::FontSizeDecrease:
+    case CommandId::FontSizeReset:
+    case CommandId::OpenAppearanceSettings: return true;
     default: return false;
     }
 }
@@ -2909,9 +2925,8 @@ void App::Impl::file_command(const Command& command) {
     case CommandId::OpenAppearanceSettings:
         if (!file_ops->sheet_open()) {
             const ui::KeymapSettingsOverlay::Page target_page =
-                command.id == CommandId::EditKeymap
-                    ? ui::KeymapSettingsOverlay::Page::Keyboard
-                    : ui::KeymapSettingsOverlay::Page::Appearance;
+                command.id == CommandId::EditKeymap ? ui::KeymapSettingsOverlay::Page::Keyboard
+                                                    : ui::KeymapSettingsOverlay::Page::Appearance;
             if (keymap_settings.is_open() &&
                 (command.id == CommandId::OpenSettings || keymap_settings.page() == target_page)) {
                 keymap_settings.close();
@@ -2937,15 +2952,14 @@ void App::Impl::file_command(const Command& command) {
         appearance_settings.alternating_rows = !appearance_settings.alternating_rows;
         appearance_dirty = true;
         dirty = true;
-        toast(std::string(tr("settings.appearance.alternating_rows")) + ": " +
-              std::string(
-                  tr(appearance_settings.alternating_rows ? "settings.on" : "settings.off")));
+        toast(
+            std::string(tr("settings.appearance.alternating_rows")) + ": " +
+            std::string(tr(appearance_settings.alternating_rows ? "settings.on" : "settings.off")));
         return;
     case CommandId::CycleDensity:
-        appearance_settings.density =
-            appearance_settings.density == appearance::UiDensity::Compact
-                ? appearance::UiDensity::Comfortable
-                : appearance::UiDensity::Compact;
+        appearance_settings.density = appearance_settings.density == appearance::UiDensity::Compact
+                                          ? appearance::UiDensity::Comfortable
+                                          : appearance::UiDensity::Compact;
         apply_appearance_settings();
         appearance_dirty = true;
         toast(std::string(tr(appearance_settings.density == appearance::UiDensity::Compact
@@ -4206,8 +4220,7 @@ void App::Impl::draw_frame(double t_ms, double dt_ms) {
     }
     Theme resolved_base = theme;
     const ui::Palette target_pal = resolve_palette(appearance_settings.theme_id, resolved_base);
-    const ui::Palette pal =
-        fade < 1.0F ? ui::mix(previous_palette, target_pal, fade) : target_pal;
+    const ui::Palette pal = fade < 1.0F ? ui::mix(previous_palette, target_pal, fade) : target_pal;
     const std::string_view lang = language() == Language::Turkish ? "tr" : "en";
     const float font_scale =
         static_cast<float>(appearance::clamp_font_scale(appearance_settings.font_scale_percent)) *
@@ -4450,9 +4463,9 @@ void App::Impl::draw_frame(double t_ms, double dt_ms) {
     if (keymap_settings.is_open()) {
         const ui::Palette before_pal = pal;
         const std::string before_theme = appearance_settings.theme_id;
-        const ui::KeymapEditorEvent ev = keymap_settings.draw(
-            painter, pal, full_viewport, pointer, keymap_file, keymap, default_keymap, registry,
-            appearance_settings, custom_themes);
+        const ui::KeymapEditorEvent ev =
+            keymap_settings.draw(painter, pal, full_viewport, pointer, keymap_file, keymap,
+                                 default_keymap, registry, appearance_settings, custom_themes);
         if (ev.keymap_dirty) {
             keymap_dirty = true;
             rebuild_keymap_from_file();

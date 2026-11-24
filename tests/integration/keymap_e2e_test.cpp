@@ -1556,6 +1556,7 @@ std::map<std::string, Check> effect_checks() {
     checks["view.zoom_in"] = shell_only;
     checks["view.zoom_out"] = shell_only;
     checks["view.zoom_reset"] = shell_only;
+    checks["file.batch_rename"] = shell_only;
     checks["pane.close"] = [](Scene& s, const Command& c) {
         REQUIRE(s.exec(c)); // the only pane: no-op
         s.settle();
@@ -1596,8 +1597,8 @@ TEST_CASE("docs/keymap.md and load_default_keymap agree row for row", "[keymap][
     CHECK(doc.per_phase.at(6) == 2);
     CHECK(doc.per_phase.at(7) == 12);
     CHECK(doc.per_phase.at(8) == 8);
-    CHECK(doc.per_phase.at(9) == 10);
-    REQUIRE(doc.bound.size() == 90); // 80 through Phase 8 + 10 Phase 9A chords
+    CHECK(doc.per_phase.at(9) == 11);
+    REQUIRE(doc.bound.size() == 91); // 80 through Phase 8 + 11 Phase 9 chords
     Keymap keymap;
     REQUIRE(load_default_keymap(keymap));
     const Span<const KeyBinding> bindings = keymap.bindings();
@@ -1675,8 +1676,15 @@ TEST_CASE("docs/keymap.md and load_default_keymap agree row for row", "[keymap][
                                                  "view.lock_global",
                                                  "view.tree_expand",
                                                  "view.tree_collapse",
-                                                 "view.tree_collapse_all"});
-    REQUIRE(doc.unbound.size() == 44);
+                                                 "view.tree_collapse_all",
+                                                 "view.toggle_animations",
+                                                 "view.toggle_alternating_rows",
+                                                 "view.cycle_density",
+                                                 "view.font_size_increase",
+                                                 "view.font_size_decrease",
+                                                 "view.font_size_reset",
+                                                 "settings.appearance"});
+    REQUIRE(doc.unbound.size() == 51);
     for (const DocRow& row : doc.unbound) {
         if (row.command == "ops.toggle_panel") {
             continue; // bound by Phase 8 table
@@ -1733,12 +1741,11 @@ TEST_CASE("Every default chord resolves to its command and has its effect on the
           // Phase 7 near misses: window-manager keys, a risky "delete" key,
           // modifier variants of the new file chords.
           "Alt+F7", "Alt+F8", "F8", "Ctrl+Delete", "Alt+Delete", "Ctrl+Shift+Y", "Ctrl+Shift+X",
-          "Ctrl+Shift+V", "Ctrl+Alt+Z", "Ctrl+F7", "Ctrl+Shift+F7", "Shift+F2", "Ctrl+F2",
-          "Ctrl+Shift+Delete", "Ctrl+Alt+N", "Ctrl+Shift+F3", "Ctrl+F6", "Ctrl+Alt+T",
-          "Shift+Enter", "Ctrl+Shift+B", "Ctrl+Alt+L", "Ctrl+Shift+G", "Alt+D", "Ctrl+Alt+C",
-          "Ctrl+Alt+E", "Alt+E", "Ctrl+Alt+F", "Alt+F", "Ctrl+Alt+Shift+E", "Shift+F",
-          "Shift+Space", "Alt+Space", "Ctrl+Shift+Space", "Alt+Enter", "Shift+KeypadEnter",
-          "Ctrl+Alt+KeypadEnter"}) {
+          "Ctrl+Shift+V", "Ctrl+Alt+Z", "Ctrl+F7", "Ctrl+Shift+F7", "Ctrl+F2", "Ctrl+Shift+Delete",
+          "Ctrl+Alt+N", "Ctrl+Shift+F3", "Ctrl+F6", "Ctrl+Alt+T", "Shift+Enter", "Ctrl+Shift+B",
+          "Ctrl+Alt+L", "Ctrl+Shift+G", "Alt+D", "Ctrl+Alt+C", "Ctrl+Alt+E", "Alt+E", "Ctrl+Alt+F",
+          "Alt+F", "Ctrl+Alt+Shift+E", "Shift+F", "Shift+Space", "Alt+Space", "Ctrl+Shift+Space",
+          "Alt+Enter", "Shift+KeypadEnter", "Ctrl+Alt+KeypadEnter"}) {
         INFO(text);
         CHECK_FALSE(resolve_command(keymap, registry, chord_of(text)));
     }
