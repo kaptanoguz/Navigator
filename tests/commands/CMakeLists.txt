@@ -4,6 +4,7 @@ add_executable(navigator_commands_tests
     command_queue_test.cpp
     command_registry_test.cpp
     keymap_test.cpp
+    keymap_file_test.cpp
 )
 target_link_libraries(navigator_commands_tests
     PRIVATE

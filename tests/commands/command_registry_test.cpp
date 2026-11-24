@@ -25,7 +25,7 @@ constexpr auto kTestB = static_cast<CommandId>(901);
 // OpenInNewTab, 10 tab, 5 pane, 3 layout, 1 window; Phase 4: 2 view, GoTo, 1 sidebar,
 // 4 bookmarks, 2 recents, 1 edit; Phase 5: 2 list filter, 6 search; Phase 6: view.inspect,
 // 7 inspector; Phase 7: 5 edit, 7 file, 3 ops, 3 trash.
-constexpr std::size_t kBuiltinCount = 18 + 20 + 11 + 8 + 8 + 18;
+constexpr std::size_t kBuiltinCount = 18 + 20 + 11 + 8 + 8 + 18 + 8;
 
 struct Expected {
     CommandId id;
@@ -258,13 +258,22 @@ TEST_CASE("to_string(CommandId) values", "[to_string]") {
     CHECK(navigator::to_string(CommandId::CursorPageDown) == "list.cursor_page_down");
     CHECK(navigator::to_string(CommandId::CursorHome) == "list.cursor_home");
     CHECK(navigator::to_string(CommandId::CursorEnd) == "list.cursor_end");
+    CHECK(navigator::to_string(CommandId::ToggleCursorSelected) == "list.toggle_cursor_selected");
+    CHECK(navigator::to_string(CommandId::OpenPalette) == "palette.open");
+    CHECK(navigator::to_string(CommandId::OpenSettings) == "settings.open");
+    CHECK(navigator::to_string(CommandId::EditKeymap) == "keymap.edit");
+    CHECK(navigator::to_string(CommandId::ResetKeymap) == "keymap.reset_defaults");
+    CHECK(navigator::to_string(CommandId::ExportKeymap) == "keymap.export");
+    CHECK(navigator::to_string(CommandId::ShowContextMenu) == "menu.show_context");
+    CHECK(navigator::to_string(CommandId::OpenWith) == "open_with.show");
     CHECK(navigator::to_string(static_cast<CommandId>(7)) == "unknown");
     CHECK(navigator::to_string(static_cast<CommandId>(999)) == "unknown");
     CHECK(navigator::to_string(static_cast<CommandId>(1006)) == "unknown");
-    CHECK(navigator::to_string(static_cast<CommandId>(1103)) == "unknown");
+    CHECK(navigator::to_string(static_cast<CommandId>(1104)) == "unknown");
     for (const std::uint32_t gap :
-         {1117U, 1199U, 1210U, 1219U, 1225U, 1239U, 1243U, 1249U, 1251U, 1259U, 1265U, 1269U, 1272U,
-          1279U, 1286U, 1299U, 1308U, 1319U, 1328U, 1339U, 1350U, 1359U, 1363U, 1369U, 1370U}) {
+         {1117U, 1199U, 1210U, 1219U, 1225U, 1239U, 1243U, 1249U, 1251U,
+          1259U, 1265U, 1269U, 1272U, 1279U, 1286U, 1299U, 1308U, 1319U,
+          1328U, 1339U, 1350U, 1359U, 1363U, 1369U, 1376U, 1389U, 1391U}) {
         INFO("id " << gap);
         CHECK(navigator::to_string(static_cast<CommandId>(gap)) == "unknown");
     }
