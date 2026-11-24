@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(Navigator
-    VERSION 0.0.1
+    VERSION 0.1.0
     DESCRIPTION "Independent Linux file manager"
     LANGUAGES C CXX)
 
@@ -91,7 +91,24 @@ endif()
 # ---------------------------------------------------------------------------
 include(GNUInstallDirs)
 if(TARGET navigator)
+    set_target_properties(navigator PROPERTIES
+        INSTALL_RPATH "\$ORIGIN/../${CMAKE_INSTALL_LIBDIR}/navigator"
+    )
     install(TARGETS navigator RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    if(TARGET SDL3-shared)
+        install(TARGETS SDL3-shared
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/navigator
+            NAMELINK_SKIP)
+    endif()
     install(FILES packaging/linux/navigator.desktop
         DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+    install(FILES packaging/linux/navigator.svg
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
+    install(FILES packaging/linux/io.github.kaptanoguz.Navigator.metainfo.xml
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
+    install(FILES packaging/deb/set-default-file-manager.sh
+        DESTINATION ${CMAKE_INSTALL_DOCDIR}
+        PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
 endif()
+
+include(Packaging)

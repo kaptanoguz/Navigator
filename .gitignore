@@ -23,6 +23,7 @@ vcpkg_installed/
 .DS_Store
 
 # Packaging outputs
+dist/
 *.deb
 *.AppImage
 *.flatpak

@@ -1,0 +1,51 @@
+name: Release (.deb)
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  APT_BUILD_DEPS: >-
+    ninja-build cmake pkg-config git dpkg-dev file
+    libfreetype-dev libharfbuzz-dev libfontconfig-dev
+    libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev
+    libxss-dev libxkbcommon-dev libwayland-dev wayland-protocols
+    libegl-dev libgl-dev libvulkan-dev libdecor-0-dev libdbus-1-dev libudev-dev
+    libxtst-dev libdrm-dev libgbm-dev libasound2-dev libpulse-dev libpipewire-0.3-dev
+    nlohmann-json3-dev
+    libpng-dev libjpeg-turbo8-dev libwebp-dev libexif-dev
+    libheif-dev libavformat-dev libavcodec-dev libswscale-dev libavutil-dev librsvg2-dev
+    libglib2.0-dev libarchive-dev
+
+jobs:
+  deb:
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc-13
+      CXX: g++-13
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $APT_BUILD_DEPS g++-13 desktop-file-utils
+      - name: Validate desktop entry
+        run: desktop-file-validate packaging/linux/navigator.desktop
+      - name: Build .deb package (Release + LTO)
+        run: bash packaging/deb/build-deb.sh
+      - name: Inspect .deb contents and metadata
+        run: |
+          dpkg-deb -I dist/navigator_*.deb
+          dpkg-deb -c dist/navigator_*.deb
+          cat dist/SHA256SUMS.txt
+      - name: Upload GitHub Release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/navigator_*.deb
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
