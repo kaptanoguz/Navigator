@@ -6,6 +6,7 @@
 # src/platform. Safety rules S1..S16 (ops.hpp) are normative for every file here.
 
 add_library(navigator_ops STATIC
+    archive.cpp
     batch_rename.cpp
     conflict.cpp
     context.cpp
@@ -32,3 +33,10 @@ target_link_libraries(navigator_ops
     PRIVATE
         navigator::options
 )
+
+if(NAVIGATOR_HAVE_LIBARCHIVE)
+    target_link_libraries(navigator_ops PRIVATE Navigator::LibArchive)
+    target_compile_definitions(navigator_ops PRIVATE NAVIGATOR_HAVE_LIBARCHIVE=1)
+else()
+    target_compile_definitions(navigator_ops PRIVATE NAVIGATOR_HAVE_LIBARCHIVE=0)
+endif()
