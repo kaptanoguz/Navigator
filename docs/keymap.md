@@ -709,6 +709,33 @@ Palette and menu items run the same `Command` a binding would, at frame end, so 
 and rule above still applies. The palette captures its context (selection, focused sidebar row,
 Trash view, running operations, undo state) before it takes focus.
 
+## Phase 9 defaults
+
+| Chord | Command | Arg | Behaviour |
+|-------|---------|-----|-----------|
+| `Ctrl+1` | `view.mode_details` | — | Switch active tab to Details view |
+| `Ctrl+2` | `view.mode_icons` | — | Switch active tab to Icon Grid view |
+| `Ctrl+3` | `view.mode_list` | — | Switch active tab to List/Columns view |
+| `Ctrl+4` | `view.mode_tree` | — | Switch active tab to Tree view |
+| `Ctrl+=` | `view.zoom_in` | — | Zoom in (Details -> Icons -> larger tiles) |
+| `Ctrl+KeypadPlus` | `view.zoom_in` | — | Same (keypad) |
+| `Ctrl+-` | `view.zoom_out` | — | Zoom out (smaller tiles -> Details) |
+| `Ctrl+KeypadMinus` | `view.zoom_out` | — | Same (keypad) |
+| `Ctrl+0` | `view.zoom_reset` | — | Reset zoom to 100% |
+| `Ctrl+Keypad0` | `view.zoom_reset` | — | Same (keypad) |
+| *(unbound)* | `view.cycle_mode` | — | Cycle Details -> Icons -> List -> Tree |
+| *(unbound)* | `view.group_none` | — | Disable grouping |
+| *(unbound)* | `view.group_date` | — | Group items by modification date |
+| *(unbound)* | `view.group_type` | — | Group items by file type category |
+| *(unbound)* | `view.group_size` | — | Group items by file size bucket |
+| *(unbound)* | `view.group_cycle` | — | Cycle grouping (None -> Date -> Type -> Size) |
+| *(unbound)* | `view.lock_folder` | — | Lock view settings to this folder |
+| *(unbound)* | `view.lock_hierarchy` | — | Lock view settings to this folder and subfolders |
+| *(unbound)* | `view.lock_global` | — | Use global view settings (clear folder lock) |
+| *(unbound)* | `view.tree_expand` | — | Expand cursor folder in Tree view |
+| *(unbound)* | `view.tree_collapse` | — | Collapse cursor folder (or move to parent) in Tree view |
+| *(unbound)* | `view.tree_collapse_all` | — | Collapse all expanded folders in Tree view |
+
 ## Later phases
 
 - A user-configurable keymap file landed in **Phase 8** (see above). Loading is lenient: unknown

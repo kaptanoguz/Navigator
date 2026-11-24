@@ -39,6 +39,7 @@ set(NAVIGATOR_CONTRACT_HEADERS
     walk
     trash
     transfer
+    view_settings
     detail/expected
 )
 
@@ -129,6 +130,11 @@ foreach(std IN ITEMS 20 23)
     _navigator_header_object(navigator_contract_phase8_cxx${std}
                              "${CMAKE_CURRENT_SOURCE_DIR}/phase8_usage.cpp" CXX ${std})
     list(APPEND _nav_check_targets navigator_contract_phase8_cxx${std})
+
+    # Phase 9A view settings, zoom axis, column reorder, hierarchical store, commands (compile only).
+    _navigator_header_object(navigator_contract_phase9a_cxx${std}
+                             "${CMAKE_CURRENT_SOURCE_DIR}/phase9a_usage.cpp" CXX ${std})
+    list(APPEND _nav_check_targets navigator_contract_phase9a_cxx${std})
 endforeach()
 
 # plugin.h from C11
