@@ -752,3 +752,17 @@ Trash view, running operations, undo state) before it takes focus.
 - New commands append new `CommandId` values (ranges in `include/navigator/commands.hpp`) and add
   a row here.
 - `Ctrl+N` (`window.new`) when a second window exists (multi-window phase).
+
+
+---
+
+## Phase 10 defaults (Linux extras)
+
+| CommandId | Name | Default shortcut | Notes |
+|---|---|---|---|
+| `OpenTerminalHere` | `file.open_terminal_here` | `F4` | Opens user's terminal emulator in the active tab's folder |
+| `ViewModeColumns` | `view.mode_columns` | `Ctrl+5` | Switches active tab to Miller Columns view |
+| `ContentSearch` | `search.content` | `Ctrl+Shift+F` | Opens/focuses the cancellable Content Search overlay |
+| `ArchiveExtractHere` | `archive.extract_here` | *(unbound)* | Extracts selected archive(s) into the current folder (palette & context menu) |
+| `ReloadPlugins` | `plugins.reload` | *(unbound)* | Reloads C ABI plugins from `<config>/plugins` (palette) |
+| `UnmountVolume` | `volume.unmount` | *(unbound)* | Unmounts the selected GVfs mount in the sidebar |

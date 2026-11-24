@@ -37,6 +37,7 @@ enum class ViewMode : std::uint8_t {
     Icons = 1,   // virtualized 2D icon/thumbnail grid with live zoom
     List = 2,    // virtualized multi-column flowing list
     Tree = 3,    // virtualized expandable directory tree
+    Columns = 4, // Phase 10: Miller columns (horizontally scrolling hierarchy panes)
 };
 
 enum class GroupBy : std::uint8_t {
@@ -173,7 +174,8 @@ inline constexpr int kZoomStepPercent = 25;
     case ViewMode::Details: return ViewMode::Icons;
     case ViewMode::Icons: return ViewMode::List;
     case ViewMode::List: return ViewMode::Tree;
-    case ViewMode::Tree: return ViewMode::Details;
+    case ViewMode::Tree: return ViewMode::Columns;
+    case ViewMode::Columns: return ViewMode::Details;
     }
     return ViewMode::Details;
 }

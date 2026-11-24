@@ -134,3 +134,8 @@ find_package(Fontconfig REQUIRED) # CMake's FindFontconfig -> Fontconfig::Fontco
 # Image / video decoders for src/preview (system or vcpkg; never fetched)
 # --------------------------------------------------------------------------
 include(PreviewDependencies)
+
+# --------------------------------------------------------------------------
+# Optional Phase 10 dependencies: GIO/GVfs and libarchive
+# --------------------------------------------------------------------------
+include(Phase10Dependencies)
