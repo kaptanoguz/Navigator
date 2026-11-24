@@ -252,7 +252,7 @@ public:
     // ---- Inline rename ----------------------------------------------------------------------
     // Starts the editor on `name` (raw bytes) in `dir` for tab `tab`, stem selected. `after_create`
     // selects the whole name (a brand-new folder).
-    void begin_rename(layout::TabId tab, const Path& dir, std::string name, bool is_dir,
+    void begin_rename(layout::TabId tab, const Path& dir, const std::string& name, bool is_dir,
                       bool after_create = false);
     [[nodiscard]] InlineEdit* inline_edit() noexcept { return inline_ ? &*inline_ : nullptr; }
     [[nodiscard]] const InlineEdit* inline_edit() const noexcept {
@@ -345,7 +345,7 @@ private:
         layout::TabId tab;
     };
 
-    void submit(ops::OpRequest request, Meta meta);
+    void submit(ops::OpRequest request, const Meta& meta);
     void handle_event(const ops::OpEvent& event);
     void handle_finished(const ops::OpResult& result);
     void sync_conflict();

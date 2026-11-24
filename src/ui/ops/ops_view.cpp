@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <ranges>
 
 #include <navigator/i18n.hpp>
 
@@ -30,7 +31,11 @@ std::vector<std::string> wrap_lines(const Painter& p, const TextStyle& style, st
         const std::size_t sp = text.find(' ', pos);
         const std::string word(
             text.substr(pos, sp == std::string_view::npos ? std::string_view::npos : sp - pos));
-        const std::string candidate = line.empty() ? word : line + " " + word;
+        std::string candidate = line;
+        if (!candidate.empty()) {
+            candidate += ' ';
+        }
+        candidate += word;
         if (!line.empty() && p.shape(style, candidate).width() > max_px) {
             lines.push_back(line);
             line = word;
@@ -298,13 +303,11 @@ void OpsView::draw_panel(const OpsFrame& f) {
 
     // Content height.
     float content = 0.0F;
-    for (std::size_t i = 0; i < run.size(); ++i) {
-        content += run_h;
-    }
+    content += run_h * static_cast<float>(run.size());
     float hist_h = 0.0F;
-    for (auto it = hist.rbegin(); it != hist.rend(); ++it) {
+    for (const FinishedOp& fo : std::views::reverse(hist)) {
         hist_h +=
-            fin_h + (static_cast<float>(std::min<std::size_t>(it->details.size(), 3)) * line_h);
+            fin_h + (static_cast<float>(std::min<std::size_t>(fo.details.size(), 3)) * line_h);
     }
     content += hist_h;
     if (run.empty() && hist.empty()) {
@@ -426,7 +429,10 @@ void OpsView::draw_panel(const OpsFrame& f) {
             std::string b = substitute(std::string(tr("ops.bytes_progress")), "done",
                                        format_size(op.bytes_done));
             b = substitute(b, "total", format_size(op.bytes_total));
-            left = left.empty() ? b : left + "  \xC2\xB7  " + b;
+            if (!left.empty()) {
+                left += "  \xC2\xB7  ";
+            }
+            left += b;
         }
         const float ly = std::round(y + p.px(54.0F));
         std::string right;
@@ -453,8 +459,7 @@ void OpsView::draw_panel(const OpsFrame& f) {
     }
     // History: newest first.
     bool latest_marked = false;
-    for (auto it = hist.rbegin(); it != hist.rend(); ++it) {
-        const FinishedOp& h2 = *it;
+    for (const FinishedOp& h2 : std::views::reverse(hist)) {
         const float cy = y + std::round(p.px(20.0F));
         const Color dot = h2.ok ? pal.accent : pal.danger;
         r.fill_circle(box.x + pad + p.px(8.0F), cy, p.px(7.0F), dot.with_alpha(0.16F));
@@ -884,8 +889,7 @@ void OpsView::draw_conflict(const OpsFrame& f) {
             const float bw = std::round(lt.width() + p.px(28.0F));
             const RectF rr = snap(RectF{x - bw, by, bw, btn_h});
             const bool primary = b == ConflictButton::KeepBoth;
-            const bool danger = b == ConflictButton::Replace && c.replace_is_permanent;
-            if (sheet_button(f, rr, label, primary, danger && false, sheet->focus == i, 230 + i)) {
+            if (sheet_button(f, rr, label, primary, false, sheet->focus == i, 230 + i)) {
                 Intent in;
                 in.kind = Intent::Kind::SheetButton;
                 in.index = i;

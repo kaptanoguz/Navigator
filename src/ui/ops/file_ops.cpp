@@ -154,10 +154,12 @@ void FileOps::shutdown() noexcept {
         std::vector<ops::OpEvent> events;
         queue_->poll(events);
         for (const ops::OpEvent& e : events) {
-            if (e.type == ops::OpEvent::Type::Finished && e.result) {
-                if (e.result->record) {
-                    undo_.record_done(*e.result->record, e.result->origin);
-                }
+            if (e.type != ops::OpEvent::Type::Finished || !e.result) {
+                continue;
+            }
+            const std::optional<ops::UndoRecord>& rec = e.result->record;
+            if (rec) {
+                undo_.record_done(*rec, e.result->origin);
             }
         }
     }
@@ -274,7 +276,7 @@ FileOps::Meta FileOps::meta_for(const ops::OpRequest& r) const {
     return m;
 }
 
-void FileOps::submit(ops::OpRequest request, Meta meta) {
+void FileOps::submit(ops::OpRequest request, const Meta& meta) {
     if (!queue_) {
         post_notice(error_sentence(ErrorCode::Unsupported, meta.name), true, NoticeAction::None,
                     ops::OpId{});
@@ -337,7 +339,9 @@ void FileOps::copy(const FileTarget& target, bool cut) {
     post_notice(substitute(tr_count(cut ? "ops.clip.cut" : "ops.clip.copied", paths.size()), "name",
                            display_of(paths.front())),
                 false, NoticeAction::None, ops::OpId{});
-    notice_->until_ms = now_ms_ + 2500.0;
+    if (notice_) {
+        notice_->until_ms = now_ms_ + 2500.0;
+    }
 }
 
 void FileOps::paste(const FileTarget& target, bool into_cursor_folder) {
@@ -365,7 +369,7 @@ void FileOps::paste(const FileTarget& target, bool into_cursor_folder) {
     Meta m;
     m.cut_paste = cut;
     m.tab = target.tab;
-    submit(std::move(r), std::move(m));
+    submit(std::move(r), m);
 }
 
 void FileOps::trash(const FileTarget& target) { trash_paths(paths_of_selection(target)); }
@@ -431,7 +435,7 @@ void FileOps::new_folder(const FileTarget& target) {
     m.create_folder = true;
     m.tab = target.tab;
     m.new_name = name;
-    submit(std::move(r), std::move(m));
+    submit(std::move(r), m);
 }
 
 void FileOps::undo() {
@@ -845,7 +849,7 @@ bool FileOps::request_quit() {
 // Inline editor
 // ---------------------------------------------------------------------------------------------
 
-void FileOps::begin_rename(layout::TabId tab, const Path& dir, std::string name, bool is_dir,
+void FileOps::begin_rename(layout::TabId tab, const Path& dir, const std::string& name, bool is_dir,
                            bool after_create) {
     InlineEdit e;
     e.tab = tab;
@@ -928,7 +932,7 @@ bool FileOps::inline_commit(const std::function<bool(std::string_view)>& taken) 
     Meta m;
     m.tab = inline_->tab;
     inline_.reset();
-    submit(std::move(r), std::move(m));
+    submit(std::move(r), m);
     return true;
 }
 
