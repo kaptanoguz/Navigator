@@ -325,7 +325,7 @@ TEST_CASE("palette: safe default (R5)", "[search][palette][safe]") {
     }
     SECTION("delete permanently typed in full") {
         const SearchResult r = run("delete permanently", entries, {}, c);
-        REQUIRE(r.hits.size() >= 1);
+        REQUIRE_FALSE(r.hits.empty());
         if (r.hits.size() == 1) {
             CHECK_FALSE(r.default_index.has_value());
         } else {
@@ -343,6 +343,7 @@ TEST_CASE("palette: safe default (R5)", "[search][palette][safe]") {
         REQUIRE(plain.hits.size() == r.hits.size());
         if (entries[plain.hits[0].entry].danger == Danger::Destructive) {
             std::vector<std::size_t> expected;
+            expected.reserve(plain.hits.size());
             for (const Hit& h : plain.hits) {
                 expected.push_back(h.entry);
             }
@@ -352,6 +353,7 @@ TEST_CASE("palette: safe default (R5)", "[search][palette][safe]") {
             REQUIRE(safe != expected.end());
             std::rotate(expected.begin(), safe, safe + 1);
             std::vector<std::size_t> got;
+            got.reserve(r.hits.size());
             for (const Hit& h : r.hits) {
                 got.push_back(h.entry);
             }
@@ -579,7 +581,7 @@ TEST_CASE("palette: history boost is bounded and only for recordable entries",
               std::min(kHistoryBoostMax, kHistoryRecentBoost - kHistoryRecentStep +
                                              kHistoryCountCap * kHistoryCountBoost));
         for (int i = 0; i < 20; ++i) {
-            h.record("k" + std::to_string(i) == "" ? "" : "k" + std::to_string(i));
+            h.record("k" + std::to_string(i));
         }
         // x is now far down the recency list: recency part clamps at 0, count part remains.
         CHECK(history_boost(h, "x") == kHistoryCountCap * kHistoryCountBoost);
@@ -716,6 +718,7 @@ TEST_CASE("palette: determinism and tie-breaks (R4)", "[search][palette][order]"
         for (const char* q : {"to", "new", "e", "tr", "o", ""}) {
             const SearchResult ref = run(q, entries, {}, rich(), 1000);
             std::vector<std::string> ref_titles;
+            ref_titles.reserve(ref.hits.size());
             for (const Hit& h : ref.hits) {
                 ref_titles.push_back(entries[h.entry].title);
             }
@@ -724,6 +727,7 @@ TEST_CASE("palette: determinism and tie-breaks (R4)", "[search][palette][order]"
                 std::shuffle(shuffled.begin(), shuffled.end(), rng);
                 const SearchResult r = run(q, shuffled, {}, rich(), 1000);
                 std::vector<std::string> titles;
+                titles.reserve(r.hits.size());
                 for (const Hit& h : r.hits) {
                     titles.push_back(shuffled[h.entry].title);
                 }
