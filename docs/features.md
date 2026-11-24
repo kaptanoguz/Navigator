@@ -219,3 +219,14 @@ File operations beyond what `features.md` lists for File Pilot are Navigator's o
 | Conflict sheet comparing both files (thumbnail, size, date): Replace, Skip, Keep both ("name (2).ext"), Merge folders, Apply to all; replaced items go to the trash first | 7 |
 | Non-modal progress for background operations with pause, cancel, rate and ETA; several independent operations at once | 7 |
 | Clipboard interoperability with GNOME Files, Nemo, Caja, Thunar and Dolphin (`x-special/gnome-copied-files`, `text/uri-list`, KDE cut marker) | 7 |
+
+Command palette, shortcuts, menus and Open With (Phase 8) are File Pilot behaviours listed above
+in their tables; the following are Navigator's own additions to them:
+
+| Navigator extra | Phase |
+|-----------------|-------|
+| Palette shows the live undo / redo label ("Undo: move 3 items to Photos"), recent commands first, hides commands that do not apply, and asks which operation or bookmark when ambiguous; destructive commands are never the default result and never boosted | 8 |
+| Keymap editor: conflict display with replace, reset per command or all, warnings for destructive commands on bare keys, bare printable keys and keys that text fields consume | 8 |
+| Key sequences with a visible status-bar hint and a configurable timeout; aliases that never skip a confirmation sheet; keymap file with lenient load and `.bad` / `.bak` safety | 8 |
+| Context menu that keeps Delete Permanently last, separated and never the Enter default; pinned actions | 8 |
+| Open With from the freedesktop `.desktop` / `mimeapps.list` files (default first, "Always open with this") with no GIO | 8 |

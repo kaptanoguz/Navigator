@@ -509,12 +509,211 @@ resulting action and the item count with the first item's thumbnail.
 | Right-click on folder background | Paste, New folder (the full background menu is Phase 8) |
 | Slow second click on the cursor row's name | Not a rename trigger in Phase 7 (avoids accidental renames); `F2` or the context menu |
 
+## Phase 8 defaults (palette, settings, context menu, cursor selection)
+
+`docs/features.md` attributes to File Pilot "Ctrl+Space toggles cursor selection" and, as
+Navigator behaviour, `Ctrl+Shift+P` (palette) and `Ctrl+,` (settings). Every other chord below is
+Navigator's choice. All eight chords were free (72 default chords through Phase 7; `Ctrl+Shift+P`,
+`Ctrl+,` and `Ctrl+Space` had been reserved for this phase since Phase 3). `Ctrl+P` stays free.
+
+`load_default_keymap()` binds the Phase 0, 2, 3, 4, 5, 6 and 7 tables, then this table, in this
+order, then the default sequence below.
+
+| Chord | Command name | CommandId | arg | Notes |
+|-------|--------------|-----------|-----|-------|
+| `Ctrl+Shift+P` | `palette.open` | `OpenPalette` (1370) | 0 | Global command palette. Works from every focus; inside the palette it closes it |
+| `Ctrl+Comma` | `settings.open` | `OpenSettings` (1371) | 0 | `Ctrl+,`. Phase 8: the Settings overlay with the Keyboard page only |
+| `Shift+F10` | `menu.show_context` | `ShowContextMenu` (1375) | 0 | Context menu of the focused element (Phase 6/7 handled it for tabs with a hardcoded key) |
+| `Menu` | `menu.show_context` | `ShowContextMenu` (1375) | 0 | The context-menu key |
+| `Ctrl+Space` | `list.toggle_cursor_selected` | `ToggleCursorSelected` (1103) | 0 | Toggle the cursor row in the selection (File Pilot behaviour per `features.md`) |
+| `Ctrl+Up` | `list.cursor_up` | `CursorUp` (1110) | `KeepSelection` | Move the cursor only; selection and anchor stay |
+| `Ctrl+Down` | `list.cursor_down` | `CursorDown` (1111) | `KeepSelection` | |
+| `Ctrl+J` | `ops.toggle_panel` | `ToggleOperationsPanel` (1349) | 0 | Operations panel ("jobs"); a keyboard path to stop or pause an operation (docs/review/phase-7.md finding 10) |
+| (unbound) | `keymap.edit` | `EditKeymap` (1372) | 0 | Bound by the default sequence below |
+| (unbound) | `keymap.reset_defaults` | `ResetKeymap` (1373) | 0 | Destructive: confirmation sheet |
+| (unbound) | `keymap.export` | `ExportKeymap` (1374) | 0 | Keymap JSON to the clipboard |
+| (unbound) | `open_with.show` | `OpenWith` (1390) | 0 | Open With popup; also the row context menu's "Open With" submenu |
+
+`KeepSelection` is `CursorArg::KeepSelection` (bit 1 of `Command::arg`); it wins over nothing
+(`Extend` wins over it). `Ctrl+Space` is the input-method switch on some IBus / fcitx setups;
+if the desktop takes it, rebind (the palette and menu reach the same command). `Ctrl+J` moved
+`ops.toggle_panel` from the "(unbound)" list to a default chord.
+
+### Default sequences (Phase 8)
+
+Sequences are written as chords separated by one space. Exactly one ships; it exists so the
+feature works out of the box and is covered by the end-to-end test.
+
+| Sequence | Command name | CommandId | arg | Notes |
+|----------|--------------|-----------|-----|-------|
+| `Ctrl+K Ctrl+S` | `keymap.edit` | `EditKeymap` (1372) | 0 | "Keyboard shortcuts" (same as VS Code); also `keymap.edit` in the palette |
+
+`Ctrl+K` is therefore a sequence prefix by default: it is not bindable on its own (see
+"Conflicts and precedence"). A user who wants `Ctrl+K` for something else removes the sequence
+with the keymap editor or an `unbound` entry.
+
+### Key sequences
+
+A binding may be a sequence of up to **4** chords (`kMaxSequenceLength`), e.g. `Ctrl+K Ctrl+S`.
+The `SequenceMatcher` (`commands.hpp`) is a small state machine the ui feeds with the chords that
+reach the keymap (after focus scoping; auto-repeat and modifier-only presses are not fed):
+
+| State | Chord arrives | Result |
+|-------|---------------|--------|
+| idle | is not the first chord of any sequence | `NoMatch`: not consumed; resolved as an ordinary chord |
+| idle | is the first chord of a sequence | `Pending`: consumed; the status bar shows `Ctrl+K ...` |
+| pending | extends to a longer prefix | `Pending` |
+| pending | completes a sequence | `Match`: consumed; the command is enqueued like any binding; idle |
+| pending | `Escape` (no modifiers) | `Cancelled`: consumed, nothing runs; idle |
+| pending | anything else, including a chord that is bound on its own (`Ctrl+Q`) | `Aborted`: consumed, nothing runs; idle. The status bar says `Ctrl+K Ctrl+Q is not a command` |
+| pending | the timeout elapsed since the previous chord | the pending chords are dropped (`expired`); the chord is handled as if idle |
+
+- **Timeout**: 1000 ms by default, measured from the previous chord (not from the first); a chord
+  exactly 1000 ms later still counts. Configurable with `"sequence_timeout_ms"` in the keymap
+  file, clamped to 200..5000. The status-bar hint disappears when it expires.
+- **Prefix-free**: a chord cannot be a binding and the start of a longer one. Binding `Ctrl+K`
+  while `Ctrl+K Ctrl+S` exists, or the reverse, is a conflict (below). There is deliberately no
+  override.
+- **Rules for sequences of two or more chords**: the first chord must not be a text-input chord
+  (a printable key, with at most Shift: `G`, `Shift+5`, `Space`, `Keypad5`); this keeps
+  type-to-filter intact (a user can never turn `g` into a prefix). No bare `Escape` and no mouse
+  button inside a sequence. Use `Ctrl`, `Alt`, `Super`, function keys or navigation keys to
+  start one.
+- **Focus**: a chord a focused text field consumes (see the focus scoping sections) is never fed,
+  so typing in a field cannot start or advance a sequence. The pending state is reset when focus
+  moves, a popup, sheet or overlay opens, or the mouse is clicked.
+- **Safety**: a sequence enqueues a command, nothing else: confirmation sheets are unaffected.
+- **Turkish and other layouts**: sequences use the same keycode matching as chords, so
+  `Ctrl+K Ctrl+S` is the key labelled K then S on Q, F and US layouts alike.
+
+### Aliases
+
+An alias is a short name typed in the palette that jumps to a command (and arg): `nf` for
+`file.new_folder`. Aliases live in the keymap file.
+
+- Name: 1..32 bytes of UTF-8, no whitespace or control characters, not starting with `>` or `/`;
+  unique ASCII-case-insensitively.
+- Typing exactly the alias ranks that command first (unless it is destructive, in which case a
+  safe match is moved above it, see "Safe default"); typing a prefix of it ranks it high.
+- The target is a command name, never another alias. The arg must be 0 for commands whose arg is
+  a runtime id (`ops.cancel`, `tab.close`, `bookmarks.rename`, ...); flag args are fine
+  (`edit.copy_path` with `1` = current folder).
+- Aliases never skip anything: an alias to `file.delete_permanently` opens the permanent-delete
+  sheet, an alias to `trash.empty` opens the empty-trash sheet.
+
+### Keymap file
+
+`<config>/navigator/keymap.json` (`~/.config/navigator/keymap.json`, `AppConfig::config_dir`).
+It is the user's layer over the defaults, not a dump of them. Schema, with every field optional
+except `keys` / `command` / `name`:
+
+```json
+{
+  "version": 1,
+  "sequence_timeout_ms": 1500,
+  "bindings": [
+    { "keys": "Ctrl+Alt+F", "command": "search.flatten" },
+    { "keys": "Ctrl+K Ctrl+T", "command": "view.toggle_theme" },
+    { "keys": "Keypad5", "command": "edit.copy_path", "arg": 1 }
+  ],
+  "unbound": [
+    { "keys": "Ctrl+E", "command": "search.flatten" }
+  ],
+  "aliases": [
+    { "name": "nf", "command": "file.new_folder" }
+  ]
+}
+```
+
+The example rebinds `Ctrl+E` (flatten) to `Ctrl+Alt+F`: the `unbound` entry removes the default
+(only if `Ctrl+E` is bound to `search.flatten` by the default keymap; a stale entry is ignored),
+the `bindings` entry adds the new chord. The editor writes both.
+
+- **Lenient load**: unknown fields are ignored; an element that is not an object, whose `keys`
+  does not parse, whose `command` is empty, whose `arg` is not a non-negative integer, whose alias
+  name is invalid, or that duplicates an earlier entry is dropped and reported; the rest loads.
+  A file that is not a JSON object is moved to `keymap.json.bad` and defaults are used. A file
+  with a newer `version` is read best-effort and, on the next save, first copied to
+  `keymap.json.bak`. The program never crashes on a bad file.
+- **Unknown command names are kept** in the file (a plugin or a newer Navigator may know them);
+  they are skipped when building the effective keymap.
+- Saved atomically (temporary file, fsync, rename; directory 0700, file 0600) about 250 ms after
+  each edit and on quit. `--no-session` (or `restore_session = false`) uses the defaults and
+  `save_session = false` never writes.
+- Key text is canonical (`Ctrl+Shift+L`, modifiers in the order Super, Ctrl, Alt, Shift); input
+  accepts any case and the synonyms in `commands.hpp` (`Numpad5`, `ContextMenu`, `Esc`, ...).
+
+### Conflicts and precedence
+
+Two bindings conflict when their sequences are **identical**, or one is a **strict prefix** of
+the other (`Ctrl+K` vs `Ctrl+K Ctrl+S`).
+
+1. **User wins over defaults.** A user binding that conflicts with a default removes that default
+   in the effective keymap; the displaced binding is reported (the editor shows "replaces
+   Ctrl+E: Flatten Hierarchy"; `ApplyReport::DisplacedDefault`).
+2. **Earlier user entry wins over a later one** in file order; the later entry is dropped and
+   reported. The editor never produces such a file: it removes what it displaces.
+3. In the editor, a conflict is shown before anything changes; "Replace" displaces the existing
+   binding (a user binding is deleted from the file, a default gets an `unbound` entry), "Cancel"
+   keeps both untouched.
+4. Rebinding a default to its own chord again just deletes the `unbound` entry (the file does not
+   grow). "Reset to default" for one command deletes its user bindings and `unbound` entries;
+   "Reset all" (`keymap.reset_defaults`, destructive, with a confirmation sheet) clears bindings
+   and `unbound`; aliases and the timeout stay.
+
+### Warnings in the keymap editor
+
+Allowed but flagged next to the shortcut field (`BindingWarning`):
+
+- **Destructive command on a bare key**: `file.delete_permanently`, `trash.empty`,
+  `layout.delete` or `keymap.reset_defaults` bound to a sequence where no chord has a modifier
+  (`Delete`, `F8`). Rule: `is_destructive_bare_binding`. The shipped `Shift+Delete` counts as
+  modified. Even then the confirmation sheet stands between the key and the data.
+- **Shadows type to filter**: a bare printable key (`G`, `Shift+5`) as a single binding wins over
+  type-to-filter while the list has focus, so typing that character no longer starts the filter.
+- **Consumed by text fields**: the first chord is one text fields take (`Ctrl+A`, `Ctrl+C`,
+  `Backspace`, `Home`, `Space`, ...): the binding does not fire while typing.
+- **Layout-sensitive punctuation**: `Ctrl`/`Alt` with a punctuation key; on layouts where that
+  character needs AltGr (Turkish, German, ...) it may not be reachable. `Ctrl+,` is shipped
+  because `docs/features.md` lists it; on Turkish Q the key labelled `ö` sits at that position
+  and matches through the scancode fallback.
+
+Invalid bindings (unknown command, a reserved or unbindable command, a runtime-id arg other than
+0, a sequence breaking the rules above) are refused with a reason. The sheets' own keys (`Tab`,
+`Enter`, `Escape`, `Space`, `F2` inside confirmation, conflict and name prompts) are not resolved
+through the keymap while those widgets are open, so remapping the commands they are bound to
+outside never changes what a sheet does.
+
+### Numpad and function keys (Phase 8)
+
+- `Keypad0`..`Keypad9`, `KeypadPlus`, `KeypadMinus`, `KeypadMultiply`, `KeypadDivide`,
+  `KeypadPeriod` and `KeypadEnter` are ordinary keys, matched by the physical keypad key whatever
+  the NumLock state. `Numpad5` is accepted as input. They are text-input chords for the rules
+  above (with NumLock they type digits into the filter).
+- `Menu` is the context-menu key. `F13`..`F24` are accepted (`docs/features.md`). No default
+  binds a keypad digit; `KeypadPlus` / `KeypadMinus` are kept free for the Phase 9 zoom.
+- Not Phase 8: "separate shortcuts per zoom level" (`docs/features.md`, needs the Phase 9 views).
+
+### Focus scoping (Phase 8)
+
+| Focus | Palette, menu, sequences |
+|-------|--------------------------|
+| Any, including every text field | `Ctrl+Shift+P` opens the palette (a field does not consume it). Inside the palette it closes it |
+| Palette open | Typing goes to its field; `Up`/`Down`/`PageUp`/`PageDown` move the highlight; `Enter` runs the highlighted entry; `Escape` closes; all other chords are the palette's (it does not resolve the keymap) except `Ctrl+Shift+P` |
+| Context menu open | Typing goes to the menu's search field (no accelerator letters); `Up`/`Down` move; `Enter` runs the highlighted item; `Right`/`Left` open/close a submenu; `Escape` closes (clears the search first). The destructive item is never the Enter default |
+| Confirmation and conflict sheets | Keep the keyboard (Phase 7). `Ctrl+Shift+P` is ignored while one is open, so nothing can bypass or stack on a sheet |
+| Text fields | Consume what they consume (Phase 4-7 tables); sequences never start or advance inside them |
+| Sequence pending | The next chord belongs to the sequence (see the state table) |
+
+Palette and menu items run the same `Command` a binding would, at frame end, so every sheet
+and rule above still applies. The palette captures its context (selection, focused sidebar row,
+Trash view, running operations, undo state) before it takes focus.
+
 ## Later phases
 
-- A user-configurable keymap file arrives in **Phase 8**. It binds chords (and multi-key
-  sequences) to command names. Loading is lenient: unknown command names, malformed chords and
-  duplicate bindings are reported and skipped, never fatal; the defaults above remain in effect
-  for anything the file does not override.
+- A user-configurable keymap file landed in **Phase 8** (see above). Loading is lenient: unknown
+  fields are ignored, invalid entries are reported and dropped, the defaults stay in effect for
+  anything the file does not override.
 - New commands append new `CommandId` values (ranges in `include/navigator/commands.hpp`) and add
   a row here.
 - `Ctrl+N` (`window.new`) when a second window exists (multi-window phase).
